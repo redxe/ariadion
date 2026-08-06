@@ -1,0 +1,13 @@
+[project]
+name = "theonoe"
+version = "0.1.0"
+description = "Inspection and debugging engine for Ariadion"
+requires-python = ">=3.11"
+dependencies = ["ariadion-simulator"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

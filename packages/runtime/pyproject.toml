@@ -1,0 +1,19 @@
+[project]
+name = "ariadion-runtime"
+version = "0.1.0"
+description = "Runtime orchestration for Ariadion"
+requires-python = ">=3.11"
+dependencies = [
+  "ariadion-language",
+  "daidalon",
+  "ariadion-simulator",
+  "theonoe",
+  "ariadion-visualization",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
