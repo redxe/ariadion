@@ -1,3 +1,3 @@
-from .compiler import CompileError, Diagnostic, compile_program
+from .compiler import CompileError, Diagnostic, DiagnosticSeverity, compile_program
 
-__all__ = ["CompileError", "Diagnostic", "compile_program"]
+__all__ = ["CompileError", "Diagnostic", "DiagnosticSeverity", "compile_program"]

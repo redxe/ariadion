@@ -21,7 +21,7 @@ Ariadion SDK
  simulator  Theonoe  visualization
 ```
 
-The compiler produces immutable semantic IR. Runtime backends consume IR. Debuggers and visualizations observe execution artifacts but do not change source semantics.
+The compiler produces immutable semantic IR. Runtime backends consume IR. Debuggers and visualizations observe execution artifacts but do not change source semantics. Each source operation has a deterministic identity that Daidalon preserves in the lowered operation and its diagnostics, allowing future traces, breakpoints, and views to map back to source without reparsing output.
 
 ## Packages
 
