@@ -7,13 +7,35 @@ from .model import (
     Observation,
     ObservationReason,
 )
+from .reliability import (
+    CorrelationModel,
+    GateNoise,
+    IdleNoise,
+    LeakageModel,
+    NoiseProfile,
+    ProtectionPlan,
+    ProtectionStrategy,
+    ReadoutNoise,
+    ReliabilityGoal,
+    SimulationFidelity,
+)
 
 __all__ = [
     "Basis",
+    "CorrelationModel",
     "FunctionEffect",
+    "GateNoise",
+    "IdleNoise",
+    "LeakageModel",
     "LogicalOpCode",
     "LogicalOperation",
     "LogicalQubitValue",
+    "NoiseProfile",
     "Observation",
     "ObservationReason",
+    "ProtectionPlan",
+    "ProtectionStrategy",
+    "ReadoutNoise",
+    "ReliabilityGoal",
+    "SimulationFidelity",
 ]

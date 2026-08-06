@@ -16,7 +16,7 @@ The first executable frontend will use valid Python; this is the target surface,
 not an implemented API yet:
 
 ```python
-from ariadion import Bit, Qubit, cx, h, quantum
+from ariadion import Bit, Qubit, cx, h, quantum, z
 
 
 @quantum(basis=z)
@@ -31,7 +31,11 @@ def bell() -> tuple[Bit, Bit]:
 `left` and `right` are logical quantum values. Resource analysis and allocation
 later decide their lifetimes, reuse, dense IR targets, simulator width, and hardware
 layout. The declared classical return type creates terminal observations; explicit
-measurement remains available when an algorithm needs an earlier observation.
+`observe(...)` remains available when an algorithm needs an earlier observation.
+Source `Qubit` values do not expose integer targets or a representation choice:
+`LogicalQubitId` is their pre-allocation semantic identity, an
+`AllocatedQubitSlot` is a compiler-selected target, and a `ProtectedRealization`
+is an encoded physical realization rather than a public value type.
 
 ## Extension-aware frontend
 
@@ -41,10 +45,13 @@ the original source, and then supplies Python AST facts plus Ariadion extension
 nodes to semantic analysis. Unmarked Python must never acquire quantum meaning.
 
 Future Ariadion sugar can include unit-bearing angle literals such as `190deg` and
-basis-aware measurement syntax. Such forms are justified only after they lower into
-the same semantic model proven by the valid-Python frontend. A file extension such
-as `.ari` does not imply a second language grammar; it may hold Python-compatible
-Ariadion source when file loading and Studio support need it.
+basis-aware `observe(...)` syntax. Such forms are justified only after they lower
+into the same semantic model proven by the valid-Python frontend. A file extension
+such as `.ari` does not imply a second language grammar; it may hold
+Python-compatible Ariadion source when file loading and Studio support need it.
+Ordinary `.py` remains classical by default unless `@quantum` opts in; future `.ari`
+files infer effects by default, while `@classical` constrains a region to remain
+classical. No `.ari` parser is implemented by this contract.
 
 ## Future source AST
 
@@ -54,7 +61,7 @@ Python's nodes. Intended node families include:
 - `QuantumFunctionSyntax` for an explicitly marked quantum function;
 - `QuantumValueBindingSyntax` for a logical-value creation or binding;
 - `QuantumOperationSyntax` for an operation over logical values;
-- `MeasurementExpressionSyntax` for a value-producing measurement; and
+- `MeasurementExpressionSyntax` for an explicit value-producing observation; and
 - `BasisExpression` and `AngleLiteral` for exact author-written domain values.
 
 These nodes retain exact spelling, complete source ranges, a required
@@ -92,8 +99,10 @@ state across edits. Neither identity relies on Python object identity.
 
 Source contracts preserve what the author wrote; later layers establish bindings,
 types, quantum ownership, aliases, basis meanings, function calls, lifetimes, and
-allocation. In particular, syntax must not validate a physical target range, infer
-a basis, create an allocation width, or import IR to decide those meanings.
+inferred observation boundaries, scheduling, reliability analysis, and allocation.
+In particular, syntax must not validate a physical target range, infer a basis,
+create an allocation width, choose protection, or import IR to decide those
+meanings.
 
 ## Tokens and diagnostics
 
@@ -128,8 +137,11 @@ The intended path is:
 Python-compatible source
     -> extension-aware transformation and Python AST
     -> immutable Ariadion extension nodes
-    -> resolved semantic model
-    -> typed model, lifetime analysis, and allocation plan
+    -> resolved quantum values and effects
+    -> typed ownership and observation semantics
+    -> logical operation schedule
+    -> reliability analysis
+    -> protection and allocation plan
     -> allocated CircuitIR
 ```
 
@@ -137,3 +149,11 @@ Extension nodes must never double as `CircuitIR` operations. Syntax preserves
 author spelling and source location; later semantic layers establish logical-value
 bindings, types, ownership, bases, and canonical values; allocation creates dense
 integer targets; IR captures provider-neutral compiled meaning.
+
+## Research references
+
+The evidence for the future noise, scheduling, and protection boundary is recorded
+in [noise-modeling research](../docs/research/noise-modeling.md) and
+[fault-tolerance and resource-planning research](../docs/research/fault-tolerance-and-resource-planning.md).
+Those records cite primary papers and official technical documentation consulted on
+2026-08-06.

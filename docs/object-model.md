@@ -119,6 +119,38 @@ A value object validates itself, compares by value, remains immutable, and has a
 stable serialized form. Do not create one merely to wrap every primitive; create
 one when the name carries a domain invariant or prevents an ambiguous boundary.
 
+## Quantum-value and protection terminology
+
+The following terms identify different layers and must not be substituted for one
+another:
+
+```text
+Qubit
+    Public source-level managed quantum value.
+
+LogicalQubitId
+    Internal semantic identity for a Qubit before allocation.
+
+AllocatedQubitSlot
+    Dense simulator or backend slot selected by Daidalon.
+
+ProtectedRealization
+    Error-corrected encoding of one source-level Qubit using
+    multiple physical qubits.
+```
+
+`Qubit` is logical by definition and never publishes its allocation or protection
+representation. `AllocatedQubitSlot` is documentation terminology for an allocated
+backend target; it is not a source construction parameter. `ProtectedRealization`
+may later be described by an `EncodedQubitPlan` or `FaultTolerantRealization`, but
+the name `LogicalQubit` must not be used for that QEC object because it collides
+with source-semantic language.
+
+`ReliabilityGoal`, `NoiseProfile`, and `ProtectionPlan` are immutable planning
+contracts owned by the semantic layer. They describe requested bounds, assumptions,
+and a future planner's result; they do not mutate a source `Qubit`, allocate a
+physical slot, or implement a decoder.
+
 ## Identity across layers
 
 Layers link through stable identifiers, never Python object identity. Python
@@ -132,6 +164,10 @@ Python AST + Ariadion extension nodes:
 
 Resolved quantum semantics:
     LogicalQubitId / LogicalQubitValue (one logical quantum value)
+
+Protection and allocation planning:
+    ProtectedRealization assumptions (zero or more physical qubits per source value)
+    -> AllocatedQubitSlot / integer target (one selected backend representation)
 
 Allocated and execution artifacts:
     SnapshotOperationId (current width-based builder compatibility)
@@ -208,8 +244,9 @@ class CompilerPass(Protocol):
 Each pass should return a new immutable artifact or context, add diagnostics,
 preserve or extend provenance, and expose optional analysis data. Likely stages
 include validation, name resolution, type checking, angle normalization, function
-expansion, basis lowering, lifetime analysis, allocation, decomposition, routing,
-resource estimation, and backend lowering.
+expansion, basis lowering, ownership and observation analysis, lifetime analysis,
+scheduling, reliability analysis, protection planning, allocation, decomposition,
+routing, resource estimation, and backend lowering.
 
 The relevant principle is not the exact `CompilationContext` type. It is that a
 pass has declared inputs, outputs, diagnostics, and provenance effects. Studio can
@@ -272,13 +309,16 @@ The Ariadion Python extension must keep author syntax separate from semantic
 meaning and compiled IR. Python owns ordinary Python parsing; extension nodes
 preserve Ariadion spelling and source ranges; resolved nodes preserve logical-value
 bindings; typed nodes establish domain meaning and ownership; lifetime analysis and
-allocation then assign IR targets.
+observation rules; scheduling, reliability analysis, and protection planning then
+inform allocation before IR targets are assigned.
 
 ```text
 Python AST + extension node
     -> resolved logical-value node
     -> typed/owned semantic node
-    -> allocation plan
+    -> logical operation schedule
+    -> reliability analysis
+    -> protection and allocation plan
     -> IR operation
 ```
 

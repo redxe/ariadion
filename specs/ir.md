@@ -16,6 +16,31 @@ quantum values, lifetimes, resource constraints, and backend requirements. A fut
 allocation artifact will preserve the logical-to-IR mapping for diagnostics,
 resource reports, trace navigation, and hardware layout explanations.
 
+## Reliability, protection, and allocation boundary
+
+`CircuitIR` is the output of a future allocation decision, not the input to a
+source-level reliability request. The planned path is:
+
+```text
+logical operation schedule
+  -> reliability analysis
+  -> ProtectionPlan and allocation plan
+  -> allocated CircuitIR
+```
+
+That allocation can describe a bare execution, a mitigated or error-detected
+execution, or a fault-tolerantly protected realization. The public source-level
+`Qubit` remains unchanged in every case. A future `AllocationPlan` will relate
+`LogicalQubitId` values and any `ProtectedRealization` assumptions to allocated
+integer slots and generated IR operations, so diagnostics, traces, and resource
+reports can explain the result without exposing physical slots in source code.
+
+This specification does not add an `AllocationPlan` field to `CircuitIR`, implement
+a protection planner, select code distances, or define an encoded-QEC layout.
+Existing `OperationProvenance` remains the IR-level vehicle for source and
+transformation ancestry until a later vertical slice requires the additional
+allocation provenance contract.
+
 Each `Operation` contains:
 
 - a distinct IR operation ID;
@@ -60,3 +85,6 @@ across edits must use a `SourceNodeId` supplied by the frontend.
 
 Future revisions will add basis descriptors, parameters, classical values, regions,
 ownership metadata, and concrete decomposition passes that populate provenance.
+The evidence for separating reliability analysis from allocation is recorded in
+[fault-tolerance and resource-planning research](../docs/research/fault-tolerance-and-resource-planning.md),
+which cites primary and official sources consulted on 2026-08-06.

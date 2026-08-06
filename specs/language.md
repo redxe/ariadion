@@ -36,7 +36,7 @@ The first executable frontend must use valid Python and Python's parser. This is
 target contract, not an implemented API yet:
 
 ```python
-from ariadion import Bit, Qubit, cx, h, quantum
+from ariadion import Bit, Qubit, cx, h, quantum, z
 
 
 @quantum(basis=z)
@@ -50,21 +50,45 @@ def bell() -> tuple[Bit, Bit]:
    return left, right
 ```
 
-`Qubit` is the public logical quantum-value type. “Logical qubit” is compiler
-terminology, not a second user-facing wrapper or construction mode. `left` and
-`right` are neither simulator indexes nor hardware addresses. The decorator
-captures supported code for compilation; it must not execute quantum operations as
-ordinary Python calls.
+`Qubit` is the public source-level managed quantum-value type. A source-level
+`Qubit` is logical by definition; it has no second construction mode, wrapper, or
+flag. `left` and `right` are neither simulator indexes nor hardware addresses, and
+the decorator captures supported code for compilation rather than executing quantum
+operations as ordinary Python calls.
 
-`Qubit()` is the only public construction mode. There is no lowercase factory,
-logical-mode flag, or public logical-value wrapper; physical locations, simulator
-indexes, hardware indexes, and allocated slots are compiler concepts only.
+Each `Qubit()` call creates a distinct managed value with an internal
+`LogicalQubitId` before allocation. Assignment aliases that value; it never clones
+quantum state. In the example, `left` and `right` have overlapping lifetimes, so
+Daidalon will eventually infer a peak allocation of two slots even though neither
+source value contains a target, index, or address.
 
 The `tuple[Bit, Bit]` return annotation requires classical result values. Returning
-the two `Qubit` values across that boundary creates terminal observations in the
-function basis policy. It does not require source-level terminal `measure()` calls.
-The compiler will later infer that the values are simultaneously live and allocate
-two dense IR targets for the existing `CircuitIR`.
+the two `Qubit` values creates visible compiler-inserted terminal observations in
+the function's `z` basis policy. Compiler artifacts and execution traces retain
+those observations, their bases, and their reasons; source code does not need
+terminal `measure()` calls. The compiler will later lower the simultaneously live
+values to two dense targets in allocated `CircuitIR`.
+
+The terminology boundary is deliberate:
+
+```text
+Qubit
+   Public source-level managed quantum value.
+
+LogicalQubitId
+   Internal semantic identity for a Qubit before allocation.
+
+AllocatedQubitSlot
+   Dense simulator or backend slot selected by Daidalon.
+
+ProtectedRealization
+   Error-corrected encoding of one source-level Qubit using
+   multiple physical qubits.
+```
+
+`LogicalQubit` is not a public type and must not name a QEC realization, because it
+would collide with the source-semantic meaning. See the object-model guide for the
+cross-layer identity rules.
 
 Quantum function parameters receive logical values without knowing a global qubit
 count. Returning a quantum value remains a quantum return, not an observation:
@@ -77,10 +101,11 @@ def prepare_plus() -> Qubit:
    return value
 ```
 
-Quantum parameters bind logical values rather than physical slots. A return value
-may be a classical measurement result or, when later ownership rules permit it, a
-logical quantum value whose lifetime escapes the function. Neither parameter nor
-return types expose simulator or hardware indexes.
+No observation is inserted for `prepare_plus()` because its return type preserves a
+quantum value across the function boundary. Quantum parameters bind managed values
+rather than physical slots. A return value may be a classical observation result or
+a quantum value whose lifetime escapes the function; neither parameter nor return
+type exposes simulator or hardware indexes.
 
 The semantic model will define ownership, aliasing, escaping values, reset, and
 measurement consumption before allocation is implemented. Until then, no frontend
@@ -92,14 +117,28 @@ semantic contract.
 The initial conversion policy is:
 
 ```text
-Qubit -> Qubit       no observation
-Qubit -> Bit         observation boundary
-Qubit -> bool        semantic diagnostic
-Bit -> bool          ordinary classical conversion
+Qubit -> Qubit
+   Preserve the quantum value.
+
+Qubit -> Bit
+   Insert an observable semantic boundary.
+
+Qubit -> bool
+   Reject with a semantic diagnostic.
+
+Bit -> bool
+   Ordinary classical conversion.
 ```
 
 In particular, `if q:` for a `Qubit` is rejected initially. Ariadion must not
 silently insert a mid-circuit measurement through ordinary Python truth testing.
+
+The resolved semantic `Observation` records the `LogicalQubitId`, selected `Basis`,
+an `ObservationReason`, and an optional source reference. Reasons distinguish an
+explicit `observe(...)` call from an inferred classical return, classical
+assignment, branch-condition, or program-output boundary. This lets compiler
+artifacts and execution traces explain an observation without pretending it was a
+user-written low-level `MEASURE` operation.
 
 ## Logical quantum values and managed resources
 
@@ -109,16 +148,19 @@ live set. Daidalon then allocates dense integer targets for `CircuitIR`.
 
 ```text
 logical values and lifetimes
-    -> allocation plan
+   -> logical operation schedule
+   -> reliability analysis
+   -> protection and allocation plan
     -> allocated CircuitIR.qubit_count and integer targets
 ```
 
 The first allocation policy may use one slot per distinct live logical value. Later
 policies can reuse a slot after a value's lifetime ends, introduce ancillas, insert
-resets, route for hardware topology, and report provider-specific requirements.
-The compiler must expose facts such as logical values created, peak live values,
-allocated simulator qubits, and hardware qubits required. A future annotation such
-as `@quantum(max_qubits=12)` is a resource contract or hint, not manual allocation.
+resets, route for hardware topology, select a `ProtectedRealization`, and report
+provider-specific requirements. The compiler must expose facts such as logical
+values created, peak live values, allocated simulator qubits, hardware qubits, and
+planning assumptions. A future annotation such as `@quantum(max_qubits=12)` is a
+resource contract or hint, not manual allocation.
 
 ## Current compatibility surface
 
@@ -160,13 +202,20 @@ A basis is a typed domain concept rather than a backend default. Explicit
 measurement remains available when observation timing changes algorithm meaning:
 
 ```python
-result = measure(target, basis=x)
+result = observe(
+     target,
+     basis=x,
+     reset=True,
+)
 ```
 
-Use explicit measurement for mid-circuit feedback, post-selection, exact timing,
-basis-sensitive steps, reset and reuse, error-correction syndromes, or partial
-observation of an entangled system. Returning a `Qubit` where a declared `Bit` is
-required is instead a terminal observation boundary.
+`observe` is the preferred future high-level spelling because it names the semantic
+act. The low-level IR opcode may remain `MEASURE`, and the current
+`Program.measure` builder method remains a compatibility API. Explicit observation
+is required or useful for mid-circuit feedback, post-selection, exact timing,
+syndrome extraction, partial observation of entangled values, reset and storage
+reuse, and repeated sampling policies. Returning a `Qubit` where a declared `Bit`
+is required is instead an inferred terminal observation boundary.
 
 The precise spelling of basis values is not frozen. A quantum function may later
 establish a default basis with `@quantum(basis=z)`, a scoped context such as
@@ -175,37 +224,53 @@ Whatever syntax is adopted, the resolved semantic model must retain the selected
 basis and Daidalon must lower any basis change explicitly. Backends must not infer
 measurement bases.
 
-## Classical and quantum call boundaries
-
-Ordinary Python functions are classical by default. They cannot implicitly create,
-operate on, or capture logical quantum values. A quantum function may call another
-resolved quantum function or an explicitly supported classical subroutine, subject
-to later capture and control-flow rules. Imports, classes, exceptions, collections,
-and ordinary function calls retain Python behavior outside the explicit quantum
-boundary.
-
-A future `@classical` marker may document classical subroutines callable from a
-quantum workflow, but it is not required to preserve ordinary Python semantics.
-The semantic model, rather than a decorator name alone, will determine which values
-cross a classical/quantum call boundary and whether those values are legal.
-
 ## Effect defaults and constraints
 
-The target source-effect model has two defaults:
+`FunctionEffect` classifies resolved functions as `CLASSICAL`, `QUANTUM`, or
+`HYBRID`. These are semantic effects, not merely decorator names. The target
+source-effect model has two defaults:
 
 ```text
 .py file:
    classical Python by default; @quantum opts into quantum compilation
 
 .ari file:
-   quantum-effect inference by default; @classical explicitly forces classical execution
+   quantum-effect inference by default; @classical constrains a function or region
+   to classical behavior
 ```
 
-This is a language target only; `.ari` parsing is not implemented. Internally,
-semantic analysis reserves `FunctionEffect.CLASSICAL`, `FunctionEffect.QUANTUM`,
-and `FunctionEffect.HYBRID`. Source annotations act as constraints that the future
-analyzer checks against operations and value flow rather than as a substitute for
-effect inference.
+`@classical` containing a quantum operation is an error. `@quantum` asserts that a
+function is compilable as quantum code. An unannotated `.ari` function may be
+inferred as classical, quantum, or hybrid. Imported ordinary Python functions
+remain classical unless explicitly supported. A quantum function may call another
+resolved quantum function or an explicitly supported classical subroutine, subject
+to later capture and control-flow rules. Imports, classes, exceptions, collections,
+and ordinary calls retain their normal Python behavior outside an explicit quantum
+boundary.
+
+This is a language target only: `.ari` parsing is not implemented, and an
+annotation is a constraint for future analysis rather than a replacement for effect
+inference.
+
+## Reliability intent and protection planning
+
+Users express reliability intent rather than a physical allocation:
+
+```python
+@quantum(
+     reliability=0.999999,
+     protection="auto",
+)
+def algorithm():
+     ...
+```
+
+The example requests a success target of $0.999999$, which maps to a maximum
+failure budget of $10^{-6}$. A future compiler will use a `ReliabilityGoal`, chosen
+noise profile, schedule, and backend assumptions to decide whether bare execution
+is sufficient or whether a `ProtectionPlan` is feasible. Users do not select a
+physical-qubit count or code distance unless they explicitly choose an advanced
+override. This target API is not implemented in the current frontend.
 
 ## Source transformation, identity, and diagnostics
 
@@ -271,12 +336,24 @@ plan and lowers the result into integer-target `CircuitIR`.
 
 ```text
 Python-compatible Ariadion source
-    -> Python AST plus Ariadion extension nodes
-    -> resolved quantum semantic model
-    -> lifetime and resource analysis
-    -> allocated provider-neutral CircuitIR
+   -> Python AST and Ariadion extension nodes
+   -> resolved quantum values and effects
+   -> typed ownership and observation semantics
+   -> logical operation schedule
+   -> reliability analysis
+   -> protection and allocation plan
+   -> allocated CircuitIR
+   -> simulator or hardware backend
 ```
 
 The extension-source contracts are specified separately in
 [`specs/syntax.md`](syntax.md). They retain exact spelling, source ranges, and
 identity without trying to replace Python's AST.
+
+## Research references
+
+The evidence and limitations behind the future noise, simulation, and protection
+interfaces are recorded in [noise-modeling research](../docs/research/noise-modeling.md)
+and [fault-tolerance and resource-planning research](../docs/research/fault-tolerance-and-resource-planning.md).
+Those records cite primary papers and official technical documentation consulted on
+2026-08-06.

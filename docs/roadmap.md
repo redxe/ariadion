@@ -16,34 +16,56 @@
 
 ## Next sequence
 
-1. define the Python-extension language contract;
-2. add logical quantum-value and ownership contracts;
-3. infer resource width, lifetimes, and allocation plans in Daidalon;
-4. prototype `@quantum` with valid Python syntax;
-5. connect decorated functions to the existing IR, runtime, and debugger;
-6. add justified extension syntax such as angle suffixes and basis-aware measurement;
-7. add editor parsing, `.ari` loading, tutorials, and Studio support.
+The next implementation work must preserve this order:
 
-## Milestone 1 — managed language semantics
+1. Finalize `Qubit`, `Bit`, effect, and observation contracts.
+2. Implement public `Qubit()` and internal logical identities.
+3. Compile a hand-built logical Bell program into allocated IR.
+4. Add `AllocationPlan` and logical-to-IR provenance.
+5. Prototype `@quantum` with Python AST.
+6. Infer terminal observations at `Qubit`-to-`Bit` boundaries.
+7. Define noise-channel contracts.
+8. Add a small density-matrix noisy simulator.
+9. Add scheduling and T1/T2 idle decoherence.
+10. Add reliability goals and bare-execution estimates.
+11. Add pluggable protection-planning interfaces.
+12. Add encoded-QEC simulation and decoder integration later.
 
-- logical quantum-value identities and handles
+## Milestone 1 — value, effect, and observation contracts
+
 - public `Qubit` and `Bit` domain contracts
-- ownership, aliasing, measurement, reset, and escape rules
-- inferred classical, quantum, and hybrid function effects
-- lifetime analysis, allocation plans, and resource reports
-- explicit computational and custom bases
-- measurement values, classical control, and reusable quantum functions
+- internal logical-value identities and pre-allocation operations
+- explicit and inferred observation contracts with typed bases and reasons
+- classical, quantum, and hybrid function-effect contracts
+- source-level aliasing, escape, reset, and conversion rules
 - diagnostics with original Python-compatible source ranges
 
-## Milestone 2 — decorated Python frontend
+## Milestone 2 — hand-built logical allocation slice
+
+- hand-build a logical Bell program using semantic identities
+- lower it through Daidalon into allocated `CircuitIR`
+- infer lifetimes and peak allocation
+- add `AllocationPlan` and logical-to-IR provenance
+- expose logical names in source-to-trace links and resource reports
+
+## Milestone 3 — decorated Python frontend and inferred observations
 
 - `@quantum` capture using Python's AST
 - logical `Qubit()` creation and typed quantum parameters
-- lowering through Daidalon into allocated `CircuitIR`
-- source-to-trace links that display logical names
-- extension-aware diagnostics and source transformation
+- infer terminal `Qubit`-to-`Bit` observations
+- add extension-aware diagnostics and source transformation only when justified
+- defer `.ari` loading and editor parsing until the valid-Python path is proven
 
-## Milestone 3 — interactive debugging
+## Milestone 4 — staged noisy simulation and reliability planning
+
+- define channel, leakage, correlation, and device-profile contracts
+- add a small density-matrix noisy simulator
+- schedule operations and model T1/T2 idle decoherence
+- estimate bare-execution failure against reliability goals
+- add pluggable protection-planning interfaces and Pareto resource reporting
+- add encoded-QEC simulation and decoder integration only after these earlier slices
+
+## Milestone 5 — interactive debugging
 
 - operation-by-operation snapshots
 - breakpoints and watch expressions
@@ -51,7 +73,7 @@
 - phase and interference explanations
 - entanglement provenance
 
-## Milestone 4 — Studio
+## Milestone 6 — Studio
 
 - editor and language server
 - synchronized code/circuit/state panes
@@ -59,7 +81,7 @@
 - project-driven tutorials
 - reproducible Capsules
 
-## Milestone 5 — providers and distribution
+## Milestone 7 — providers and distribution
 
 - provider-neutral execution protocol
 - cloud hardware adapters
