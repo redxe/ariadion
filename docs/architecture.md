@@ -17,6 +17,10 @@ Ariadion SDK ─────────────┴────────�
 
 The compiler produces immutable semantic IR. Runtime backends consume IR. Debuggers and visualizations observe execution artifacts but do not change source semantics. `ariadion-core` owns neutral identity and source-location contracts so the language model and IR remain siblings. Daidalon preserves source references in lowered operations and diagnostics while assigning distinct IR-operation IDs for generated compiler output.
 
+`ariadion-syntax` currently depends only on `ariadion-core`. A future resolved and
+typed source-semantic model will bridge native syntax into Daidalon without making
+the syntax package depend on IR, runtime, simulators, or Theonoe.
+
 ## Object model
 
 Objects clarify ownership, invariants, and relationships; they do not justify
@@ -32,6 +36,13 @@ native-language modeling rules.
 A small Python-first builder. It records user intent and source-level operations,
 including explicit degree, radian, and turn-based rotation angles. It deliberately
 does not simulate or optimize.
+
+### `ariadion-syntax`
+
+Immutable token and source-AST contracts for native `.ari` programs. It preserves
+written identifiers, qubit references, angle suffixes, source ranges, and durable
+node IDs without parsing, resolving names, calculating canonical values, or
+depending on compiled IR. See [the native syntax specification](../specs/syntax.md).
 
 ### `ariadion-core`
 

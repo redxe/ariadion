@@ -94,6 +94,7 @@ packages/
   sdk/             Ariadion public facade
   core/            shared identity and source-location contracts
   language/        Python-first program model
+  syntax/          immutable native .ari token and source-AST contracts
   ir/              semantic circuit IR
   daidalon/        compiler and validation passes
   runtime/         orchestration layer
@@ -118,6 +119,6 @@ tests/               vertical-slice tests
 - **Teach through execution:** tutorials and diagnostics should use the same runtime as real projects.
 
 See [`docs/architecture.md`](docs/architecture.md), [the object-model design
-guide](docs/object-model.md), [`specs/language.md`](specs/language.md),
-[`specs/runtime.md`](specs/runtime.md), [`specs/inspection.md`](specs/inspection.md),
-and [`specs/debugger.md`](specs/debugger.md).
+guide](docs/object-model.md), [`specs/language.md`](specs/language.md), [the
+native syntax specification](specs/syntax.md), [`specs/runtime.md`](specs/runtime.md),
+[`specs/inspection.md`](specs/inspection.md), and [`specs/debugger.md`](specs/debugger.md).

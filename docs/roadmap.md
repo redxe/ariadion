@@ -12,11 +12,16 @@
 - structured trace view models and CLI step navigation
 - typed angles with `RX`, `RY`, and `RZ` rotation gates
 - human-readable, structured explanations for arbitrary rotations
+- native Ariadion grammar and immutable source AST contracts
 
 ## Next sequence
 
-1. define native Ariadion syntax and source AST;
-2. an interactive tutorial and Studio trace panel.
+1. define named quantum registers and explicit basis semantics;
+2. lex and parse `.ari` files into the source AST;
+3. add name resolution and a typed semantic model;
+4. lower native programs through Daidalon into existing IR;
+5. run `.ari` files through the current CLI and debugger;
+6. add an interactive tutorial and Studio trace panel.
 
 ## Milestone 1 — language semantics
 

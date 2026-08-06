@@ -27,9 +27,9 @@ owner's data but must not silently repair, reorder, or reinterpret it.
 | `TraceDebuggerSession` | Immutable | Current trace-step selection and frontend-ready projection | Terminal input, source mutation, or simulation |
 | Theonoe analysis | Immutable | State reports, transitions, exact effects, and educational interpretations | Trace capture, execution policy, or rendering |
 
-A future serialized debugger document should be an aggregate built from a matching
-`CircuitIR`, `ExecutionTrace`, and `TraceInspection`. It must validate those links
-rather than let a frontend combine arbitrary artifacts.
+`TraceDebuggerSession.to_dict()` already produces the current serialized debugger
+document from a matching `CircuitIR`, `ExecutionTrace`, and `TraceInspection`. It
+validates those links rather than let a frontend combine arbitrary artifacts.
 
 The practical question for every new rule is: **which object is allowed to
 guarantee this invariant?** For example, operation order belongs to `CircuitIR`,

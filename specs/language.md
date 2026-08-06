@@ -83,3 +83,10 @@ without a file or position.
 ## Basis direction
 
 The next language revision will attach an explicit basis descriptor to preparation, observation, and debugging operations. Basis conversion must appear in IR rather than being inferred by a backend.
+
+## Native syntax direction
+
+The parser-free native `.ari` source contract is specified separately in
+[`specs/syntax.md`](syntax.md). It preserves written syntax and source identity
+before future name resolution, type checking, and Daidalon lowering connect it to
+this Python-first source model and semantic IR.
