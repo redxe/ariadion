@@ -6,10 +6,12 @@ from unittest.mock import patch
 
 import ariadion_simulator.statevector as statevector
 from ariadion import Program, ProgramId, SourceNodeId, run
-from ariadion_ir import OpCode
+from ariadion_core import IrOperationId
+from ariadion_ir import CircuitIR, OpCode, Operation
 from ariadion_runtime import (
     ExecutionMode,
     ExecutionTrace,
+    MeasurementBitOrder,
     MeasurementRecordKind,
     TraceCaptureOptions,
 )
@@ -136,6 +138,31 @@ class TraceSimulationTests(unittest.TestCase):
         self.assertEqual(measurement.probabilities, (0.0, 1.0))
         self.assertEqual(measurement_step.before, measurement_step.after)
         self.assertEqual(result.simulation.amplitudes, (0j, -1 + 0j))
+
+    def test_measurement_targets_map_to_probability_bits_lsb_first(self) -> None:
+        circuit = CircuitIR(
+            ProgramId("examples/measurement-bit-order.py"),
+            "measurement-bit-order",
+            2,
+            (
+                Operation(OpCode.X, (0,), IrOperationId("bit-order:x")),
+                Operation(
+                    OpCode.MEASURE,
+                    (0, 1),
+                    IrOperationId("bit-order:measure"),
+                ),
+            ),
+        )
+
+        execution = simulate(circuit, trace=TraceCaptureOptions(enabled=True))
+        self.assertIsNotNone(execution.trace)
+        assert execution.trace is not None
+        measurement = execution.trace.steps[1].measurement
+
+        self.assertIsNotNone(measurement)
+        assert measurement is not None
+        self.assertEqual(measurement.bit_order, MeasurementBitOrder.TARGETS_LSB_FIRST)
+        self.assertEqual(measurement.probabilities, (0.0, 1.0, 0.0, 0.0))
 
     def test_norm_failures_report_the_operation_and_observed_value(self) -> None:
         circuit = compile_program(Program(1, program_id=ProgramId("examples/norm.py")).h(0))

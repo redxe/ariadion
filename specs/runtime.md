@@ -48,6 +48,17 @@ absolute tolerance of $10^{-12}$. The reference simulator emits exact
 probabilities without collapsing the state vector; sampling and collapse require
 an explicit future runtime policy.
 
+### Measurement bit order
+
+Measurement data uses the fixed `targets_lsb_first` convention. For a target
+tuple `(q0, q1, ..., qN)`, target `targets[i]` maps to outcome bit `i`; therefore
+`targets[0]` is the least-significant bit in an exact probability index. For
+example, measuring targets `(q0, q1)` in a state with `q0 = 1` and `q1 = 0`
+places all probability at index `1` (`0b01`). Sampled outcome tuples remain in
+target order, so `outcome[i]` belongs to `targets[i]`. Consumers must use the
+serialized `MeasurementEvent.bit_order` value instead of inferring target mapping
+from a rendered binary string.
+
 ## Per-step inspection
 
 Consumers can explicitly project a captured `ExecutionTrace` into a

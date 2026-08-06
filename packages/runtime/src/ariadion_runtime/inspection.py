@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from ariadion_core import IrOperationId, ProgramId, SourceRef, canonical_json
-from ariadion_ir import OpCode
+from ariadion_ir import OpCode, OperationProvenance
 from theonoe import (
     DEFAULT_EPSILON,
     SEPARABILITY_ABS_TOLERANCE,
@@ -32,6 +32,7 @@ class TraceStepInspection:
     controls: tuple[int, ...]
     key: str | None
     source: SourceRef | None
+    provenance: OperationProvenance | None
     measurement: MeasurementEvent | None
     transition: StateTransition
 
@@ -45,6 +46,9 @@ class TraceStepInspection:
                 "controls": list(self.controls),
                 "key": self.key,
                 "source": self.source.to_dict() if self.source is not None else None,
+                "provenance": (
+                    self.provenance.to_dict() if self.provenance is not None else None
+                ),
             },
             "measurement": self.measurement.to_dict() if self.measurement is not None else None,
             "transition": self.transition.to_dict(),
@@ -127,6 +131,7 @@ def inspect_execution_trace(
                 controls=step.operation.controls,
                 key=step.operation.key,
                 source=step.source,
+                provenance=step.provenance,
                 measurement=step.measurement,
                 transition=inspect_state_transition(
                     step.before.amplitudes,

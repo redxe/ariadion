@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 
 from ariadion import (
     Program,
@@ -52,6 +53,20 @@ class TraceDebuggerTests(unittest.TestCase):
         self.assertEqual(payload["operation"]["opcode"], "H")
         self.assertEqual(payload["operation"]["source"]["source_node_id"], "node:debugger:h")
 
+        document = json.loads(session.to_json())
+        self.assertEqual(document["schema_version"], 1)
+        self.assertEqual(document["current_step_index"], 0)
+        self.assertEqual(document["circuit"]["id"], session.circuit.id)
+        self.assertEqual(
+            document["circuit"]["operations"][1]["id"],
+            session.trace.steps[1].ir_operation_id,
+        )
+        self.assertEqual(document["trace"]["circuit_id"], session.trace.circuit_id)
+        self.assertEqual(
+            document["inspection"]["circuit_id"],
+            session.inspection.circuit_id,
+        )
+
     def test_session_navigation_is_immutable_and_bounded(self) -> None:
         session = self._bell_session()
 
@@ -64,6 +79,21 @@ class TraceDebuggerTests(unittest.TestCase):
         self.assertEqual(session.go_to(1), next_session)
         with self.assertRaises(TraceDebuggerError):
             session.go_to(2)
+
+    def test_session_rejects_inspection_metadata_from_another_operation(self) -> None:
+        session = self._bell_session()
+        mismatched_step = replace(session.inspection.steps[0], opcode=OpCode.X)
+        mismatched_inspection = replace(
+            session.inspection,
+            steps=(mismatched_step, *session.inspection.steps[1:]),
+        )
+
+        with self.assertRaisesRegex(TraceDebuggerError, "metadata must match"):
+            TraceDebuggerSession(
+                session.circuit,
+                session.trace,
+                mismatched_inspection,
+            )
 
     def test_active_circuit_render_marks_the_selected_operation(self) -> None:
         session = self._bell_session()
@@ -93,7 +123,11 @@ class TraceDebuggerTests(unittest.TestCase):
         global_phase = render_trace_step(session.view_at(1))
         measurement = render_trace_step(session.view_at(2))
         self.assertIn("Global phase: +3.141593 rad (unobservable)", global_phase)
-        self.assertIn("Exact measurement probabilities (q0, key='result'):", measurement)
+        self.assertIn(
+            "Exact measurement probabilities (q0, key='result', "
+            "bit order=targets_lsb_first):",
+            measurement,
+        )
         self.assertIn("|1> p=1.000000", measurement)
 
 

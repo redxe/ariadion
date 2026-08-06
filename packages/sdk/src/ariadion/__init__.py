@@ -2,10 +2,12 @@ from ariadion_language import Program, ProgramId, SourceNodeId, SourceRange
 from ariadion_runtime import (
     ExecutionTrace,
     INSPECTION_SCHEMA_VERSION,
+    MeasurementBitOrder,
     RunResult,
     StateSnapshot,
     TraceDebuggerError,
     TraceDebuggerSession,
+    TRACE_DEBUGGER_SCHEMA_VERSION,
     TraceInspection,
     TraceCaptureOptions,
     TraceStepViewModel,
@@ -27,6 +29,7 @@ def run(
 __all__ = [
     "ExecutionTrace",
     "INSPECTION_SCHEMA_VERSION",
+    "MeasurementBitOrder",
     "Program",
     "ProgramId",
     "RunResult",
@@ -35,6 +38,7 @@ __all__ = [
     "StateSnapshot",
     "TraceDebuggerError",
     "TraceDebuggerSession",
+    "TRACE_DEBUGGER_SCHEMA_VERSION",
     "TraceInspection",
     "TraceCaptureOptions",
     "TraceStepViewModel",

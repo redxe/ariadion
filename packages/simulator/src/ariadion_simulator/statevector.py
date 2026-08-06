@@ -214,6 +214,8 @@ def _measurement_probabilities(
     state: list[complex],
     targets: tuple[int, ...],
 ) -> tuple[float, ...]:
+    """Return exact probabilities with ``targets[i]`` mapped to outcome bit ``i``."""
+
     probabilities = [0.0] * (1 << len(targets))
     for basis_index, amplitude in enumerate(state):
         outcome = 0

@@ -13,6 +13,7 @@ from ariadion_runtime import (
     ExecutionMode,
     ExecutionTrace,
     MeasurementEvent,
+    MeasurementBitOrder,
     MeasurementRecordKind,
     ResourceMetric,
     StateSnapshot,
@@ -111,6 +112,10 @@ class TraceContractTests(unittest.TestCase):
         sampled_step = TraceStep(0, operation, snapshot, snapshot, measurement=sampled)
 
         self.assertEqual(exact.to_dict()["kind"], "exact_probabilities")
+        self.assertEqual(
+            exact.to_dict()["bit_order"],
+            MeasurementBitOrder.TARGETS_LSB_FIRST.value,
+        )
         self.assertEqual(sampled.to_dict()["kind"], "sampled_outcome")
         with self.assertRaisesRegex(ValueError, "exact execution traces"):
             ExecutionTrace(circuit.id, snapshot, (sampled_step,))

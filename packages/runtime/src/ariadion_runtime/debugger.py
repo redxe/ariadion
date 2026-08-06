@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Final
 
 from ariadion_core import IrOperationId, SourceRef, canonical_json
 from ariadion_ir import CircuitIR, Operation, OperationProvenance
@@ -10,8 +11,11 @@ from theonoe import (
     StateReport,
 )
 
-from .inspection import TraceInspection
-from .trace import ExecutionTrace, MeasurementEvent
+from .inspection import TraceInspection, TraceStepInspection
+from .trace import ExecutionTrace, MeasurementEvent, TraceStep
+
+
+TRACE_DEBUGGER_SCHEMA_VERSION: Final = 1
 
 
 class TraceDebuggerError(ValueError):
@@ -67,16 +71,7 @@ class TraceStepViewModel:
             "step_number": self.step_number,
             "step_count": self.step_count,
             "ir_operation_id": self.ir_operation_id,
-            "operation": {
-                "opcode": self.operation.opcode.value,
-                "targets": list(self.operation.targets),
-                "controls": list(self.operation.controls),
-                "key": self.operation.key,
-                "source": self.source.to_dict() if self.source is not None else None,
-                "provenance": (
-                    self.provenance.to_dict() if self.provenance is not None else None
-                ),
-            },
+            "operation": self.operation.to_dict(),
             "before": self.before.to_dict(),
             "after": self.after.to_dict(),
             "basis_state_changes": [
@@ -136,6 +131,10 @@ class TraceDebuggerSession:
                 raise TraceDebuggerError("debugger steps must be contiguous from zero")
             if trace_step.ir_operation_id != inspection_step.ir_operation_id:
                 raise TraceDebuggerError("debugger step operation IDs must match")
+            if not _inspection_metadata_matches_trace(inspection_step, trace_step):
+                raise TraceDebuggerError(
+                    "debugger inspection metadata must match the trace operation"
+                )
 
     @property
     def step_count(self) -> int:
@@ -186,6 +185,20 @@ class TraceDebuggerSession:
         self._validate_step_index(step_index)
         return replace(self, current_step_index=step_index)
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialize the complete debugger document for structured frontends."""
+
+        return {
+            "schema_version": TRACE_DEBUGGER_SCHEMA_VERSION,
+            "current_step_index": self.current_step_index,
+            "circuit": self.circuit.to_dict(),
+            "trace": self.trace.to_dict(),
+            "inspection": self.inspection.to_dict(),
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
     def _validate_step_index(self, step_index: int) -> None:
         if isinstance(step_index, bool) or not isinstance(step_index, int):
             raise TraceDebuggerError("debugger step index must be an integer")
@@ -195,3 +208,21 @@ class TraceDebuggerSession:
             raise TraceDebuggerError(
                 f"debugger step index must be between 0 and {self.step_count - 1}"
             )
+
+
+def _inspection_metadata_matches_trace(
+    inspection_step: TraceStepInspection,
+    trace_step: TraceStep,
+) -> bool:
+    """Return whether an inspection step retains its corresponding trace metadata."""
+
+    operation = trace_step.operation
+    return (
+        inspection_step.opcode is operation.opcode
+        and inspection_step.targets == operation.targets
+        and inspection_step.controls == operation.controls
+        and inspection_step.key == operation.key
+        and inspection_step.source == operation.source
+        and inspection_step.provenance == operation.provenance
+        and inspection_step.measurement == trace_step.measurement
+    )

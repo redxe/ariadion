@@ -1,5 +1,10 @@
 from .runtime import RunResult, run_program
-from .debugger import TraceDebuggerError, TraceDebuggerSession, TraceStepViewModel
+from .debugger import (
+	TRACE_DEBUGGER_SCHEMA_VERSION,
+	TraceDebuggerError,
+	TraceDebuggerSession,
+	TraceStepViewModel,
+)
 from .inspection import (
 	INSPECTION_SCHEMA_VERSION,
 	TraceInspection,
@@ -11,6 +16,7 @@ from .trace import (
 	ExecutionMetadata,
 	ExecutionMode,
 	ExecutionTrace,
+	MeasurementBitOrder,
 	MeasurementEvent,
 	MeasurementRecordKind,
 	ResourceMetric,
@@ -26,6 +32,7 @@ __all__ = [
 	"ExecutionMode",
 	"ExecutionTrace",
 	"INSPECTION_SCHEMA_VERSION",
+	"MeasurementBitOrder",
 	"MeasurementEvent",
 	"MeasurementRecordKind",
 	"ResourceMetric",
@@ -34,6 +41,7 @@ __all__ = [
 	"TraceStepInspection",
 	"StateRepresentation",
 	"StateSnapshot",
+	"TRACE_DEBUGGER_SCHEMA_VERSION",
 	"TraceDebuggerError",
 	"TraceDebuggerSession",
 	"TraceCaptureOptions",

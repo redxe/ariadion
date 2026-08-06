@@ -78,6 +78,22 @@ class Operation:
     def source_range(self) -> SourceRange | None:
         return self.source.source_range if self.source is not None else None
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "opcode": self.opcode.value,
+            "targets": list(self.targets),
+            "controls": list(self.controls),
+            "key": self.key,
+            "source": self.source.to_dict() if self.source is not None else None,
+            "provenance": (
+                self.provenance.to_dict() if self.provenance is not None else None
+            ),
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
 
 @dataclass(frozen=True, slots=True)
 class CircuitIR:
@@ -91,3 +107,14 @@ class CircuitIR:
 
     def operation_count(self) -> int:
         return len(self.operations)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "qubit_count": self.qubit_count,
+            "operations": [operation.to_dict() for operation in self.operations],
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())

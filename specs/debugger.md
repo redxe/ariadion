@@ -21,8 +21,17 @@ It is immutable: `next()`, `previous()`, and `go_to()` return a new session.
 - entanglement changes and any unobservable global-phase delta;
 - exact measurement data when the operation measures qubits.
 
-The model has `to_dict()` and canonical `to_json()` output so Studio and future
-frontends consume data rather than scrape terminal text.
+`TraceStepViewModel` has `to_dict()` and canonical `to_json()` output for an
+individual active step. `TraceDebuggerSession` serializes a complete debugger
+document with its own `schema_version`, `current_step_index`, the complete
+serialized `CircuitIR`, `ExecutionTrace`, and `TraceInspection`. Studio can
+reconstruct the whole circuit and every inspected operation directly from that
+document instead of scraping terminal text.
+
+The session validates every inspection step against the matching trace operation:
+operation ID, opcode, targets, controls, key, source, compiler provenance, and
+measurement record must agree. This prevents a UI from combining Theonoe analysis
+with metadata from a different operation.
 
 ## CLI behavior
 
@@ -51,3 +60,7 @@ visible before/after basis states, probability and relative-phase changes,
 unobservable global phase when nonzero, entanglement changes, measurement
 probabilities, source data, and compiler provenance. Terminal command parsing
 and input remain outside this rendering function.
+
+Measurement output carries the runtime `targets_lsb_first` convention: target
+`targets[i]` maps to outcome bit `i`. See the runtime trace contract for the
+complete measurement-bit ordering definition.

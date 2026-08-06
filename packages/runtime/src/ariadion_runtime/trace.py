@@ -37,6 +37,12 @@ class MeasurementRecordKind(str, Enum):
     SAMPLED_OUTCOME = "sampled_outcome"
 
 
+class MeasurementBitOrder(str, Enum):
+    """Maps target positions to outcome bit positions for every measurement."""
+
+    TARGETS_LSB_FIRST = "targets_lsb_first"
+
+
 @dataclass(frozen=True, slots=True)
 class TraceCaptureOptions:
     """Controls whether a runtime producer retains intermediate snapshots."""
@@ -163,7 +169,14 @@ class StateSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class MeasurementEvent:
-    """A measurement record that explicitly separates exact and sampled data."""
+    """A measurement record that explicitly separates exact and sampled data.
+
+    ``targets[i]`` maps to outcome bit ``i``. Therefore exact probability index
+    ``outcome`` uses the least-significant bit for ``targets[0]``. Sampled
+    ``outcome`` tuples are in target order, so ``outcome[i]`` belongs to
+    ``targets[i]``. Serialized consumers must use ``bit_order`` rather than
+    inferring this mapping from a displayed binary string.
+    """
 
     operation_id: IrOperationId
     targets: tuple[int, ...]
@@ -171,11 +184,14 @@ class MeasurementEvent:
     key: str | None = None
     probabilities: tuple[float, ...] = ()
     outcome: tuple[int, ...] | None = None
+    bit_order: MeasurementBitOrder = MeasurementBitOrder.TARGETS_LSB_FIRST
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.operation_id, label="measurement operation ID")
         if not isinstance(self.kind, MeasurementRecordKind):
             raise ValueError("measurement record kind must be a MeasurementRecordKind")
+        if not isinstance(self.bit_order, MeasurementBitOrder):
+            raise ValueError("measurement bit_order must be a MeasurementBitOrder")
         _require_tuple(self.targets, label="measurement targets")
         if not self.targets:
             raise ValueError("measurement targets must not be empty")
@@ -233,6 +249,7 @@ class MeasurementEvent:
             "key": self.key,
             "probabilities": list(self.probabilities),
             "outcome": list(self.outcome) if self.outcome is not None else None,
+            "bit_order": self.bit_order.value,
         }
 
     def to_json(self) -> str:
@@ -389,15 +406,7 @@ def _complex_to_dict(value: complex) -> dict[str, float]:
 
 
 def _operation_to_dict(operation: Operation) -> dict[str, object]:
-    return {
-        "id": operation.id,
-        "opcode": operation.opcode.value,
-        "targets": list(operation.targets),
-        "controls": list(operation.controls),
-        "key": operation.key,
-        "source": operation.source.to_dict() if operation.source is not None else None,
-        "provenance": operation.provenance.to_dict() if operation.provenance is not None else None,
-    }
+    return operation.to_dict()
 
 
 def _require_tuple(value: object, *, label: str) -> None:

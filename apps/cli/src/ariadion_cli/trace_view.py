@@ -157,11 +157,17 @@ def _render_measurement(view: TraceStepViewModel) -> list[str]:
     target_count = len(measurement.targets)
     target_text = _format_qubits(measurement.targets)
     key_text = f", key={measurement.key!r}" if measurement.key is not None else ""
+    bit_order_text = f", bit order={measurement.bit_order.value}"
     if measurement.outcome is not None:
         outcome = "".join(str(bit) for bit in measurement.outcome)
-        return [f"Measurement outcome ({target_text}{key_text}): |{outcome}>"]
+        return [
+            f"Measurement outcome ({target_text}{key_text}{bit_order_text}): "
+            f"|{outcome}>"
+        ]
 
-    lines = [f"Exact measurement probabilities ({target_text}{key_text}):"]
+    lines = [
+        f"Exact measurement probabilities ({target_text}{key_text}{bit_order_text}):"
+    ]
     for index, probability in enumerate(measurement.probabilities):
         lines.append(f"  |{index:0{target_count}b}> p={probability:.6f}")
     return lines
