@@ -20,7 +20,7 @@ from ariadion_ir import CircuitIR, OpCode, Operation, OperationProvenance
 from ariadion_simulator import SimulationResult, SimulationTrace, SimulationTraceStep
 
 
-EXECUTION_TRACE_SCHEMA_VERSION: Final = 2
+EXECUTION_TRACE_SCHEMA_VERSION: Final = 3
 _EXACT_MEASUREMENT_PROBABILITY_ABS_TOLERANCE: Final = 1e-12
 
 
@@ -51,6 +51,13 @@ class MeasurementBitOrder(str, Enum):
     TARGETS_LSB_FIRST = "targets_lsb_first"
 
 
+class ProbabilityScope(str, Enum):
+    """Whether probability data describes one measurement or all returned bits."""
+
+    MARGINAL = "marginal"
+    JOINT_RETURN = "joint_return"
+
+
 @dataclass(frozen=True, slots=True)
 class ExactClassicalDistribution:
     """One exact joint distribution over ordered declared classical outputs."""
@@ -58,6 +65,7 @@ class ExactClassicalDistribution:
     result_ids: tuple[ClassicalBitId, ...]
     probabilities: tuple[float, ...]
     bit_order: MeasurementBitOrder = MeasurementBitOrder.TARGETS_LSB_FIRST
+    scope: ProbabilityScope = ProbabilityScope.JOINT_RETURN
 
     def __post_init__(self) -> None:
         _require_tuple(self.result_ids, label="exact classical distribution result_ids")
@@ -73,6 +81,12 @@ class ExactClassicalDistribution:
         if not isinstance(self.bit_order, MeasurementBitOrder):
             raise ValueError(
                 "exact classical distribution bit_order must be MeasurementBitOrder"
+            )
+        if not isinstance(self.scope, ProbabilityScope):
+            raise ValueError("exact classical distribution scope must be a ProbabilityScope")
+        if self.scope is not ProbabilityScope.JOINT_RETURN:
+            raise ValueError(
+                "exact classical distributions must use joint return probability scope"
             )
         expected_probability_count = 1 << len(self.result_ids)
         if len(self.probabilities) != expected_probability_count:
@@ -102,6 +116,7 @@ class ExactClassicalDistribution:
             "result_ids": list(self.result_ids),
             "probabilities": list(self.probabilities),
             "bit_order": self.bit_order.value,
+            "scope": self.scope.value,
         }
 
     def to_json(self) -> str:
@@ -253,6 +268,7 @@ class MeasurementEvent:
     execution_kind: ObservationExecutionKind = (
         ObservationExecutionKind.EXACT_TERMINAL_DISTRIBUTION
     )
+    scope: ProbabilityScope = ProbabilityScope.MARGINAL
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.operation_id, label="measurement operation ID")
@@ -264,6 +280,10 @@ class MeasurementEvent:
             raise ValueError(
                 "measurement execution_kind must be an ObservationExecutionKind"
             )
+        if not isinstance(self.scope, ProbabilityScope):
+            raise ValueError("measurement scope must be a ProbabilityScope")
+        if self.scope is not ProbabilityScope.MARGINAL:
+            raise ValueError("measurement events must use marginal probability scope")
         _require_tuple(self.targets, label="measurement targets")
         if not self.targets:
             raise ValueError("measurement targets must not be empty")
@@ -329,6 +349,7 @@ class MeasurementEvent:
             "outcome": list(self.outcome) if self.outcome is not None else None,
             "bit_order": self.bit_order.value,
             "execution_kind": self.execution_kind.value,
+            "scope": self.scope.value,
         }
 
     def to_json(self) -> str:

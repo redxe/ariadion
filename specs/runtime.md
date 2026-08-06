@@ -54,13 +54,28 @@ absolute tolerance of $10^{-12}$. The reference simulator emits exact
 probabilities without collapsing the state vector; sampling and collapse require
 an explicit future runtime policy.
 
+Every per-operation `MeasurementEvent` serializes `scope = marginal`: its exact
+probabilities describe only that operation's targets. They do not encode returned
+classical correlation by themselves.
+
 When runtime executes a `LogicalCompilationResult`, its `ReadoutPlan` maps lowered
-observations to the declared flat output order. Runtime returns one
-`ExactClassicalDistribution` over all ordered `ClassicalBitId` values. This preserves
-correlations: Bell results in order `(left, right)` are $00 \mapsto 0.5$,
-$01 \mapsto 0$, $10 \mapsto 0$, and $11 \mapsto 0.5$, not two unrelated 50/50
-records. Discarded observations remain trace events but are absent from that public
-output distribution.
+observations and preserves the structured `ReturnShape`. Runtime returns one
+`ExactClassicalDistribution` with `scope = joint_return` over its ordered classical
+leaves only. This preserves correlations: Bell results in order `(left, right)` are
+$00 \mapsto 0.5$, $01 \mapsto 0$, $10 \mapsto 0$, and $11 \mapsto 0.5$, not two
+unrelated 50/50 records. Discarded observations remain trace events but are absent
+from that public distribution.
+
+`LogicalRunResult.returned_quantum_values` contains one `ReturnedQuantumValue` per
+quantum return leaf, with its logical ID, allocated slot, and display name. It is a
+handle into `pre_observation_state` / retained analytical state, not a copied
+single-qubit state. A returned `Qubit` is not observed and may remain entangled
+with other returned quantum values. A quantum-only or `None` return exposes no
+classical distribution; a mixed return exposes both the joint classical artifact
+and quantum handles.
+
+Per-observation exact probabilities are marginals. The complete returned classical
+result is a separately calculated joint distribution.
 
 ### Measurement bit order
 
@@ -95,9 +110,10 @@ without requiring a specific simulator or provider implementation.
 
 ## Serialization and versioning
 
-`ExecutionTrace` uses `schema_version = 2`, which added explicit observation
-execution kinds. Schema-v1 traces are rejected rather than silently interpreted
-under terminal analytical-projection semantics. All contract records provide
+`ExecutionTrace` uses `schema_version = 3`, which adds explicit marginal probability
+scope to measurement events after schema v2 added observation execution kinds.
+Older traces are rejected rather than silently interpreted under terminal
+analytical-projection semantics. All contract records provide
 `to_dict()` and canonical `to_json()` output. Consumers must reject unsupported
 future schema versions rather than guessing their meaning. Additive optional fields
 are preferred for compatible evolution; semantic changes require a new schema

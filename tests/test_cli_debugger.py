@@ -159,7 +159,7 @@ class CliDebuggerTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         rendered = "\n".join(output)
-        self.assertIn("Exact terminal observation distribution", rendered)
+        self.assertIn("Exact terminal observation marginal", rendered)
         self.assertIn("analytical, retained state unchanged", rendered)
 
     def test_run_step_rejects_zero_and_files_without_programs(self) -> None:

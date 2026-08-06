@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TypeAlias
+from math import isclose, isfinite, pi, tau
+from typing import Final, TypeAlias
 
 from ariadion_core import (
     ClassicalBitId,
@@ -13,9 +14,17 @@ from ariadion_core import (
     canonical_json,
     require_nonempty_identifier,
 )
+from ariadion_language import Angle, AngleUnit, Basis
 
 
 SemanticSourceRef: TypeAlias = SourceRef
+_SEMANTIC_ANGLE_RADIANS_ABS_TOLERANCE: Final = 1e-12
+_SEMANTIC_ANGLE_RADIANS_REL_TOLERANCE: Final = 1e-15
+_SEMANTIC_ANGLE_UNIT_TO_RADIANS = {
+    "degrees": pi / 180,
+    "radians": 1.0,
+    "turns": tau,
+}
 
 
 class FunctionEffect(str, Enum):
@@ -45,43 +54,90 @@ class ObservationReason(str, Enum):
     PROGRAM_OUTPUT = "program_output"
 
 
-@dataclass(frozen=True, slots=True)
-class Basis:
-    """A semantic basis descriptor whose name may later bind to a custom basis."""
+class ReturnValueKind(str, Enum):
+    """The explicit semantic kind of one scalar function-return value."""
 
-    name: str
+    CLASSICAL_BIT = "classical_bit"
+    QUANTUM_VALUE = "quantum_value"
+
+
+class SemanticAngleUnit(str, Enum):
+    """An explicit source unit preserved by a logical rotation instruction."""
+
+    DEGREES = "degrees"
+    RADIANS = "radians"
+    TURNS = "turns"
+
+
+class RotationAxis(str, Enum):
+    """The axis of a typed logical rotation instruction."""
+
+    X = "x"
+    Y = "y"
+    Z = "z"
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticAngle:
+    """A semantic source angle and its validated canonical-radians representation."""
+
+    source_value: float
+    source_unit: SemanticAngleUnit
+    radians: float
 
     def __post_init__(self) -> None:
-        require_nonempty_identifier(self.name, label="basis name")
+        if isinstance(self.source_value, bool) or not isinstance(
+            self.source_value,
+            (int, float),
+        ):
+            raise ValueError("semantic angle source_value must be numeric")
+        source_value = float(self.source_value)
+        if not isfinite(source_value):
+            raise ValueError("semantic angle source_value must be finite")
+        if not isinstance(self.source_unit, SemanticAngleUnit):
+            raise ValueError("semantic angle source_unit must be a SemanticAngleUnit")
+        if isinstance(self.radians, bool) or not isinstance(self.radians, (int, float)):
+            raise ValueError("semantic angle radians must be numeric")
+        radians = float(self.radians)
+        if not isfinite(radians):
+            raise ValueError("semantic angle radians must be finite")
+        expected_radians = source_value * _SEMANTIC_ANGLE_UNIT_TO_RADIANS[
+            self.source_unit.value
+        ]
+        if not isfinite(expected_radians):
+            raise ValueError("semantic angle source value must produce finite radians")
+        if not isclose(
+            radians,
+            expected_radians,
+            rel_tol=_SEMANTIC_ANGLE_RADIANS_REL_TOLERANCE,
+            abs_tol=_SEMANTIC_ANGLE_RADIANS_ABS_TOLERANCE,
+        ):
+            raise ValueError("semantic angle radians must match the source value and unit")
+        object.__setattr__(self, "source_value", source_value)
+        object.__setattr__(self, "radians", radians)
 
-    def to_dict(self) -> dict[str, str]:
-        return {"name": self.name}
+    @classmethod
+    def from_angle(cls, angle: Angle) -> SemanticAngle:
+        """Convert an explicit public ``Angle`` without accepting bare numerics."""
+
+        if not isinstance(angle, Angle):
+            raise ValueError("semantic angle conversion requires an Angle")
+        source_unit = {
+            AngleUnit.DEGREES: SemanticAngleUnit.DEGREES,
+            AngleUnit.RADIANS: SemanticAngleUnit.RADIANS,
+            AngleUnit.TURNS: SemanticAngleUnit.TURNS,
+        }[angle.source_unit]
+        return cls(angle.source_value, source_unit, angle.radians)
+
+    def to_dict(self) -> dict[str, float | str]:
+        return {
+            "source_value": self.source_value,
+            "source_unit": self.source_unit.value,
+            "radians": self.radians,
+        }
 
     def to_json(self) -> str:
         return canonical_json(self.to_dict())
-
-
-@dataclass(frozen=True, slots=True)
-class BasisNamespace:
-    """Public basis namespace kept distinct from gate-function names."""
-
-    @property
-    def x(self) -> Basis:
-        return Basis("x")
-
-    @property
-    def y(self) -> Basis:
-        return Basis("y")
-
-    @property
-    def z(self) -> Basis:
-        return Basis("z")
-
-    def named(self, name: str) -> Basis:
-        return Basis(name)
-
-
-basis = BasisNamespace()
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,8 +167,13 @@ class LogicalQubitValue:
 
 
 @dataclass(frozen=True, slots=True)
-class ClassicalBitValue:
-    """A declared classical result value before exact or sampled execution."""
+class ObservationResultValue:
+    """A declared classical value produced by one logical observation.
+
+    This is intentionally narrower than Ariadion's eventual classical-value model.
+    Future hybrid functions may also contain values from parameters, literals,
+    computation, and backend metadata.
+    """
 
     id: ClassicalBitId
     display_name: str | None = None
@@ -134,6 +195,93 @@ class ClassicalBitValue:
 
     def to_json(self) -> str:
         return canonical_json(self.to_dict())
+
+
+ClassicalBitValue = ObservationResultValue
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnValueRef:
+    """A tagged scalar leaf in a semantic function-return structure."""
+
+    kind: ReturnValueKind
+    value_id: ClassicalBitId | LogicalQubitId
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, ReturnValueKind):
+            raise ValueError("return value kind must be a ReturnValueKind")
+        require_nonempty_identifier(self.value_id, label="return value ID")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"kind": self.kind.value, "value_id": self.value_id}
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class ScalarReturn:
+    """A scalar return whose type is explicit in its value reference."""
+
+    value: ReturnValueRef
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, ReturnValueRef):
+            raise ValueError("scalar return value must be a ReturnValueRef")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "scalar", "value": self.value.to_dict()}
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class TupleReturn:
+    """An ordered, recursively structured tuple return."""
+
+    items: tuple[ReturnShape, ...]
+
+    def __post_init__(self) -> None:
+        _require_tuple(self.items, label="tuple return items")
+        if not all(isinstance(item, (ScalarReturn, TupleReturn, NoReturn)) for item in self.items):
+            raise ValueError("tuple return items must contain ReturnShape values")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "tuple", "items": [item.to_dict() for item in self.items]}
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class NoReturn:
+    """The explicit semantic representation of a Python ``None`` return."""
+
+    def to_dict(self) -> dict[str, str]:
+        return {"kind": "none"}
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+ReturnShape: TypeAlias = ScalarReturn | TupleReturn | NoReturn
+
+
+def return_value_refs(return_shape: ReturnShape) -> tuple[ReturnValueRef, ...]:
+    """Flatten tagged scalar leaves in deterministic left-to-right tree order."""
+
+    if isinstance(return_shape, NoReturn):
+        return ()
+    if isinstance(return_shape, ScalarReturn):
+        return (return_shape.value,)
+    if isinstance(return_shape, TupleReturn):
+        return tuple(
+            reference
+            for item in return_shape.items
+            for reference in return_value_refs(item)
+        )
+    raise ValueError("return shape must be a ReturnShape")
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +326,39 @@ class LogicalGateOperation:
 
 
 @dataclass(frozen=True, slots=True)
+class LogicalRotationOperation:
+    """One unit-bearing logical rotation before lowering to canonical IR radians."""
+
+    id: LogicalOperationId
+    axis: RotationAxis
+    target: LogicalQubitId
+    angle: SemanticAngle
+    source: SemanticSourceRef | None = None
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.id, label="logical rotation operation ID")
+        if not isinstance(self.axis, RotationAxis):
+            raise ValueError("logical rotation axis must be a RotationAxis")
+        require_nonempty_identifier(self.target, label="logical rotation target")
+        if not isinstance(self.angle, SemanticAngle):
+            raise ValueError("logical rotation angle must be a SemanticAngle")
+        if self.source is not None and not isinstance(self.source, SourceRef):
+            raise ValueError("logical rotation source must be SourceRef")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "axis": self.axis.value,
+            "target": self.target,
+            "angle": self.angle.to_dict(),
+            "source": self.source.to_dict() if self.source is not None else None,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
 class Observation:
     """A semantic observation boundary with its own instruction identity."""
 
@@ -213,7 +394,7 @@ class Observation:
         return canonical_json(self.to_dict())
 
 
-QuantumInstruction: TypeAlias = LogicalGateOperation | Observation
+QuantumInstruction: TypeAlias = LogicalGateOperation | LogicalRotationOperation | Observation
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,8 +405,8 @@ class LogicalProgram:
     name: str
     qubits: tuple[LogicalQubitValue, ...]
     instructions: tuple[QuantumInstruction, ...]
-    classical_bits: tuple[ClassicalBitValue, ...] = ()
-    outputs: tuple[ClassicalBitId | LogicalQubitId, ...] = ()
+    classical_bits: tuple[ObservationResultValue, ...] = ()
+    return_shape: ReturnShape = NoReturn()
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.id, label="logical program ID")
@@ -233,15 +414,16 @@ class LogicalProgram:
         _require_tuple(self.qubits, label="logical program qubits")
         _require_tuple(self.instructions, label="logical program instructions")
         _require_tuple(self.classical_bits, label="logical program classical_bits")
-        _require_tuple(self.outputs, label="logical program outputs")
+        if not isinstance(self.return_shape, (ScalarReturn, TupleReturn, NoReturn)):
+            raise ValueError("logical program return_shape must be a ReturnShape")
         if not all(isinstance(qubit, LogicalQubitValue) for qubit in self.qubits):
             raise ValueError("logical program qubits must contain LogicalQubitValue values")
-        if not all(isinstance(bit, ClassicalBitValue) for bit in self.classical_bits):
+        if not all(isinstance(bit, ObservationResultValue) for bit in self.classical_bits):
             raise ValueError(
-                "logical program classical_bits must contain ClassicalBitValue values"
+                "logical program classical_bits must contain ObservationResultValue values"
             )
         if not all(
-            isinstance(instruction, (LogicalGateOperation, Observation))
+            isinstance(instruction, (LogicalGateOperation, LogicalRotationOperation, Observation))
             for instruction in self.instructions
         ):
             raise ValueError("logical program instructions must contain QuantumInstruction values")
@@ -269,6 +451,7 @@ class LogicalProgram:
             label="logical program instruction IDs",
         )
         observed_result_ids: list[ClassicalBitId] = []
+        observed_qubit_ids: set[LogicalQubitId] = set()
         for instruction in self.instructions:
             _validate_source_program(
                 instruction.source,
@@ -278,8 +461,11 @@ class LogicalProgram:
             if isinstance(instruction, LogicalGateOperation):
                 _validate_logical_gate_arity(instruction)
                 referenced_qubits = instruction.controls + instruction.targets
+            elif isinstance(instruction, LogicalRotationOperation):
+                referenced_qubits = (instruction.target,)
             else:
                 referenced_qubits = (instruction.qubit_id,)
+                observed_qubit_ids.add(instruction.qubit_id)
                 observed_result_ids.append(instruction.result_id)
                 if instruction.result_id not in known_classical_bit_ids:
                     raise ValueError(
@@ -307,19 +493,49 @@ class LogicalProgram:
                 "logical program classical bit must have an observation producer: "
                 f"{missing_result_id}"
             )
-        for output in self.outputs:
-            require_nonempty_identifier(output, label="logical program output ID")
-            if output in known_classical_bit_ids:
-                if output not in observed_result_id_set:
+        for reference in return_value_refs(self.return_shape):
+            if reference.kind is ReturnValueKind.CLASSICAL_BIT:
+                if reference.value_id in known_classical_bit_ids:
+                    if reference.value_id not in observed_result_id_set:
+                        raise ValueError(
+                            "classical return must have an observation producer: "
+                            f"{reference.value_id}"
+                        )
+                elif reference.value_id in known_qubit_ids:
                     raise ValueError(
-                        "logical program classical outputs must have an observation producer: "
-                        f"{output}"
+                        "classical return kind cannot reference a logical qubit ID: "
+                        f"{reference.value_id}"
                     )
-            elif output not in known_qubit_ids:
-                raise ValueError(
-                    "logical program output references an undeclared value: "
-                    f"{output}"
-                )
+                else:
+                    raise ValueError(
+                        "classical return references an undeclared observation result: "
+                        f"{reference.value_id}"
+                    )
+            elif reference.kind is ReturnValueKind.QUANTUM_VALUE:
+                if reference.value_id in known_qubit_ids:
+                    if reference.value_id in observed_qubit_ids:
+                        raise ValueError(
+                            "quantum return cannot reference an observed logical qubit: "
+                            f"{reference.value_id}"
+                        )
+                elif reference.value_id in known_classical_bit_ids:
+                    raise ValueError(
+                        "quantum return kind cannot reference a classical observation result: "
+                        f"{reference.value_id}"
+                    )
+                else:
+                    raise ValueError(
+                        "quantum return references an undeclared logical qubit: "
+                        f"{reference.value_id}"
+                    )
+            else:  # pragma: no cover - protects future enum expansion
+                raise ValueError(f"unsupported return value kind: {reference.kind}")
+
+    @property
+    def outputs(self) -> tuple[ClassicalBitId | LogicalQubitId, ...]:
+        """Compatibility view that flattens return leaves without driving lowering."""
+
+        return tuple(reference.value_id for reference in return_value_refs(self.return_shape))
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -328,7 +544,7 @@ class LogicalProgram:
             "qubits": [qubit.to_dict() for qubit in self.qubits],
             "instructions": [instruction.to_dict() for instruction in self.instructions],
             "classical_bits": [bit.to_dict() for bit in self.classical_bits],
-            "outputs": list(self.outputs),
+            "return_shape": self.return_shape.to_dict(),
         }
 
     def to_json(self) -> str:

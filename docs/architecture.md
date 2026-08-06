@@ -8,10 +8,9 @@ Ariadion is both a programming model and an interactive environment. The initial
 
 ```text
 ariadion-core
-    ├── ariadion-language ─┐
-    ├── ariadion-ir ───────┼── Daidalon ──> ariadion-runtime
-    ├── ariadion-semantics ├──────────────> ariadion-runtime
-    └── ariadion-syntax ───┘   (future frontend input)
+    ├── ariadion-language ──> ariadion-semantics ─┐
+    ├── ariadion-ir ───────────────────────────────┼── Daidalon ──> ariadion-runtime
+    └── ariadion-syntax ───────────────────────────┘   (future frontend input)
 
 ariadion-runtime ──> simulator / Theonoe / visualization
 
@@ -28,9 +27,10 @@ and assigns distinct IR-operation IDs for generated compiler output.
 `ariadion-syntax` currently depends only on `ariadion-core`. A future resolved and
 typed source-semantic model will bridge Python-compatible extension syntax into
 Daidalon without making the syntax package depend on IR, runtime, simulators, or
-Theonoe. `ariadion-semantics` depends only on `ariadion-core`; Daidalon depends on
-it to lower logical values and instructions, while its reliability contracts remain
-planning-only inputs for later compiler stages.
+Theonoe. `ariadion-semantics` depends on `ariadion-core` and the public
+`ariadion-language` basis/angle contracts; Daidalon depends on it to lower logical
+values and instructions, while its reliability contracts remain planning-only
+inputs for later compiler stages.
 
 ## Frontend and managed allocation
 
@@ -148,21 +148,23 @@ native-language modeling rules.
 A small width-based Python builder for the current vertical slice. It records
 already allocated integer-target operations, including explicit degree, radian,
 and turn-based rotation angles. Alongside the builder, the package exposes
-immutable public `Qubit` and `Bit` domain values without adding them to the
-width-based API. The builder is a compatibility and migration mechanism; its next
-prototype will operate on `Qubit` values instead of requiring `Program(width)`.
+immutable public `Qubit`, `Bit`, `Basis`, and `basis` domain values without adding
+them to the width-based API. The builder is a compatibility and migration
+mechanism; its next prototype will operate on `Qubit` values instead of requiring
+`Program(width)`.
 
 ### `ariadion-semantics`
 
 Immutable pre-allocation contracts for logical quantum values, `LogicalProgram`,
-gate-shaped `QuantumInstruction` values, observations, declared `ClassicalBitValue`
-results, deterministic output order, function effects, reliability goals, layered
-noise profiles, composable simulation requests, and protection-plan descriptions.
-It depends only on `ariadion-core` and contains no allocated integer targets,
-circuit width, backend policy, noise engine, QEC planner, or lowering. Daidalon
-consumes the logical program contracts for the current declaration-order allocation
-slice; lifetime analysis, scheduling, reliability analysis, and optimized allocation
-remain future work.
+gate-shaped and typed rotation `QuantumInstruction` values, observations, declared
+`ObservationResultValue` results, tagged recursive return structure, function
+effects, reliability goals, layered noise profiles, composable simulation requests,
+and protection-plan descriptions. It depends on `ariadion-core` plus shared public
+language angle/basis contracts and contains no allocated integer targets, circuit
+width, backend policy, noise engine, QEC planner, or lowering. Daidalon consumes
+the logical program contracts for the current declaration-order allocation slice;
+lifetime analysis, scheduling, reliability analysis, and optimized allocation remain
+future work.
 
 ### `ariadion-syntax`
 
@@ -194,10 +196,13 @@ allocation.
 
 Validates resolved quantum programs, creates an explicit deterministic
 `LogicalSlotAllocationPlan` plus `ReadoutPlan`, and lowers current logical gate and
-Z-basis observation instructions to semantic IR. Lowered `MEASURE` operations carry
-declared result identity, basis, and reason as `ObservationMetadata`; output order
-is not inferred from operation order. The current `dense-no-reuse-v1` policy is
-intentionally not lifetime analysis. Future compiler passes will include
+Z-basis observation instructions plus typed logical rotations to semantic IR.
+Lowered `MEASURE` operations carry declared result identity, basis, and reason as
+`ObservationMetadata`; `ReadoutPlan` retains structured returns rather than
+inferring output type or nesting from operation order. Typed rotations preserve
+source-unit metadata and canonical radians through existing `RX`/`RY`/`RZ` IR.
+The current `dense-no-reuse-v1` policy is intentionally not lifetime analysis.
+Future compiler passes will include
 canonicalization, decomposition, routing, scheduling, bare-execution estimation,
 protection planning, resource estimation, physical allocation, and backend-specific
 lowering.
@@ -230,11 +235,12 @@ Turns semantic IR and execution snapshots into textual or structured views. The 
 
 Coordinates compilation, execution, inspection, and rendering. It is the first
 vertical slice used by the CLI, examples, and future Studio. For a compiled logical
-program, it combines simulator amplitudes with `ReadoutPlan.output_order` to return
-one `ExactClassicalDistribution`, preserving classical correlations rather than
-exposing independent marginal observations.
+program, it combines simulator amplitudes with structured `ReadoutPlan` classical
+leaves to return one joint `ExactClassicalDistribution`, preserving correlations
+rather than exposing independent marginal observations. It separately exposes
+returned quantum values as handles into the retained state, not copied qubit states.
 
-It also owns the versioned schema-v2 execution-trace contract consumed by debugger
+It also owns the versioned schema-v3 execution-trace contract consumed by debugger
 and Studio clients. It adapts simulator raw capture into that contract and projects
 it through Theonoe only when a consumer explicitly requests inspection, so capture
 and interpretation remain independently selectable. Measurement events distinguish
@@ -261,6 +267,12 @@ For the current exact terminal-observation path, the runtime calculates a joint
 classical distribution without sampling or mutating the retained analytical state.
 This is not physical post-measurement state evolution. Sampled collapse and
 mid-circuit feedback remain separate execution capabilities.
+
+A function return is a structured semantic artifact, not merely an ordered list of
+identifiers. Classical observation results and returned quantum values may coexist,
+and their Python tuple structure is preserved independently of allocation or
+measurement order. Per-observation exact probabilities are marginals; the complete
+returned classical result is a separately calculated joint distribution.
 
 ## Research references
 

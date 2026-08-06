@@ -22,7 +22,7 @@ owner's data but must not silently repair, reorder, or reinterpret it.
 | Aggregate root | Mutability | Owns | Does not own |
 | --- | --- | --- | --- |
 | `Program` | Mutable while building | Source declarations, source operations, and source construction order | Compiled semantics or execution results |
-| `LogicalProgram` | Immutable | Declared logical values, declared classical values, ordered outputs, quantum instructions, and logical-reference invariants | Slots, circuit width, backend policy, or execution results |
+| `LogicalProgram` | Immutable | Declared logical values, observation-result values, tagged return shape, quantum instructions, and logical-reference invariants | Slots, circuit width, backend policy, or execution results |
 | `CircuitIR` | Immutable | Qubit layout, compiled operation order, IR provenance, and validated observation metadata | UI formatting, trace continuity, or backend policy |
 | `ExecutionTrace` | Immutable | Execution metadata, initial snapshot, contiguous operation occurrences, state history, and observation execution kind | State interpretation or navigation |
 | `TraceDebuggerSession` | Immutable | Current trace-step selection and frontend-ready projection | Terminal input, source mutation, or simulation |
@@ -43,7 +43,7 @@ Python cannot make every invalid state impossible at the type level. Ariadion
 should nevertheless make invalid combinations difficult to construct by grouping
 required data into small, self-validating immutable value objects.
 
-For example, a future logical rotation-specific value object can keep a unit-bearing
+For example, the current logical rotation-specific value object keeps a unit-bearing
 `SemanticAngle` separate from the allocated-IR canonical radians and optional source
 display metadata. A `LogicalRotationOperation` must use that typed semantic value
 rather than an untyped parameter dictionary:
@@ -107,8 +107,9 @@ from leaking across package boundaries. Existing examples include `Angle`,
 Existing and future language work should use value objects where a bare integer or
 string would lose meaning, including:
 
-- public `Qubit` and `Bit`, plus compiler-only `LogicalQubitId`, `ClassicalBitId`,
-    `LogicalQubitValue`, and `ClassicalBitValue` contracts;
+- public `Qubit`, `Bit`, and language-owned `Basis`, plus compiler-only
+    `LogicalQubitId`, `ClassicalBitId`, `LogicalQubitValue`, and
+    `ObservationResultValue` contracts;
 - `Basis` and basis expressions;
 - `MeasurementKey` and classical conditions;
 - `Probability`, `ShotCount`, `ExactClassicalDistribution`, and backend
@@ -191,8 +192,13 @@ logical value identity
 classical result identity
     ClassicalBitId
     -> AllocatedObservation / ObservationMetadata
-    -> ReadoutPlan output position
-    -> ExactClassicalDistribution bit position
+    -> ReadoutPlan structured classical leaf
+    -> ExactClassicalDistribution joint-return bit position
+
+quantum return identity
+    LogicalQubitId
+    -> ReadoutPlan structured quantum leaf
+    -> ReturnedQuantumValue retained-state handle
 ```
 
 `SourceRef.source_operation_id` is the canonical source-operation field.
@@ -229,11 +235,19 @@ represent every current relationship without information loss.
 
 ## Exact observation execution boundary
 
-`ReadoutPlan` owns the ordering bridge between compiled observations and public
-classical outputs. For the current exact state-vector path, runtime calculates an
-`ExactClassicalDistribution` from the retained analytical amplitudes for all ordered
-results together. It does not manufacture independent marginal results and it does
-not mutate the analytical state to a sampled post-measurement state.
+`ReadoutPlan` owns the bridge between compiled observations and the source-preserved
+structured return. For the current exact state-vector path, runtime calculates an
+`ExactClassicalDistribution` from retained analytical amplitudes for all classical
+return leaves together. Its `joint_return` scope does not manufacture independent
+marginals and does not mutate the analytical state to a sampled post-measurement
+state. `ReturnedQuantumValue` records a logical ID, allocated slot, and display name
+as a handle into that same retained state; it is not a copied single-qubit state.
+
+A function return is a structured semantic artifact, not merely an ordered list of
+identifiers. Classical observation results and returned quantum values may coexist,
+and their Python tuple structure is preserved independently of allocation or
+measurement order. Per-observation exact probabilities are `marginal`; the complete
+returned classical result is a separately calculated joint distribution.
 
 `MeasurementEvent.execution_kind` makes that distinction explicit:
 `exact_terminal_distribution` is an analytic terminal projection, while a future

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ariadion import ObservationExecutionKind, TraceStepViewModel
+from ariadion import ObservationExecutionKind, ProbabilityScope, TraceStepViewModel
 from ariadion_visualization import render_circuit
 
 if TYPE_CHECKING:
     from theonoe import StateReport
+    from ariadion import LogicalRunResult
 
 
 _DEFAULT_MAX_STATES = 8
@@ -51,6 +52,37 @@ def render_trace_step(
     lines.extend(_render_global_phase(view))
     lines.extend(_render_entanglement(view))
     lines.extend(_render_measurement(view))
+    return "\n".join(lines)
+
+
+def render_logical_run_summary(result: LogicalRunResult) -> str:
+    """Render returned artifacts without mistaking observation marginals for a joint result."""
+
+    distribution = result.classical_output_distribution
+    lines: list[str] = []
+    if distribution is None:
+        lines.append("Returned classical distribution: none")
+    else:
+        labels_by_id = {
+            observation.result_id: observation.result_display_name or str(observation.result_id)
+            for observation in result.compilation.readout.observations
+        }
+        labels = tuple(labels_by_id[result_id] for result_id in distribution.result_ids)
+        lines.append("Returned classical distribution:")
+        for outcome, probability in enumerate(distribution.probabilities):
+            values = ", ".join(
+                f"{label}={(outcome >> bit_index) & 1}"
+                for bit_index, label in enumerate(labels)
+            )
+            lines.append(f"  {values}: {probability:.6f}")
+
+    if result.returned_quantum_values:
+        if lines:
+            lines.append("")
+        lines.append("Returned quantum values (retained-state handles):")
+        for value in result.returned_quantum_values:
+            label = value.display_name or str(value.logical_qubit_id)
+            lines.append(f"  {label}: q{value.allocated_slot}")
     return "\n".join(lines)
 
 
@@ -234,9 +266,10 @@ def _render_measurement(view: TraceStepViewModel) -> list[str]:
     if (
         measurement.execution_kind
         is ObservationExecutionKind.EXACT_TERMINAL_DISTRIBUTION
+        and measurement.scope is ProbabilityScope.MARGINAL
     ):
         heading = (
-            "Exact terminal observation distribution "
+            "Exact terminal observation marginal "
             f"({target_text}{key_text}{bit_order_text}; analytical, retained state unchanged):"
         )
     else:

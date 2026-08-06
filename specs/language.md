@@ -63,14 +63,14 @@ quantum state. In the example, `left` and `right` have overlapping lifetimes, so
 Daidalon will eventually infer a peak allocation of two slots even though neither
 source value contains a target, index, or address.
 
-The `tuple[Bit, Bit]` return annotation requires two ordered classical result
-values. Returning the two `Qubit` values creates visible compiler-inserted terminal
+The `tuple[Bit, Bit]` return annotation requires two structured classical result
+leaves. Returning the two `Qubit` values creates visible compiler-inserted terminal
 observations in the function's declared `basis.z` policy. Each observation produces
 a distinct `ClassicalBitId`; compiler artifacts retain its result identity, basis,
-reason, and output order. Source code does not need terminal `measure()` calls.
-The compiler lowers the simultaneously live values to dense targets in allocated
-`CircuitIR`, while preserving result IDs separately from operation IDs and Python
-variable names.
+reason, and position inside the semantic return tree. Source code does not need
+terminal `measure()` calls. The compiler lowers the simultaneously live values to
+dense targets in allocated `CircuitIR`, while preserving result IDs separately from
+operation IDs and Python variable names.
 
 The terminology boundary is deliberate:
 
@@ -142,15 +142,15 @@ silently insert a mid-circuit measurement through ordinary Python truth testing.
 The resolved semantic `Observation` records its own `LogicalOperationId`, the
 observed `LogicalQubitId`, a produced `ClassicalBitId`, selected `Basis`, an
 `ObservationReason`, and an optional source reference. A `LogicalProgram` declares
-the corresponding `ClassicalBitValue` and a flat, deterministic tuple of output
-identities. Classical outputs must reference declared produced values; a quantum
-output remains quantum and does not cause an observation. Every declared classical
-value has exactly one observation producer, whether or not it is a public output.
-Reasons distinguish an explicit `observe(...)` call from an inferred classical
-return, classical
-assignment, branch-condition, or program-output boundary. This lets compiler
-artifacts and execution traces explain an observation without pretending it was a
-user-written low-level `MEASURE` operation.
+the corresponding `ObservationResultValue`. This intentionally names only
+observation-origin classical values: future hybrid functions will also model
+parameters, literals, classical computation, and backend metadata separately.
+Every declared observation result has exactly one observation producer, whether or
+not it is returned. Reasons distinguish an explicit `observe(...)` call from an
+inferred classical return, classical assignment, branch-condition, or
+program-output boundary. This lets compiler artifacts and execution traces explain
+an observation without pretending it was a user-written low-level `MEASURE`
+operation.
 
 ## Logical quantum values and managed resources
 
@@ -183,12 +183,31 @@ allocation.
 ## Classical outputs and exact terminal observations
 
 The current logical execution slice supports only terminal Z-basis observations.
-`ReadoutPlan` preserves every allocated observation and the original flat output
-order. Exact execution computes one `ExactClassicalDistribution` across the ordered
-classical outputs, rather than pretending that separate 50/50 marginal records
-express a correlated result. For Bell outputs in order `(left_result, right_result)`,
-the distribution is $00 \mapsto 0.5$, $01 \mapsto 0$, $10 \mapsto 0$, and
-$11 \mapsto 0.5$.
+A function return is a structured semantic artifact, not merely an ordered list of
+identifiers. Classical observation results and returned quantum values may coexist,
+and their Python tuple structure is preserved independently of allocation or
+measurement order.
+
+`ReturnShape` supports only `NoReturn` for `None`, a tagged `ScalarReturn`, and
+recursively nested `TupleReturn` nodes. Every scalar leaf is a `ReturnValueRef`
+whose `ReturnValueKind` is explicitly `classical_bit` or `quantum_value`. This tag
+remains serialized even though the currently declared ID sets do not overlap, so
+IDE clients never infer output type from identifier spelling. A one-element tuple
+is a `TupleReturn` with one item, not a scalar return. Lists, mappings, arbitrary
+objects, generators, and unions are not return contracts yet.
+
+`ReadoutPlan` retains all allocated observations, including explicitly discarded
+ones, plus the original `return_shape`. Its deterministic left-to-right traversal
+produces separate classical and quantum leaf sequences. A returned `Qubit` is not
+observed; it remains a handle into the retained state and can remain entangled with
+other returned quantum values. It is not an extracted standalone state vector.
+
+Exact execution computes one `ExactClassicalDistribution` only across the returned
+classical leaves, rather than pretending that separate 50/50 marginals express a
+correlated result. For Bell results in return order `(left_result, right_result)`,
+the joint distribution is $00 \mapsto 0.5$, $01 \mapsto 0$, $10 \mapsto 0$, and
+$11 \mapsto 0.5$. Per-observation exact probabilities are marginals. The complete
+returned classical result is a separately calculated joint distribution.
 
 Exact simulation may calculate a terminal observation distribution without
 sampling or mutating the retained analytical state. This is not physical
@@ -232,9 +251,28 @@ semantic model. The compiler never guesses whether a bare numeric argument means
 degrees, radians, or turns.
 
 The current `LogicalGateOperation` deliberately contains no parameterless `RX`,
-`RY`, or `RZ` members. A future `LogicalRotationOperation` must use a unit-bearing
-semantic angle before lowering into canonical allocated-IR radians; it must not use
-an untyped parameter dictionary.
+`RY`, or `RZ` members. `LogicalRotationOperation` instead owns one typed
+`SemanticAngle` with source value, source unit, and validated canonical radians.
+It is constructed by explicitly converting a public `Angle`, never from an
+untyped bare numeric value. Daidalon lowers `RotationAxis.X`, `.Y`, and `.Z` to
+allocated `RX`, `RY`, and `RZ` operations while preserving both canonical radians
+and original display metadata.
+
+The eventual frontend surface remains valid Python and does not execute a function
+to discover its angle:
+
+```python
+from ariadion import Qubit, deg, quantum, rx
+
+
+@quantum
+def rotate(target: Qubit) -> Qubit:
+   rx(target, deg(190))
+   return target
+```
+
+Future AST capture converts `deg(190)` into public `Angle`, then `SemanticAngle`,
+and finally canonical allocated-IR radians.
 
 ## Basis values and measurement intent
 
@@ -257,7 +295,7 @@ syndrome extraction, partial observation of entangled values, reset and storage
 reuse, and repeated sampling policies. Returning a `Qubit` where a declared `Bit`
 is required is instead an inferred terminal observation boundary.
 
-The public namespace is `basis.x`, `basis.y`, `basis.z`, and
+The public language namespace is `basis.x`, `basis.y`, `basis.z`, and
 `basis.named("custom-name")`; lower-case basis constants are not exported because
 they would collide with gate functions such as `x(target)` and `z(target)`. A
 quantum function may later establish a default basis with
@@ -377,7 +415,7 @@ observations, and each observation produces a `ClassicalBitId`, so the persisten
 identity chain is
 `SourceOperationId -> LogicalOperationId -> IrOperationId -> trace occurrence`
 beside the value/result chain
-`LogicalQubitId -> ClassicalBitId -> ordered classical output`.
+`LogicalQubitId -> ClassicalBitId -> tagged structured return leaf`.
 
 ## Source-model and IR boundary
 

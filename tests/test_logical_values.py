@@ -8,7 +8,9 @@ from dataclasses import fields
 from pathlib import Path
 
 import ariadion
-from ariadion import Bit, Qubit
+import ariadion_language
+import ariadion_semantics
+from ariadion import Basis, Bit, Qubit, basis
 from ariadion_core import (
     ClassicalBitId,
     IrOperationId,
@@ -21,7 +23,6 @@ from ariadion_core import (
     SyntaxNodeId,
 )
 from ariadion_semantics import (
-    Basis,
     ClassicalBitValue,
     FunctionEffect,
     LogicalGateOpCode,
@@ -29,8 +30,12 @@ from ariadion_semantics import (
     LogicalProgram,
     LogicalQubitValue,
     Observation,
+    ObservationResultValue,
     ObservationReason,
-    basis,
+    ReturnValueKind,
+    ReturnValueRef,
+    ScalarReturn,
+    TupleReturn,
 )
 
 
@@ -197,7 +202,12 @@ class LogicalValueTests(unittest.TestCase):
             (left, right),
             (h, cx, observe),
             (left_result,),
-            (left_result.id, right.id),
+            TupleReturn(
+                (
+                    ScalarReturn(ReturnValueRef(ReturnValueKind.CLASSICAL_BIT, left_result.id)),
+                    ScalarReturn(ReturnValueRef(ReturnValueKind.QUANTUM_VALUE, right.id)),
+                )
+            ),
         )
 
         self.assertEqual(program.instructions, (h, cx, observe))
@@ -306,20 +316,25 @@ class LogicalValueTests(unittest.TestCase):
                 (result,),
             )
 
-        output_order = LogicalProgram(
+        return_shape = LogicalProgram(
             ProgramId("logical:output-order"),
             "output-order",
             (left, right),
             (first,),
             (result,),
-            (right.id, result.id),
+            TupleReturn(
+                (
+                    ScalarReturn(ReturnValueRef(ReturnValueKind.QUANTUM_VALUE, right.id)),
+                    ScalarReturn(ReturnValueRef(ReturnValueKind.CLASSICAL_BIT, result.id)),
+                )
+            ),
         )
-        self.assertEqual(output_order.outputs, (right.id, result.id))
-        self.assertEqual(len(output_order.instructions), 1)
+        self.assertEqual(return_shape.outputs, (right.id, result.id))
+        self.assertEqual(len(return_shape.instructions), 1)
         self.assertEqual(
             tuple(
                 instruction.qubit_id
-                for instruction in output_order.instructions
+                for instruction in return_shape.instructions
                 if isinstance(instruction, Observation)
             ),
             (left.id,),
@@ -332,7 +347,7 @@ class LogicalValueTests(unittest.TestCase):
                 (left,),
                 (),
                 (result,),
-                (result.id,),
+                ScalarReturn(ReturnValueRef(ReturnValueKind.CLASSICAL_BIT, result.id)),
             )
 
         with self.assertRaisesRegex(ValueError, "classical bit must have an observation"):
@@ -362,6 +377,9 @@ class LogicalValueTests(unittest.TestCase):
         self.assertEqual(basis.z, Basis("z"))
         self.assertEqual(basis.named("custom"), Basis("custom"))
         self.assertIs(ariadion.basis, basis)
+        self.assertIs(ariadion_language.basis, basis)
+        self.assertFalse(hasattr(ariadion_semantics, "basis"))
+        self.assertIs(ClassicalBitValue, ObservationResultValue)
         self.assertFalse(hasattr(ariadion, "x"))
         self.assertFalse(hasattr(ariadion, "y"))
         self.assertFalse(hasattr(ariadion, "z"))

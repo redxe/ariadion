@@ -16,6 +16,7 @@ from ariadion_runtime import (
     MeasurementBitOrder,
     MeasurementRecordKind,
     ObservationExecutionKind,
+    ProbabilityScope,
     ResourceMetric,
     StateSnapshot,
     TraceCaptureOptions,
@@ -119,6 +120,8 @@ class TraceContractTests(unittest.TestCase):
             MeasurementBitOrder.TARGETS_LSB_FIRST.value,
         )
         self.assertEqual(sampled.to_dict()["kind"], "sampled_outcome")
+        self.assertEqual(exact.scope, ProbabilityScope.MARGINAL)
+        self.assertEqual(exact.to_dict()["scope"], "marginal")
         with self.assertRaisesRegex(ValueError, "exact execution traces"):
             ExecutionTrace(circuit.id, snapshot, (sampled_step,))
 
@@ -273,6 +276,24 @@ class TraceContractTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "supported trace schema"):
             ExecutionTrace(circuit.id, initial, schema_version=1)
+
+    def test_measurement_events_reject_a_joint_return_probability_scope(self) -> None:
+        operation = Operation(
+            OpCode.MEASURE,
+            (0,),
+            IrOperationId("examples/scope.py:measure"),
+            key="result",
+        )
+
+        with self.assertRaisesRegex(ValueError, "marginal probability scope"):
+            MeasurementEvent(
+                operation.id,
+                (0,),
+                MeasurementRecordKind.EXACT_PROBABILITIES,
+                key="result",
+                probabilities=(1.0, 0.0),
+                scope=ProbabilityScope.JOINT_RETURN,
+            )
 
 
 if __name__ == "__main__":

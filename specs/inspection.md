@@ -50,7 +50,9 @@ operation identity, source reference, optional lowered observation metadata,
 optional measurement data, and step index. `TraceInspection` contains the initial
 report plus every step inspection. For an exact terminal observation, its before and
 after reports describe the retained analytical state; they are not a physical
-post-measurement state report.
+post-measurement state report. Per-observation exact probabilities in this data are
+`marginal` facts about one measurement's targets, never a substitute for the
+logical run's separately calculated `joint_return` classical distribution.
 
 ## Rotation explanations
 
@@ -74,6 +76,6 @@ All inspection records are frozen dataclasses with `to_dict()` and canonical
 `to_json()` output. Complex values are serialized as real/imaginary component
 objects. `TraceInspection.inspection_schema_version` independently versions the
 inspection payload, while `TraceInspection.trace_schema_version` preserves the
-associated schema-v2 `ExecutionTrace.schema_version` when storing or exchanging an
+associated schema-v3 `ExecutionTrace.schema_version` when storing or exchanging an
 inspection. `rotation_explanation` is an additive optional step field. The initial
 `INSPECTION_SCHEMA_VERSION` is $1$.

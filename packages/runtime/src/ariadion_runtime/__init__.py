@@ -1,4 +1,10 @@
-from .runtime import LogicalRunResult, RunResult, run_logical_program, run_program
+from .runtime import (
+	LogicalRunResult,
+	ReturnedQuantumValue,
+	RunResult,
+	run_logical_program,
+	run_program,
+)
 from .debugger import (
 	TRACE_DEBUGGER_SCHEMA_VERSION,
 	TraceDebuggerError,
@@ -21,6 +27,7 @@ from .trace import (
 	MeasurementEvent,
 	MeasurementRecordKind,
 	ObservationExecutionKind,
+	ProbabilityScope,
 	ResourceMetric,
 	StateRepresentation,
 	StateSnapshot,
@@ -46,6 +53,8 @@ __all__ = [
 	"MeasurementRecordKind",
 	"LogicalRunResult",
 	"ObservationExecutionKind",
+	"ProbabilityScope",
+	"ReturnedQuantumValue",
 	"ResourceMetric",
 	"RotationAxis",
 	"RotationEffect",

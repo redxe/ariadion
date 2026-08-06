@@ -39,10 +39,13 @@ operations, so diagnostics, traces, and resource reports can explain the result
 without exposing physical slots in source code.
 
 `LogicalSlotAllocationPlan` and `ReadoutPlan` remain sibling artifacts rather than
-fields on `CircuitIR`, so the allocated circuit remains backend-neutral. A future
-physical or protected allocation may map one source `Qubit` to many physical qubits
-and is a separate artifact. This specification does not implement a protection
-planner, select code distances, or define an encoded-QEC layout.
+fields on `CircuitIR`, so the allocated circuit remains backend-neutral.
+`ReadoutPlan` retains every lowered observation plus the source-preserved structured
+`ReturnShape`; it can flatten classical and quantum leaves separately without
+inferring type from IDs or measurement order. A future physical or protected
+allocation may map one source `Qubit` to many physical qubits and is a separate
+artifact. This specification does not implement a protection planner, select code
+distances, or define an encoded-QEC layout.
 `OperationProvenance` records both source and logical-instruction ancestry for
 lowered or generated IR operations.
 
@@ -62,10 +65,12 @@ The current opcodes are `X`, `H`, `Z`, `RX`, `RY`, `RZ`, `CX`, and `MEASURE`.
 
 `RX`, `RY`, and `RZ` require a finite `angle_radians` value. Direct IR producers
 can omit `AngleMetadata`, but Daidalon preserves source `source_value` and
-`source_unit` in that optional metadata when lowering language-level `Angle`
-values. When present, metadata must agree with canonical radians within a small
-tolerance. Simulators consume canonical radians only; frontends can use the
-metadata to render the original unit without reinterpreting the operation.
+`source_unit` in that optional metadata when lowering a typed semantic rotation.
+`LogicalRotationOperation` converts public `Angle` into `SemanticAngle` before
+this boundary; it maps axes X, Y, and Z to `RX`, `RY`, and `RZ`. When present,
+metadata must agree with canonical radians within the shared tolerance policy.
+Simulators consume canonical radians only; frontends can use the metadata to render
+the original unit without reinterpreting the operation.
 
 Only a `MEASURE` operation may carry `ObservationMetadata`. Logical observation
 lowering sets `Operation.key` to `str(result_id)` and carries the matching metadata,
@@ -103,9 +108,9 @@ deterministic representation for IDs and source metadata. Snapshot IDs remain
 deterministic only within their compiled snapshot; consumers persisting identity
 across edits must use a `SourceNodeId` supplied by the frontend.
 
-Future revisions will add additional basis descriptors, parameterized logical
-instructions, regions, ownership metadata, physical-allocation artifacts, and
-concrete decomposition passes that populate provenance.
+Future revisions will add additional basis descriptors, regions, ownership
+metadata, physical-allocation artifacts, and concrete decomposition passes that
+populate provenance.
 The evidence for separating reliability analysis from allocation is recorded in
 [fault-tolerance and resource-planning research](../docs/research/fault-tolerance-and-resource-planning.md),
 which cites primary and official sources consulted on 2026-08-06.

@@ -12,6 +12,7 @@ from ariadion_core import (
     SourceRef,
 )
 from ariadion_ir import OpCode
+from ariadion_language import Basis
 from ariadion_runtime import (
     ObservationExecutionKind,
     TraceCaptureOptions,
@@ -19,7 +20,6 @@ from ariadion_runtime import (
     run_logical_program,
 )
 from ariadion_semantics import (
-    Basis,
     ClassicalBitValue,
     LogicalGateOpCode,
     LogicalGateOperation,
@@ -27,6 +27,10 @@ from ariadion_semantics import (
     LogicalQubitValue,
     Observation,
     ObservationReason,
+    ReturnValueKind,
+    ReturnValueRef,
+    ScalarReturn,
+    TupleReturn,
 )
 from daidalon import (
     LOGICAL_ALLOCATION_POLICY_NAME,
@@ -74,6 +78,7 @@ class LogicalCompilationTests(unittest.TestCase):
                 "observations": [
                     {
                         "result_id": "classical:bell:left",
+                        "result_display_name": "left_result",
                         "logical_qubit_id": "logical:bell:left",
                         "allocated_slot": 0,
                         "basis": {"name": "z"},
@@ -82,6 +87,7 @@ class LogicalCompilationTests(unittest.TestCase):
                     },
                     {
                         "result_id": "classical:bell:right",
+                        "result_display_name": "right_result",
                         "logical_qubit_id": "logical:bell:right",
                         "allocated_slot": 1,
                         "basis": {"name": "z"},
@@ -89,7 +95,25 @@ class LogicalCompilationTests(unittest.TestCase):
                         "logical_operation_id": "logical-op:bell:observe-right",
                     },
                 ],
-                "output_order": ["classical:bell:left", "classical:bell:right"],
+                "return_shape": {
+                    "kind": "tuple",
+                    "items": [
+                        {
+                            "kind": "scalar",
+                            "value": {
+                                "kind": "classical_bit",
+                                "value_id": "classical:bell:left",
+                            },
+                        },
+                        {
+                            "kind": "scalar",
+                            "value": {
+                                "kind": "classical_bit",
+                                "value_id": "classical:bell:right",
+                            },
+                        },
+                    ],
+                },
             },
         )
         self.assertEqual(
@@ -198,7 +222,12 @@ class LogicalCompilationTests(unittest.TestCase):
             bell.qubits,
             bell.instructions,
             bell.classical_bits,
-            (ClassicalBitId("classical:bell:left"),),
+            ScalarReturn(
+                ReturnValueRef(
+                    ReturnValueKind.CLASSICAL_BIT,
+                    ClassicalBitId("classical:bell:left"),
+                )
+            ),
         )
 
         execution = run_logical_program(
@@ -344,7 +373,12 @@ def _bell_program() -> LogicalProgram:
             ),
         ),
         (left_result, right_result),
-        (left_result.id, right_result.id),
+        TupleReturn(
+            (
+                ScalarReturn(ReturnValueRef(ReturnValueKind.CLASSICAL_BIT, left_result.id)),
+                ScalarReturn(ReturnValueRef(ReturnValueKind.CLASSICAL_BIT, right_result.id)),
+            )
+        ),
     )
 
 

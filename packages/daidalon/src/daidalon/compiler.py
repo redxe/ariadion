@@ -27,14 +27,21 @@ from ariadion_ir import (
     Operation,
     OperationProvenance,
 )
-from ariadion_language import Angle, Program, SourceOperation
+from ariadion_language import Angle, Basis, Program, SourceOperation
 from ariadion_semantics import (
-    Basis,
     LogicalGateOpCode,
     LogicalGateOperation,
     LogicalProgram,
+    LogicalRotationOperation,
+    NoReturn,
     Observation,
     ObservationReason,
+    ReturnShape,
+    ReturnValueKind,
+    RotationAxis,
+    ScalarReturn,
+    TupleReturn,
+    return_value_refs,
 )
 
 
@@ -205,6 +212,7 @@ class AllocatedObservation:
     """One logical observation bound to its result and allocated execution slot."""
 
     result_id: ClassicalBitId
+    result_display_name: str | None
     logical_qubit_id: LogicalQubitId
     allocated_slot: int
     basis: Basis
@@ -213,6 +221,11 @@ class AllocatedObservation:
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.result_id, label="allocated observation result ID")
+        if self.result_display_name is not None:
+            require_nonempty_identifier(
+                self.result_display_name,
+                label="allocated observation result display name",
+            )
         require_nonempty_identifier(
             self.logical_qubit_id,
             label="allocated observation logical qubit ID",
@@ -233,6 +246,7 @@ class AllocatedObservation:
     def to_dict(self) -> dict[str, object]:
         return {
             "result_id": self.result_id,
+            "result_display_name": self.result_display_name,
             "logical_qubit_id": self.logical_qubit_id,
             "allocated_slot": self.allocated_slot,
             "basis": self.basis.to_dict(),
@@ -246,10 +260,10 @@ class AllocatedObservation:
 
 @dataclass(frozen=True, slots=True)
 class ReadoutPlan:
-    """Ordered logical observations and outputs for exact or sampled execution."""
+    """Lowered observations plus the source-preserved structured function return."""
 
     observations: tuple[AllocatedObservation, ...]
-    output_order: tuple[ClassicalBitId | LogicalQubitId, ...]
+    return_shape: ReturnShape
 
     def __post_init__(self) -> None:
         if not isinstance(self.observations, tuple):
@@ -262,15 +276,38 @@ class ReadoutPlan:
         operation_ids = tuple(item.logical_operation_id for item in self.observations)
         if len(operation_ids) != len(set(operation_ids)):
             raise ValueError("readout plan logical operation IDs must be unique")
-        if not isinstance(self.output_order, tuple):
-            raise ValueError("readout plan output_order must be a tuple")
-        for output in self.output_order:
-            require_nonempty_identifier(output, label="readout plan output ID")
+        if not isinstance(self.return_shape, (ScalarReturn, TupleReturn, NoReturn)):
+            raise ValueError("readout plan return_shape must be a ReturnShape")
+        known_result_ids = set(result_ids)
+        for result_id in self.classical_return_ids():
+            if result_id not in known_result_ids:
+                raise ValueError(
+                    "readout plan classical return must reference a lowered observation: "
+                    f"{result_id}"
+                )
+
+    def classical_return_ids(self) -> tuple[ClassicalBitId, ...]:
+        """Flatten only classical leaves in deterministic left-to-right order."""
+
+        return tuple(
+            ClassicalBitId(reference.value_id)
+            for reference in return_value_refs(self.return_shape)
+            if reference.kind is ReturnValueKind.CLASSICAL_BIT
+        )
+
+    def quantum_return_ids(self) -> tuple[LogicalQubitId, ...]:
+        """Flatten only quantum leaves in deterministic left-to-right order."""
+
+        return tuple(
+            LogicalQubitId(reference.value_id)
+            for reference in return_value_refs(self.return_shape)
+            if reference.kind is ReturnValueKind.QUANTUM_VALUE
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "observations": [item.to_dict() for item in self.observations],
-            "output_order": list(self.output_order),
+            "return_shape": self.return_shape.to_dict(),
         }
 
     def to_json(self) -> str:
@@ -335,11 +372,17 @@ class LogicalCompilationResult:
                 )
             ):
                 raise ValueError("readout observation must match its IR measurement metadata")
-        known_output_ids = set(slots) | {
-            observation.result_id for observation in self.readout.observations
-        }
-        if any(output not in known_output_ids for output in self.readout.output_order):
-            raise ValueError("readout output_order must reference allocated logical values")
+        known_result_ids = {observation.result_id for observation in self.readout.observations}
+        if any(
+            result_id not in known_result_ids
+            for result_id in self.readout.classical_return_ids()
+        ):
+            raise ValueError("readout classical returns must reference lowered observations")
+        if any(
+            qubit_id not in slots
+            for qubit_id in self.readout.quantum_return_ids()
+        ):
+            raise ValueError("readout quantum returns must reference allocated logical qubits")
 
     @property
     def allocation(self) -> LogicalSlotAllocationPlan:
@@ -375,6 +418,11 @@ _LOGICAL_GATE_OPCODE_MAP = {
     LogicalGateOpCode.H: OpCode.H,
     LogicalGateOpCode.Z: OpCode.Z,
     LogicalGateOpCode.CX: OpCode.CX,
+}
+_LOGICAL_ROTATION_OPCODE_MAP = {
+    RotationAxis.X: OpCode.RX,
+    RotationAxis.Y: OpCode.RY,
+    RotationAxis.Z: OpCode.RZ,
 }
 
 
@@ -486,7 +534,7 @@ def _validate_logical_lowering(program: LogicalProgram) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
     has_observation = False
     for index, instruction in enumerate(program.instructions):
-        if isinstance(instruction, LogicalGateOperation):
+        if isinstance(instruction, (LogicalGateOperation, LogicalRotationOperation)):
             if has_observation:
                 diagnostics.append(
                     _logical_instruction_diagnostic(
@@ -496,7 +544,10 @@ def _validate_logical_lowering(program: LogicalProgram) -> list[Diagnostic]:
                         "exact state-vector execution supports terminal observations only",
                     )
                 )
-            if instruction.opcode not in _LOGICAL_GATE_OPCODE_MAP:
+            if (
+                isinstance(instruction, LogicalGateOperation)
+                and instruction.opcode not in _LOGICAL_GATE_OPCODE_MAP
+            ):
                 diagnostics.append(
                     _logical_instruction_diagnostic(
                         index,
@@ -559,9 +610,11 @@ def _build_readout_plan(
     program: LogicalProgram,
     slots: dict[LogicalQubitId, int],
 ) -> ReadoutPlan:
+    result_values = {result.id: result for result in program.classical_bits}
     observations = tuple(
         AllocatedObservation(
             result_id=instruction.result_id,
+            result_display_name=result_values[instruction.result_id].display_name,
             logical_qubit_id=instruction.qubit_id,
             allocated_slot=slots[instruction.qubit_id],
             basis=instruction.basis,
@@ -571,11 +624,11 @@ def _build_readout_plan(
         for instruction in program.instructions
         if isinstance(instruction, Observation)
     )
-    return ReadoutPlan(observations=observations, output_order=program.outputs)
+    return ReadoutPlan(observations=observations, return_shape=program.return_shape)
 
 
 def _lower_logical_instruction(
-    instruction: LogicalGateOperation | Observation,
+    instruction: LogicalGateOperation | LogicalRotationOperation | Observation,
     slots: dict[LogicalQubitId, int],
 ) -> Operation:
     if isinstance(instruction, LogicalGateOperation):
@@ -584,11 +637,26 @@ def _lower_logical_instruction(
         controls = tuple(slots[qubit_id] for qubit_id in instruction.controls)
         key = None
         observation = None
+        angle_radians = None
+        angle_metadata = None
+    elif isinstance(instruction, LogicalRotationOperation):
+        opcode = _LOGICAL_ROTATION_OPCODE_MAP[instruction.axis]
+        targets = (slots[instruction.target],)
+        controls = ()
+        key = None
+        observation = None
+        angle_radians = instruction.angle.radians
+        angle_metadata = AngleMetadata(
+            instruction.angle.source_value,
+            instruction.angle.source_unit.value,
+        )
     else:
         opcode = OpCode.MEASURE
         targets = (slots[instruction.qubit_id],)
         controls = ()
         key = str(instruction.result_id)
+        angle_radians = None
+        angle_metadata = None
         observation = ObservationMetadata(
             logical_qubit_id=instruction.qubit_id,
             result_id=instruction.result_id,
@@ -614,6 +682,8 @@ def _lower_logical_instruction(
             parent_logical_operation_ids=(instruction.id,),
         ),
         observation=observation,
+        angle_radians=angle_radians,
+        angle_metadata=angle_metadata,
     )
 
 
@@ -629,7 +699,7 @@ def _operation_diagnostic(
 
 def _logical_instruction_diagnostic(
     index: int,
-    instruction: LogicalGateOperation | Observation,
+    instruction: LogicalGateOperation | LogicalRotationOperation | Observation,
     code: str,
     message: str,
 ) -> Diagnostic:

@@ -64,11 +64,12 @@ its own presentation code.
 visible before/after basis states, probability and relative-phase changes,
 unobservable global phase when nonzero, entanglement changes, measurement
 probabilities, observation metadata, source data, compiler provenance, and
-precomputed rotation explanations. An `exact_terminal_distribution` is visibly
-labeled as an analytical projection with an unchanged retained state; it is not
-rendered as a sampled collapse. Rotation rendering labels exact facts separately
-from educational interpretations. Terminal command parsing and input remain outside
-this rendering function.
+precomputed rotation explanations. An `exact_terminal_distribution` event is
+visibly labeled as an analytical terminal-observation marginal with an unchanged
+retained state; it is not rendered as a sampled collapse or as the logical run's
+joint returned distribution. Rotation rendering labels exact facts separately from
+educational interpretations. Terminal command parsing and input remain outside this
+rendering function.
 
 Measurement output carries the runtime `targets_lsb_first` convention: target
 `targets[i]` maps to outcome bit `i`. See the runtime trace contract for the

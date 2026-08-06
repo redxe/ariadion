@@ -18,6 +18,7 @@ from ariadion_runtime import (
     ExactClassicalDistribution,
     MeasurementBitOrder,
     ObservationExecutionKind,
+    ProbabilityScope,
     TraceCaptureOptions,
 )
 from ariadion_simulator import ExactTerminalObservationError, SimulationExecution, simulate
@@ -82,12 +83,14 @@ class TerminalObservationExecutionTests(unittest.TestCase):
         )
 
         self.assertEqual(distribution.bit_order, MeasurementBitOrder.TARGETS_LSB_FIRST)
+        self.assertEqual(distribution.scope, ProbabilityScope.JOINT_RETURN)
         self.assertEqual(
             json.loads(distribution.to_json()),
             {
                 "result_ids": ["classical:left", "classical:right"],
                 "probabilities": [0.5, 0.0, 0.0, 0.5],
                 "bit_order": "targets_lsb_first",
+                "scope": "joint_return",
             },
         )
 
@@ -124,7 +127,7 @@ class TerminalObservationExecutionTests(unittest.TestCase):
         )
         self.assertEqual(operation.observation, metadata)
 
-    def test_trace_serializes_legacy_and_semantic_source_references_at_schema_two(self) -> None:
+    def test_trace_serializes_legacy_and_semantic_source_references_at_schema_three(self) -> None:
         circuit_id = ProgramId("examples/source-forms.py")
         legacy_source = SourceRef(
             program_id=circuit_id,
@@ -159,8 +162,8 @@ class TerminalObservationExecutionTests(unittest.TestCase):
         self.assertIsNotNone(execution.trace)
         assert execution.trace is not None
         payload = json.loads(execution.trace.to_json())
-        self.assertEqual(EXECUTION_TRACE_SCHEMA_VERSION, 2)
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(EXECUTION_TRACE_SCHEMA_VERSION, 3)
+        self.assertEqual(payload["schema_version"], 3)
         first_source = payload["steps"][0]["operation"]["source"]
         second_source = payload["steps"][1]["operation"]["source"]
         self.assertEqual(
