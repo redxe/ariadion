@@ -43,6 +43,7 @@ class TraceDebuggerTests(unittest.TestCase):
         self.assertEqual(view.step_count, 2)
         self.assertEqual(view.operation.opcode, OpCode.H)
         self.assertEqual(view.ir_operation_id, view.operation.id)
+        self.assertIsNone(view.rotation_explanation)
         self.assertIsNotNone(view.source)
         assert view.source is not None
         self.assertEqual(view.source.source_node_id, "node:debugger:h")
@@ -51,6 +52,7 @@ class TraceDebuggerTests(unittest.TestCase):
         payload = json.loads(view.to_json())
         self.assertEqual(payload["step_number"], 1)
         self.assertEqual(payload["operation"]["opcode"], "H")
+        self.assertIsNone(payload["rotation_explanation"])
         self.assertEqual(payload["operation"]["source"]["source_node_id"], "node:debugger:h")
 
         document = json.loads(session.to_json())

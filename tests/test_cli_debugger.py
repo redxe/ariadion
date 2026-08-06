@@ -33,6 +33,20 @@ class CliDebuggerTests(unittest.TestCase):
         )
         return temporary_directory, path
 
+    def _rotation_explanation_program_file(
+        self,
+    ) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        temporary_directory = tempfile.TemporaryDirectory[str]()
+        path = Path(temporary_directory.name) / "rotation_explanation_program.py"
+        path.write_text(
+            "from ariadion import Program, deg\n"
+            "\n"
+            "program = Program(1, name='rotation_explanation')\n"
+            "program.ry(0, deg(90)).rz(0, deg(180))\n",
+            encoding="utf-8",
+        )
+        return temporary_directory, path
+
     def test_run_step_renders_the_requested_one_based_trace_step(self) -> None:
         temporary_directory, path = self._program_file()
         self.addCleanup(temporary_directory.cleanup)
@@ -101,6 +115,28 @@ class CliDebuggerTests(unittest.TestCase):
             rendered,
         )
         self.assertIn("═[RX]═", rendered)
+
+    def test_run_step_displays_structured_rotation_explanations(self) -> None:
+        temporary_directory, path = self._rotation_explanation_program_file()
+        self.addCleanup(temporary_directory.cleanup)
+        y_output: list[str] = []
+        z_output: list[str] = []
+
+        y_exit_code = main(["run", str(path), "--step", "1"], output=y_output.append)
+        z_exit_code = main(["run", str(path), "--step", "2"], output=z_output.append)
+
+        self.assertEqual(y_exit_code, 0)
+        rendered_y = "\n".join(y_output)
+        self.assertIn("Rotation explanation: RY q0 by 90°", rendered_y)
+        self.assertIn("Exact trace facts:", rendered_y)
+        self.assertIn("Educational interpretation:", rendered_y)
+        self.assertIn("probabilities changed", rendered_y)
+
+        self.assertEqual(z_exit_code, 0)
+        rendered_z = "\n".join(z_output)
+        self.assertIn("Rotation explanation: RZ q0 by 180°", rendered_z)
+        self.assertIn("relative phase changed", rendered_z)
+        self.assertIn("interference", rendered_z)
 
     def test_run_step_rejects_zero_and_files_without_programs(self) -> None:
         temporary_directory, path = self._program_file()

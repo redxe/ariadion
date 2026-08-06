@@ -8,6 +8,7 @@ from ariadion_ir import CircuitIR, Operation, OperationProvenance
 from theonoe import (
     BasisStateChange,
     EntanglementTransition,
+    RotationExplanation,
     StateReport,
 )
 
@@ -39,6 +40,7 @@ class TraceStepViewModel:
     entanglement: EntanglementTransition
     global_phase_delta_radians: float | None
     measurement: MeasurementEvent | None
+    rotation_explanation: RotationExplanation | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.circuit, CircuitIR):
@@ -57,6 +59,13 @@ class TraceStepViewModel:
             raise TraceDebuggerError("trace view source must match the operation")
         if self.provenance != self.operation.provenance:
             raise TraceDebuggerError("trace view provenance must match the operation")
+        if self.rotation_explanation is not None and not isinstance(
+            self.rotation_explanation,
+            RotationExplanation,
+        ):
+            raise TraceDebuggerError(
+                "trace view rotation_explanation must be RotationExplanation"
+            )
 
     @property
     def step_number(self) -> int:
@@ -80,6 +89,11 @@ class TraceStepViewModel:
             "entanglement": self.entanglement.to_dict(),
             "global_phase_delta_radians": self.global_phase_delta_radians,
             "measurement": self.measurement.to_dict() if self.measurement is not None else None,
+            "rotation_explanation": (
+                self.rotation_explanation.to_dict()
+                if self.rotation_explanation is not None
+                else None
+            ),
         }
 
     def to_json(self) -> str:
@@ -169,6 +183,7 @@ class TraceDebuggerSession:
             entanglement=transition.entanglement,
             global_phase_delta_radians=transition.global_phase_delta_radians,
             measurement=trace_step.measurement,
+            rotation_explanation=inspection_step.rotation_explanation,
         )
 
     def next(self) -> TraceDebuggerSession:

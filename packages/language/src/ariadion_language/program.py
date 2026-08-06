@@ -24,7 +24,7 @@ class SourceOperation:
     targets: tuple[int, ...]
     controls: tuple[int, ...] = ()
     key: str | None = None
-    angle: Angle | int | float | None = None
+    angle: Angle | None = None
     id: SnapshotOperationId = field(kw_only=True)
     source_node_id: SourceNodeId | None = None
     source_range: SourceRange | None = None
@@ -121,7 +121,7 @@ class Program:
     def rx(
         self,
         target: int,
-        angle: Angle | int | float,
+        angle: Angle,
         *,
         source_node_id: SourceNodeId | None = None,
         source_id: SourceNodeId | None = None,
@@ -139,7 +139,7 @@ class Program:
     def ry(
         self,
         target: int,
-        angle: Angle | int | float,
+        angle: Angle,
         *,
         source_node_id: SourceNodeId | None = None,
         source_id: SourceNodeId | None = None,
@@ -157,7 +157,7 @@ class Program:
     def rz(
         self,
         target: int,
-        angle: Angle | int | float,
+        angle: Angle,
         *,
         source_node_id: SourceNodeId | None = None,
         source_id: SourceNodeId | None = None,
@@ -215,7 +215,7 @@ class Program:
         *,
         controls: tuple[int, ...] = (),
         key: str | None = None,
-        angle: Angle | int | float | None = None,
+        angle: Angle | None = None,
         source_node_id: SourceNodeId | None = None,
         source_id: SourceNodeId | None = None,
         source_range: SourceRange | None = None,

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from math import isfinite
+from math import isclose, isfinite, pi, tau
+from typing import Final
 
 from ariadion_core import (
     IrOperationId,
@@ -30,6 +31,13 @@ class OpCode(str, Enum):
 
 _ROTATION_OPCODES = frozenset({OpCode.RX, OpCode.RY, OpCode.RZ})
 _ANGLE_SOURCE_UNITS = frozenset({"degrees", "radians", "turns"})
+_ANGLE_UNIT_TO_RADIANS = {
+    "degrees": pi / 180,
+    "radians": 1.0,
+    "turns": tau,
+}
+_ANGLE_METADATA_RADIANS_ABS_TOLERANCE: Final = 1e-12
+_ANGLE_METADATA_RADIANS_REL_TOLERANCE: Final = 1e-15
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +126,22 @@ class Operation:
                 AngleMetadata,
             ):
                 raise ValueError("rotation angle_metadata must be AngleMetadata")
+            if self.angle_metadata is not None:
+                expected_angle_radians = (
+                    self.angle_metadata.source_value
+                    * _ANGLE_UNIT_TO_RADIANS[self.angle_metadata.source_unit]
+                )
+                if not isfinite(expected_angle_radians):
+                    raise ValueError("rotation angle_metadata must produce finite radians")
+                if not isclose(
+                    angle_radians,
+                    expected_angle_radians,
+                    rel_tol=_ANGLE_METADATA_RADIANS_REL_TOLERANCE,
+                    abs_tol=_ANGLE_METADATA_RADIANS_ABS_TOLERANCE,
+                ):
+                    raise ValueError(
+                        "rotation angle_radians must match angle_metadata"
+                    )
         elif self.angle_radians is not None or self.angle_metadata is not None:
             raise ValueError("only rotation operations can carry angle data")
 

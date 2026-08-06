@@ -25,8 +25,9 @@ The current opcodes are `X`, `H`, `Z`, `RX`, `RY`, `RZ`, `CX`, and `MEASURE`.
 `RX`, `RY`, and `RZ` require a finite `angle_radians` value. Direct IR producers
 can omit `AngleMetadata`, but Daidalon preserves source `source_value` and
 `source_unit` in that optional metadata when lowering language-level `Angle`
-values. Simulators consume canonical radians only; frontends can use the metadata
-to render the original unit without reinterpreting the operation.
+values. When present, metadata must agree with canonical radians within a small
+tolerance. Simulators consume canonical radians only; frontends can use the
+metadata to render the original unit without reinterpreting the operation.
 
 ## Source identity and provenance
 

@@ -53,6 +53,9 @@ Builds inspectable snapshots: basis probabilities, amplitudes, phase, reduced
 density matrices, purity-based separability facts, and explicitly heuristic
 subsystem groups. Runtime exposes an explicit projection from immutable execution
 traces to these analyses; Theonoe neither mutates traces nor controls simulation.
+For rotation steps, it accepts primitive operation facts alongside an inspected
+transition to produce structured exact effects and a separately labeled
+educational interpretation. It does not import runtime trace contracts.
 
 ### `ariadion-visualization`
 

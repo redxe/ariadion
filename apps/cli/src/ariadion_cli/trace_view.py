@@ -31,6 +31,7 @@ def render_trace_step(
     ]
     lines.extend(_render_angle(view))
     lines.extend(_render_source_and_provenance(view))
+    lines.extend(_render_rotation_explanation(view))
     lines.extend(
         [
             "",
@@ -73,6 +74,34 @@ def _render_angle(view: TraceStepViewModel) -> list[str]:
         return [f"Angle: normalized {normalized}"]
     source = _format_source_angle(metadata.source_value, metadata.source_unit)
     return [f"Angle: {source} (normalized: {normalized})"]
+
+
+def _render_rotation_explanation(view: TraceStepViewModel) -> list[str]:
+    explanation = view.rotation_explanation
+    if explanation is None:
+        return []
+
+    source_angle = explanation.source_angle
+    if source_angle is None:
+        angle = _format_angle_value(explanation.angle_radians) + " rad"
+    else:
+        angle = _format_source_angle(
+            source_angle.source_value,
+            source_angle.source_unit,
+        )
+    lines = [
+        "",
+        f"Rotation explanation: R{explanation.axis.value} q{explanation.target} by {angle}",
+        "  Exact trace facts:",
+    ]
+    lines.extend(f"    - {claim}" for claim in explanation.exact_claims)
+    lines.extend(
+        [
+            "  Educational interpretation:",
+            f"    - {explanation.educational_interpretation}",
+        ]
+    )
+    return lines
 
 
 def _format_source_angle(value: float, unit: str) -> str:

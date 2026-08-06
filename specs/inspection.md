@@ -49,6 +49,22 @@ The runtime-owned `TraceStepInspection` binds this analysis to the immutable IR
 operation identity, source reference, optional measurement data, and step index.
 `TraceInspection` contains the initial report plus every step inspection.
 
+## Rotation explanations
+
+For `RX`, `RY`, and `RZ` trace steps, runtime asks Theonoe to explain the exact
+`StateTransition` using primitive operation facts: rotation axis, target, canonical
+radians, and optional source-unit angle. Theonoe does not import runtime contracts
+or simulate operations.
+
+`RotationExplanation` separates `exact_claims` from one
+`educational_interpretation`. Exact claims describe only the inspected transition:
+computational-basis probability changes, detected relative-phase changes, an
+unobservable global-phase delta when applicable, and the exact diagonal property
+of `RZ`. The educational interpretation provides careful Bloch-sphere and
+interference context; it is not a replacement for the exact state-vector facts.
+`RotationEffect` classifies the observed effect as probability-changing,
+relative-phase-only, global-phase-only, or no visible change.
+
 ## Serialization
 
 All inspection records are frozen dataclasses with `to_dict()` and canonical
@@ -56,4 +72,5 @@ All inspection records are frozen dataclasses with `to_dict()` and canonical
 objects. `TraceInspection.inspection_schema_version` independently versions the
 inspection payload, while `TraceInspection.trace_schema_version` preserves the
 associated `ExecutionTrace.schema_version` when storing or exchanging an
-inspection. The initial `INSPECTION_SCHEMA_VERSION` is $1$.
+inspection. `rotation_explanation` is an additive optional step field. The initial
+`INSPECTION_SCHEMA_VERSION` is $1$.

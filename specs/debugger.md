@@ -20,6 +20,8 @@ It is immutable: `next()`, `previous()`, and `go_to()` return a new session.
 - before and after Theonoe state reports;
 - basis-state probability and relative-phase changes;
 - entanglement changes and any unobservable global-phase delta;
+- an optional structured rotation explanation with exact trace facts and a
+  separately labeled educational interpretation;
 - exact measurement data when the operation measures qubits.
 
 `TraceStepViewModel` has `to_dict()` and canonical `to_json()` output for an
@@ -59,8 +61,10 @@ its own presentation code.
 `TraceStepViewModel`. It renders a circuit with the active gate highlighted,
 visible before/after basis states, probability and relative-phase changes,
 unobservable global phase when nonzero, entanglement changes, measurement
-probabilities, source data, and compiler provenance. Terminal command parsing
-and input remain outside this rendering function.
+probabilities, source data, compiler provenance, and precomputed rotation
+explanations. Rotation rendering labels exact facts separately from educational
+interpretations. Terminal command parsing and input remain outside this rendering
+function.
 
 Measurement output carries the runtime `targets_lsb_first` convention: target
 `targets[i]` maps to outcome bit `i`. See the runtime trace contract for the

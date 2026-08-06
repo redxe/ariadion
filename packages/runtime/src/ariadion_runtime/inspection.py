@@ -7,10 +7,14 @@ from ariadion_core import IrOperationId, ProgramId, SourceRef, canonical_json
 from ariadion_ir import AngleMetadata, OpCode, OperationProvenance
 from theonoe import (
     DEFAULT_EPSILON,
+    RotationAxis,
+    RotationExplanation,
+    RotationSourceAngle,
     SEPARABILITY_ABS_TOLERANCE,
     STATE_VECTOR_NORM_ABS_TOLERANCE,
     StateReport,
     StateTransition,
+    explain_rotation_transition,
     inspect_amplitudes,
     inspect_state_transition,
 )
@@ -19,6 +23,11 @@ from .trace import ExecutionTrace, MeasurementEvent
 
 
 INSPECTION_SCHEMA_VERSION: Final = 1
+_ROTATION_AXES: Final = {
+    OpCode.RX: RotationAxis.X,
+    OpCode.RY: RotationAxis.Y,
+    OpCode.RZ: RotationAxis.Z,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +46,7 @@ class TraceStepInspection:
     provenance: OperationProvenance | None = None
     angle_radians: float | None = None
     angle_metadata: AngleMetadata | None = None
+    rotation_explanation: RotationExplanation | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -60,6 +70,11 @@ class TraceStepInspection:
             },
             "measurement": self.measurement.to_dict() if self.measurement is not None else None,
             "transition": self.transition.to_dict(),
+            "rotation_explanation": (
+                self.rotation_explanation.to_dict()
+                if self.rotation_explanation is not None
+                else None
+            ),
         }
 
     def to_json(self) -> str:
@@ -130,6 +145,16 @@ def inspect_execution_trace(
             separability_tolerance=separability_tolerance,
             normalization_tolerance=normalization_tolerance,
         )
+        transition = inspect_state_transition(
+            step.before.amplitudes,
+            step.after.amplitudes,
+            step.before.qubit_count,
+            epsilon=epsilon,
+            separability_tolerance=separability_tolerance,
+            normalization_tolerance=normalization_tolerance,
+            before_report=previous_report,
+            after_report=after_report,
+        )
         steps.append(
             TraceStepInspection(
                 index=step.index,
@@ -143,15 +168,14 @@ def inspect_execution_trace(
                 angle_radians=step.operation.angle_radians,
                 angle_metadata=step.operation.angle_metadata,
                 measurement=step.measurement,
-                transition=inspect_state_transition(
-                    step.before.amplitudes,
-                    step.after.amplitudes,
-                    step.before.qubit_count,
+                transition=transition,
+                rotation_explanation=_rotation_explanation(
+                    opcode=step.operation.opcode,
+                    targets=step.operation.targets,
+                    angle_radians=step.operation.angle_radians,
+                    angle_metadata=step.operation.angle_metadata,
+                    transition=transition,
                     epsilon=epsilon,
-                    separability_tolerance=separability_tolerance,
-                    normalization_tolerance=normalization_tolerance,
-                    before_report=previous_report,
-                    after_report=after_report,
                 ),
             )
         )
@@ -161,4 +185,38 @@ def inspect_execution_trace(
         trace_schema_version=trace.schema_version,
         initial=initial,
         steps=tuple(steps),
+    )
+
+
+def _rotation_explanation(
+    *,
+    opcode: OpCode,
+    targets: tuple[int, ...],
+    angle_radians: float | None,
+    angle_metadata: AngleMetadata | None,
+    transition: StateTransition,
+    epsilon: float,
+) -> RotationExplanation | None:
+    axis = _ROTATION_AXES.get(opcode)
+    if axis is None:
+        return None
+    if angle_radians is None:
+        raise ValueError("rotation trace step must have angle_radians")
+    if len(targets) != 1:
+        raise ValueError("rotation trace step must have exactly one target")
+    source_angle = (
+        RotationSourceAngle(
+            source_value=angle_metadata.source_value,
+            source_unit=angle_metadata.source_unit,
+        )
+        if angle_metadata is not None
+        else None
+    )
+    return explain_rotation_transition(
+        transition,
+        target=targets[0],
+        axis=axis,
+        angle_radians=angle_radians,
+        source_angle=source_angle,
+        epsilon=epsilon,
     )

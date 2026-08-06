@@ -25,6 +25,12 @@ from .trace import (
 	TraceCaptureOptions,
 	TraceStep,
 )
+from theonoe import (
+	RotationAxis,
+	RotationEffect,
+	RotationExplanation,
+	RotationSourceAngle,
+)
 
 __all__ = [
 	"EXECUTION_TRACE_SCHEMA_VERSION",
@@ -36,6 +42,10 @@ __all__ = [
 	"MeasurementEvent",
 	"MeasurementRecordKind",
 	"ResourceMetric",
+	"RotationAxis",
+	"RotationEffect",
+	"RotationExplanation",
+	"RotationSourceAngle",
 	"RunResult",
 	"TraceInspection",
 	"TraceStepInspection",

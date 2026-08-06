@@ -16,7 +16,8 @@ from ariadion import (
     run,
     turns,
 )
-from ariadion_ir import AngleMetadata, OpCode
+from ariadion_core import IrOperationId
+from ariadion_ir import AngleMetadata, OpCode, Operation
 from ariadion_visualization import render_circuit
 from daidalon import CompileError, compile_program
 
@@ -49,6 +50,26 @@ class RotationTests(unittest.TestCase):
             turns(1e308)
         with self.assertRaisesRegex(ValueError, "degrees, radians, or turns"):
             AngleMetadata(90, "grads")
+
+    def test_ir_rotation_metadata_must_match_canonical_radians(self) -> None:
+        metadata = AngleMetadata(180, "degrees")
+        matching = Operation(
+            OpCode.RX,
+            (0,),
+            IrOperationId("examples/metadata:matching"),
+            angle_radians=math.pi + 5e-13,
+            angle_metadata=metadata,
+        )
+        self.assertIsNotNone(matching.angle_metadata)
+
+        with self.assertRaisesRegex(ValueError, "must match angle_metadata"):
+            Operation(
+                OpCode.RX,
+                (0,),
+                IrOperationId("examples/metadata:mismatched"),
+                angle_radians=0.0,
+                angle_metadata=metadata,
+            )
 
     def test_compiler_rejects_bare_rotation_numbers_with_a_diagnostic(self) -> None:
         for method_name in ("rx", "ry", "rz"):
@@ -176,6 +197,10 @@ class RotationTests(unittest.TestCase):
         self.assertEqual(
             document["circuit"]["operations"][0]["angle_metadata"],
             {"source_value": 180.0, "source_unit": "degrees"},
+        )
+        self.assertEqual(
+            document["inspection"]["steps"][0]["rotation_explanation"]["axis"],
+            "X",
         )
 
         result = run(

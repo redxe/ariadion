@@ -54,6 +54,11 @@ program.rz(2, turns(0.25))
 Bare numeric rotation values are rejected by the compiler so Ariadion never has
 to guess their unit.
 
+When a trace is inspected, rotation steps also carry a structured explanation:
+exact probability, relative-phase, and global-phase facts are separate from a
+clearly labeled educational Bloch-sphere interpretation. The CLI renders both
+sections, while Studio can consume the same structured data directly.
+
 Or use the modules directly:
 
 ```python
@@ -72,6 +77,7 @@ print(trace.steps[0].after.amplitudes)
 
 trace_inspection = inspect_execution_trace(trace)
 print(trace_inspection.steps[0].transition.basis_state_changes)
+print(trace_inspection.steps[0].rotation_explanation)
 ```
 
 Expected probabilities:

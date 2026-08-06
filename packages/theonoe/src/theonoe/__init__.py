@@ -15,6 +15,13 @@ from .inspector import (
 	inspect_state_transition,
 	render_report,
 )
+from .rotation import (
+	RotationAxis,
+	RotationEffect,
+	RotationExplanation,
+	RotationSourceAngle,
+	explain_rotation_transition,
+)
 
 __all__ = [
 	"DEFAULT_EPSILON",
@@ -24,6 +31,10 @@ __all__ = [
 	"BasisStateChange",
 	"EntanglementTransition",
 	"ReducedDensityMatrix",
+	"RotationAxis",
+	"RotationEffect",
+	"RotationExplanation",
+	"RotationSourceAngle",
 	"SeparabilityReport",
 	"StateReport",
 	"StateTransition",
@@ -31,5 +42,6 @@ __all__ = [
 	"inspect_reduced_density_matrix",
 	"inspect_state",
 	"inspect_state_transition",
+	"explain_rotation_transition",
 	"render_report",
 ]

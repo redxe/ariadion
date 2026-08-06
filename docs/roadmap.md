@@ -11,10 +11,11 @@
 - CLI and examples
 - structured trace view models and CLI step navigation
 - typed angles with `RX`, `RY`, and `RZ` rotation gates
+- human-readable, structured explanations for arbitrary rotations
 
 ## Next sequence
 
-1. human-readable explanations for arbitrary rotations;
+1. define native Ariadion syntax and source AST;
 2. an interactive tutorial and Studio trace panel.
 
 ## Milestone 1 — language semantics
