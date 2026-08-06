@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Runtime orchestration for Ariadion"
 requires-python = ">=3.11"
 dependencies = [
+  "ariadion-core",
+  "ariadion-ir",
   "ariadion-language",
   "daidalon",
   "ariadion-simulator",

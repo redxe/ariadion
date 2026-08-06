@@ -53,6 +53,10 @@ Turns semantic IR and execution snapshots into textual or structured views. The 
 
 Coordinates compilation, execution, inspection, and rendering. It is the first vertical slice used by the CLI, examples, and future Studio.
 
+It also owns the versioned execution-trace contract consumed by debugger and Studio
+clients. Trace data remains separate from simulator capture so backends can opt in
+without changing source or IR semantics.
+
 ## Near-term vertical slice
 
 ```text
