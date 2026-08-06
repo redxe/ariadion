@@ -117,4 +117,7 @@ tests/               vertical-slice tests
 - **Provider-neutral:** semantic IR sits between source code and simulator or hardware backends.
 - **Teach through execution:** tutorials and diagnostics should use the same runtime as real projects.
 
-See [`docs/architecture.md`](docs/architecture.md), [`specs/language.md`](specs/language.md), [`specs/runtime.md`](specs/runtime.md), [`specs/inspection.md`](specs/inspection.md), and [`specs/debugger.md`](specs/debugger.md).
+See [`docs/architecture.md`](docs/architecture.md), [the object-model design
+guide](docs/object-model.md), [`specs/language.md`](specs/language.md),
+[`specs/runtime.md`](specs/runtime.md), [`specs/inspection.md`](specs/inspection.md),
+and [`specs/debugger.md`](specs/debugger.md).

@@ -17,6 +17,14 @@ Ariadion SDK ─────────────┴────────�
 
 The compiler produces immutable semantic IR. Runtime backends consume IR. Debuggers and visualizations observe execution artifacts but do not change source semantics. `ariadion-core` owns neutral identity and source-location contracts so the language model and IR remain siblings. Daidalon preserves source references in lowered operations and diagnostics while assigning distinct IR-operation IDs for generated compiler output.
 
+## Object model
+
+Objects clarify ownership, invariants, and relationships; they do not justify
+elaborate inheritance trees. See [Object model, ownership, and identity
+boundaries](object-model.md) for aggregate ownership, immutable value objects,
+stable cross-layer identity, composition guidance, future substitution ports, and
+native-language modeling rules.
+
 ## Packages
 
 ### `ariadion-language`
