@@ -48,6 +48,15 @@ absolute tolerance of $10^{-12}$. The reference simulator emits exact
 probabilities without collapsing the state vector; sampling and collapse require
 an explicit future runtime policy.
 
+## Per-step inspection
+
+Runtime can project a captured `ExecutionTrace` into a `TraceInspection`. Each
+step binds its immutable IR operation identity and source reference to Theonoe's
+before/after state reports, basis-state changes, reduced density matrices, purity,
+and entanglement transition. This is a read-only derived artifact: it never mutates
+the trace or simulator state. See [Theonoe trace inspection](inspection.md) for
+the inspection data and separability semantics.
+
 ## Immutability and metadata
 
 All contract objects are frozen dataclasses with tuple-backed collections. Public

@@ -80,6 +80,7 @@ class TraceSimulationTests(unittest.TestCase):
         self.assertIsNone(disabled_execution.trace)
         self.assertEqual(runtime_result.simulation, legacy_result)
         self.assertIsNone(runtime_result.trace)
+        self.assertIsNone(runtime_result.trace_inspection)
 
     def test_simulator_trace_request_returns_a_public_execution_trace(self) -> None:
         circuit = compile_program(Program(1, program_id=ProgramId("examples/raw-capture.py")).h(0))

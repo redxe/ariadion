@@ -1,4 +1,5 @@
 from .runtime import RunResult, run_program
+from .inspection import TraceInspection, TraceStepInspection, inspect_execution_trace
 from .trace import (
 	EXECUTION_TRACE_SCHEMA_VERSION,
 	ExecutionMetadata,
@@ -22,9 +23,12 @@ __all__ = [
 	"MeasurementRecordKind",
 	"ResourceMetric",
 	"RunResult",
+	"TraceInspection",
+	"TraceStepInspection",
 	"StateRepresentation",
 	"StateSnapshot",
 	"TraceCaptureOptions",
 	"TraceStep",
+	"inspect_execution_trace",
 	"run_program",
 ]

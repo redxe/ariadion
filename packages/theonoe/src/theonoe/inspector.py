@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import cmath
+from collections.abc import Sequence
 from dataclasses import dataclass
+from math import isfinite
+from typing import Final
 
+from ariadion_core import canonical_json
 from ariadion_simulator import SimulationResult
+
+
+DEFAULT_EPSILON: Final = 1e-12
+SEPARABILITY_ABS_TOLERANCE: Final = 1e-9
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,36 +21,319 @@ class BasisState:
     probability: float
     phase_radians: float
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "label": self.label,
+            "amplitude": _complex_to_dict(self.amplitude),
+            "probability": self.probability,
+            "phase_radians": self.phase_radians,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class ReducedDensityMatrix:
+    """A one-qubit reduced density matrix derived from a pure state vector."""
+
+    qubit_index: int
+    rho_00: complex
+    rho_01: complex
+    rho_10: complex
+    rho_11: complex
+    purity: float
+    is_separable_from_rest: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "qubit_index": self.qubit_index,
+            "matrix": [
+                [_complex_to_dict(self.rho_00), _complex_to_dict(self.rho_01)],
+                [_complex_to_dict(self.rho_10), _complex_to_dict(self.rho_11)],
+            ],
+            "purity": self.purity,
+            "is_separable_from_rest": self.is_separable_from_rest,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class SeparabilityReport:
+    """Separability facts and explicitly heuristic subsystem groupings."""
+
+    proven_fully_separable: bool
+    proven_separable_qubits: tuple[int, ...]
+    entangled_qubits: tuple[int, ...]
+    heuristic_subsystems: tuple[tuple[int, ...], ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "proven_fully_separable": self.proven_fully_separable,
+            "proven_separable_qubits": list(self.proven_separable_qubits),
+            "entangled_qubits": list(self.entangled_qubits),
+            "heuristic_subsystems": [list(group) for group in self.heuristic_subsystems],
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
 
 @dataclass(frozen=True, slots=True)
 class StateReport:
     qubit_count: int
     states: tuple[BasisState, ...]
     entangled_qubits: tuple[int, ...]
+    reduced_density_matrices: tuple[ReducedDensityMatrix, ...] = ()
+    separability: SeparabilityReport | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "qubit_count": self.qubit_count,
+            "states": [state.to_dict() for state in self.states],
+            "entangled_qubits": list(self.entangled_qubits),
+            "reduced_density_matrices": [
+                matrix.to_dict() for matrix in self.reduced_density_matrices
+            ],
+            "separability": (
+                self.separability.to_dict() if self.separability is not None else None
+            ),
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
 
 
-def inspect_state(result: SimulationResult, *, epsilon: float = 1e-12) -> StateReport:
-    width = result.circuit.qubit_count
-    states = []
-    for index, amplitude in enumerate(result.amplitudes):
+@dataclass(frozen=True, slots=True)
+class BasisStateChange:
+    """The amplitude, probability, and relative phase change for one basis state."""
+
+    label: str
+    before_amplitude: complex
+    after_amplitude: complex
+    before_probability: float
+    after_probability: float
+    phase_change_radians: float | None
+
+    @property
+    def probability_delta(self) -> float:
+        return self.after_probability - self.before_probability
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "label": self.label,
+            "before_amplitude": _complex_to_dict(self.before_amplitude),
+            "after_amplitude": _complex_to_dict(self.after_amplitude),
+            "before_probability": self.before_probability,
+            "after_probability": self.after_probability,
+            "probability_delta": self.probability_delta,
+            "phase_change_radians": self.phase_change_radians,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class EntanglementTransition:
+    newly_entangled: tuple[int, ...]
+    newly_separable: tuple[int, ...]
+    persistent_entangled: tuple[int, ...]
+    persistent_separable: tuple[int, ...]
+
+    def to_dict(self) -> dict[str, list[int]]:
+        return {
+            "newly_entangled": list(self.newly_entangled),
+            "newly_separable": list(self.newly_separable),
+            "persistent_entangled": list(self.persistent_entangled),
+            "persistent_separable": list(self.persistent_separable),
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class StateTransition:
+    """Structured Theonoe analysis for an immutable before/after state pair."""
+
+    before: StateReport
+    after: StateReport
+    basis_state_changes: tuple[BasisStateChange, ...]
+    entanglement: EntanglementTransition
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "before": self.before.to_dict(),
+            "after": self.after.to_dict(),
+            "basis_state_changes": [
+                change.to_dict() for change in self.basis_state_changes
+            ],
+            "entanglement": self.entanglement.to_dict(),
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+def inspect_state(
+    result: SimulationResult,
+    *,
+    epsilon: float = DEFAULT_EPSILON,
+) -> StateReport:
+    """Inspect the final state of a simulation result."""
+
+    return inspect_amplitudes(
+        result.amplitudes,
+        result.circuit.qubit_count,
+        epsilon=epsilon,
+    )
+
+
+def inspect_amplitudes(
+    amplitudes: Sequence[complex],
+    qubit_count: int,
+    *,
+    epsilon: float = DEFAULT_EPSILON,
+    separability_tolerance: float = SEPARABILITY_ABS_TOLERANCE,
+) -> StateReport:
+    """Inspect an exact state-vector snapshot without requiring runtime contracts."""
+
+    values = _validated_amplitudes(amplitudes, qubit_count)
+    _validate_non_negative_finite(epsilon, label="epsilon")
+    _validate_non_negative_finite(
+        separability_tolerance,
+        label="separability_tolerance",
+    )
+
+    states: list[BasisState] = []
+    for index, amplitude in enumerate(values):
         probability = abs(amplitude) ** 2
         if probability <= epsilon:
             continue
         states.append(
             BasisState(
-                label=f"|{index:0{width}b}>",
+                label=_basis_label(index, qubit_count),
                 amplitude=amplitude,
                 probability=probability,
                 phase_radians=cmath.phase(amplitude),
             )
         )
 
-    entangled = tuple(
-        qubit
-        for qubit in range(width)
-        if _single_qubit_purity(result.amplitudes, width, qubit) < 1 - 1e-9
+    reduced_density_matrices = tuple(
+        inspect_reduced_density_matrix(
+            values,
+            qubit_count,
+            qubit,
+            separability_tolerance=separability_tolerance,
+        )
+        for qubit in range(qubit_count)
     )
-    return StateReport(width, tuple(states), entangled)
+    proven_separable_qubits = tuple(
+        matrix.qubit_index
+        for matrix in reduced_density_matrices
+        if matrix.is_separable_from_rest
+    )
+    entangled_qubits = tuple(
+        matrix.qubit_index
+        for matrix in reduced_density_matrices
+        if not matrix.is_separable_from_rest
+    )
+    separability = SeparabilityReport(
+        proven_fully_separable=not entangled_qubits,
+        proven_separable_qubits=proven_separable_qubits,
+        entangled_qubits=entangled_qubits,
+        heuristic_subsystems=_heuristic_subsystems(qubit_count, entangled_qubits),
+    )
+    return StateReport(
+        qubit_count,
+        tuple(states),
+        entangled_qubits,
+        reduced_density_matrices,
+        separability,
+    )
+
+
+def inspect_reduced_density_matrix(
+    amplitudes: Sequence[complex],
+    qubit_count: int,
+    qubit_index: int,
+    *,
+    separability_tolerance: float = SEPARABILITY_ABS_TOLERANCE,
+) -> ReducedDensityMatrix:
+    """Calculate one qubit's reduced density matrix and purity."""
+
+    values = _validated_amplitudes(amplitudes, qubit_count)
+    _validate_non_negative_finite(
+        separability_tolerance,
+        label="separability_tolerance",
+    )
+    if isinstance(qubit_index, bool) or not isinstance(qubit_index, int):
+        raise ValueError("qubit_index must be an integer")
+    if not 0 <= qubit_index < qubit_count:
+        raise ValueError("qubit_index must be within the state-vector width")
+
+    mask = 1 << qubit_index
+    rho_00 = 0j
+    rho_11 = 0j
+    rho_01 = 0j
+    for base in range(1 << qubit_count):
+        if base & mask:
+            continue
+        partner = base | mask
+        zero, one = values[base], values[partner]
+        rho_00 += zero * zero.conjugate()
+        rho_11 += one * one.conjugate()
+        rho_01 += zero * one.conjugate()
+    rho_10 = rho_01.conjugate()
+    purity = float((rho_00 * rho_00 + rho_11 * rho_11 + 2 * rho_01 * rho_10).real)
+    return ReducedDensityMatrix(
+        qubit_index,
+        rho_00,
+        rho_01,
+        rho_10,
+        rho_11,
+        purity,
+        purity >= 1 - separability_tolerance,
+    )
+
+
+def inspect_state_transition(
+    before_amplitudes: Sequence[complex],
+    after_amplitudes: Sequence[complex],
+    qubit_count: int,
+    *,
+    epsilon: float = DEFAULT_EPSILON,
+    separability_tolerance: float = SEPARABILITY_ABS_TOLERANCE,
+) -> StateTransition:
+    """Inspect two linked state snapshots and calculate their visible difference."""
+
+    before_values = _validated_amplitudes(before_amplitudes, qubit_count)
+    after_values = _validated_amplitudes(after_amplitudes, qubit_count)
+    before = inspect_amplitudes(
+        before_values,
+        qubit_count,
+        epsilon=epsilon,
+        separability_tolerance=separability_tolerance,
+    )
+    after = inspect_amplitudes(
+        after_values,
+        qubit_count,
+        epsilon=epsilon,
+        separability_tolerance=separability_tolerance,
+    )
+    return StateTransition(
+        before,
+        after,
+        _basis_state_changes(before_values, after_values, qubit_count, epsilon),
+        _entanglement_transition(
+            before.entangled_qubits,
+            after.entangled_qubits,
+            qubit_count,
+        ),
+    )
 
 
 def render_report(report: StateReport) -> str:
@@ -57,26 +348,107 @@ def render_report(report: StateReport) -> str:
         lines.append(f"entanglement hint: mixed reduced states detected for {qubits}")
     else:
         lines.append("entanglement hint: none detected")
+    if report.separability is not None:
+        if report.separability.proven_fully_separable:
+            lines.append("separability: fully separable from one-qubit purity checks")
+        else:
+            groups = ", ".join(
+                "{" + ", ".join(f"q{qubit}" for qubit in group) + "}"
+                for group in report.separability.heuristic_subsystems
+            )
+            lines.append(f"heuristic subsystems: {groups}")
     return "\n".join(lines)
 
 
-def _single_qubit_purity(amplitudes: tuple[complex, ...], width: int, target: int) -> float:
-    # Reduced density matrix for one qubit, calculated directly from amplitudes.
-    mask = 1 << target
-    rho00 = 0j
-    rho11 = 0j
-    rho01 = 0j
-    for base in range(1 << width):
-        if base & mask:
+def _basis_state_changes(
+    before_amplitudes: tuple[complex, ...],
+    after_amplitudes: tuple[complex, ...],
+    qubit_count: int,
+    epsilon: float,
+) -> tuple[BasisStateChange, ...]:
+    changes: list[BasisStateChange] = []
+    for index, (before, after) in enumerate(zip(before_amplitudes, after_amplitudes)):
+        if abs(after - before) ** 2 <= epsilon:
             continue
-        partner = base | mask
-        a0, a1 = amplitudes[base], amplitudes[partner]
-        rho00 += a0 * a0.conjugate()
-        rho11 += a1 * a1.conjugate()
-        rho01 += a0 * a1.conjugate()
-    rho10 = rho01.conjugate()
-    purity = rho00 * rho00 + rho11 * rho11 + 2 * rho01 * rho10
-    return float(purity.real)
+        before_probability = abs(before) ** 2
+        after_probability = abs(after) ** 2
+        phase_change = None
+        if before_probability > epsilon and after_probability > epsilon:
+            phase_change = cmath.phase(after * before.conjugate())
+        changes.append(
+            BasisStateChange(
+                _basis_label(index, qubit_count),
+                before,
+                after,
+                before_probability,
+                after_probability,
+                phase_change,
+            )
+        )
+    return tuple(changes)
+
+
+def _entanglement_transition(
+    before_entangled: tuple[int, ...],
+    after_entangled: tuple[int, ...],
+    qubit_count: int,
+) -> EntanglementTransition:
+    before = set(before_entangled)
+    after = set(after_entangled)
+    all_qubits = set(range(qubit_count))
+    return EntanglementTransition(
+        newly_entangled=tuple(sorted(after - before)),
+        newly_separable=tuple(sorted(before - after)),
+        persistent_entangled=tuple(sorted(before & after)),
+        persistent_separable=tuple(sorted(all_qubits - before - after)),
+    )
+
+
+def _heuristic_subsystems(
+    qubit_count: int,
+    entangled_qubits: tuple[int, ...],
+) -> tuple[tuple[int, ...], ...]:
+    entangled = set(entangled_qubits)
+    groups = [(qubit,) for qubit in range(qubit_count) if qubit not in entangled]
+    if entangled_qubits:
+        groups.append(entangled_qubits)
+    return tuple(sorted(groups, key=lambda group: group[0]))
+
+
+def _validated_amplitudes(
+    amplitudes: Sequence[complex],
+    qubit_count: int,
+) -> tuple[complex, ...]:
+    if isinstance(qubit_count, bool) or not isinstance(qubit_count, int):
+        raise ValueError("qubit_count must be an integer")
+    if qubit_count < 0:
+        raise ValueError("qubit_count must be non-negative")
+    values = tuple(amplitudes)
+    if len(values) != 1 << qubit_count:
+        raise ValueError("amplitude count must equal 2**qubit_count")
+    if not all(isinstance(amplitude, complex) for amplitude in values):
+        raise ValueError("amplitudes must be complex values")
+    if any(
+        not isfinite(amplitude.real) or not isfinite(amplitude.imag)
+        for amplitude in values
+    ):
+        raise ValueError("amplitudes must be finite")
+    return values
+
+
+def _validate_non_negative_finite(value: float, *, label: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be numeric")
+    if not isfinite(float(value)) or value < 0:
+        raise ValueError(f"{label} must be finite and non-negative")
+
+
+def _basis_label(index: int, qubit_count: int) -> str:
+    return f"|{index:0{qubit_count}b}>"
+
+
+def _complex_to_dict(value: complex) -> dict[str, float]:
+    return {"real": value.real, "imaginary": value.imag}
 
 
 def _format_complex(value: complex) -> str:

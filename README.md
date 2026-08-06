@@ -42,6 +42,10 @@ print(result.report)
 trace = result.trace
 assert trace is not None
 print(trace.steps[0].after.amplitudes)
+
+trace_inspection = result.trace_inspection
+assert trace_inspection is not None
+print(trace_inspection.steps[0].transition.basis_state_changes)
 ```
 
 Expected probabilities:
@@ -81,4 +85,4 @@ tests/               vertical-slice tests
 - **Provider-neutral:** semantic IR sits between source code and simulator or hardware backends.
 - **Teach through execution:** tutorials and diagnostics should use the same runtime as real projects.
 
-See [`docs/architecture.md`](docs/architecture.md), [`specs/language.md`](specs/language.md), and [`specs/runtime.md`](specs/runtime.md).
+See [`docs/architecture.md`](docs/architecture.md), [`specs/language.md`](specs/language.md), [`specs/runtime.md`](specs/runtime.md), and [`specs/inspection.md`](specs/inspection.md).

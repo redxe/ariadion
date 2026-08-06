@@ -3,7 +3,7 @@ name = "theonoe"
 version = "0.1.0"
 description = "Inspection and debugging engine for Ariadion"
 requires-python = ">=3.11"
-dependencies = ["ariadion-simulator"]
+dependencies = ["ariadion-core", "ariadion-simulator"]
 
 [build-system]
 requires = ["setuptools>=68"]
