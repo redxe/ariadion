@@ -15,7 +15,8 @@ from ariadion_core import (
     canonical_json,
     require_nonempty_identifier,
 )
-from ariadion_ir import OpCode, Operation, OperationProvenance
+from ariadion_ir import CircuitIR, OpCode, Operation, OperationProvenance
+from ariadion_simulator import SimulationResult, SimulationTrace, SimulationTraceStep
 
 
 EXECUTION_TRACE_SCHEMA_VERSION: Final = 1
@@ -51,6 +52,17 @@ class TraceCaptureOptions:
 
     def to_json(self) -> str:
         return canonical_json(self.to_dict())
+
+    def build_execution_trace(
+        self,
+        result: SimulationResult,
+        captured_trace: SimulationTrace,
+    ) -> ExecutionTrace:
+        """Project raw backend capture to the public runtime trace contract."""
+
+        if not self.enabled:
+            raise ValueError("trace capture must be enabled to build an execution trace")
+        return _execution_trace_from_capture(result, captured_trace)
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,3 +403,48 @@ def _operation_to_dict(operation: Operation) -> dict[str, object]:
 def _require_tuple(value: object, *, label: str) -> None:
     if not isinstance(value, tuple):
         raise ValueError(f"{label} must be a tuple")
+
+
+def _execution_trace_from_capture(
+    result: SimulationResult,
+    captured_trace: SimulationTrace,
+) -> ExecutionTrace:
+    circuit = result.circuit
+    initial_state = StateSnapshot(
+        circuit.id,
+        circuit.qubit_count,
+        captured_trace.initial_amplitudes,
+    )
+    steps = tuple(
+        _trace_step_from_capture(circuit, captured_step)
+        for captured_step in captured_trace.steps
+    )
+    return ExecutionTrace(
+        circuit.id,
+        initial_state,
+        steps,
+        metadata=ExecutionMetadata(mode=ExecutionMode.EXACT),
+    )
+
+
+def _trace_step_from_capture(
+    circuit: CircuitIR,
+    captured_step: SimulationTraceStep,
+) -> TraceStep:
+    operation = captured_step.operation
+    measurement = None
+    if captured_step.measurement_probabilities is not None:
+        measurement = MeasurementEvent(
+            operation.id,
+            operation.targets,
+            MeasurementRecordKind.EXACT_PROBABILITIES,
+            key=operation.key,
+            probabilities=captured_step.measurement_probabilities,
+        )
+    return TraceStep(
+        captured_step.index,
+        operation,
+        StateSnapshot(circuit.id, circuit.qubit_count, captured_step.before_amplitudes),
+        StateSnapshot(circuit.id, circuit.qubit_count, captured_step.after_amplitudes),
+        measurement=measurement,
+    )

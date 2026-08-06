@@ -30,14 +30,18 @@ python tools/test.py
 Or use the modules directly:
 
 ```python
-from ariadion import Program, run
+from ariadion import Program, TraceCaptureOptions, run
 
 program = Program(2, name="bell")
 program.h(0).cx(0, 1)
 
-result = run(program)
+result = run(program, trace=TraceCaptureOptions(enabled=True))
 print(result.circuit)
 print(result.report)
+
+trace = result.trace
+assert trace is not None
+print(trace.steps[0].after.amplitudes)
 ```
 
 Expected probabilities:

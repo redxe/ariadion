@@ -39,7 +39,7 @@ Validates source programs and lowers them to semantic IR. Future compiler passes
 
 ### `ariadion-simulator`
 
-A dependency-free state-vector reference backend. It favors clarity and correctness over performance.
+A dependency-free state-vector reference backend. It favors clarity and correctness over performance. When explicitly enabled, it retains raw immutable amplitude transitions, but it does not depend on runtime trace contracts or interpret those states.
 
 ### `theonoe`
 
@@ -54,7 +54,7 @@ Turns semantic IR and execution snapshots into textual or structured views. The 
 Coordinates compilation, execution, inspection, and rendering. It is the first vertical slice used by the CLI, examples, and future Studio.
 
 It also owns the versioned execution-trace contract consumed by debugger and Studio
-clients. Trace data remains separate from simulator capture so backends can opt in
+clients. It adapts simulator raw capture into that contract so backends can opt in
 without changing source or IR semantics.
 
 ## Near-term vertical slice

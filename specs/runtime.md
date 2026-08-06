@@ -1,16 +1,17 @@
 # Runtime execution trace contract — draft 0
 
 `ariadion-runtime` defines the versioned, frontend-neutral contract for an
-operation-by-operation execution trace. This document defines data only; the
-reference simulator does not produce traces until the trace-producing simulation
-issue is implemented.
+operation-by-operation execution trace. The reference state-vector simulator
+captures immutable raw amplitude tuples; runtime adapts that capture to this
+public contract without exposing simulator buffers.
 
 ## Capture boundary
 
 `TraceCaptureOptions(enabled=False)` is the producer-facing opt-in. A producer
 with capture disabled returns no `ExecutionTrace` and must not retain intermediate
 state vectors. With capture enabled, it returns one `ExecutionTrace` for the
-executed circuit.
+executed circuit. The reference simulator retains an initial state and one
+before/after transition per current IR operation only while capture is enabled.
 
 ## Identity and indexing
 
@@ -43,7 +44,9 @@ sampled outcomes by invariant. A measurement event can attach only to a `MEASURE
 operation with the same operation ID, targets, and key. Targets must be unique and
 fit the snapshot width. Exact records have exactly $2^n$ finite, non-negative
 probabilities for $n$ targets, and those probabilities must sum to one within an
-absolute tolerance of $10^{-12}$.
+absolute tolerance of $10^{-12}$. The reference simulator emits exact
+probabilities without collapsing the state vector; sampling and collapse require
+an explicit future runtime policy.
 
 ## Immutability and metadata
 

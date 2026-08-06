@@ -10,8 +10,12 @@ from ariadion_runtime import (
 __version__ = "0.1.0"
 
 
-def run(program: Program) -> RunResult:
-    return run_program(program)
+def run(
+    program: Program,
+    *,
+    trace: TraceCaptureOptions | None = None,
+) -> RunResult:
+    return run_program(program, trace=trace)
 
 
 __all__ = [
