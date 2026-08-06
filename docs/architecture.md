@@ -18,8 +18,41 @@ Ariadion SDK ─────────────┴────────�
 The compiler produces immutable semantic IR. Runtime backends consume IR. Debuggers and visualizations observe execution artifacts but do not change source semantics. `ariadion-core` owns neutral identity and source-location contracts so the language model and IR remain siblings. Daidalon preserves source references in lowered operations and diagnostics while assigning distinct IR-operation IDs for generated compiler output.
 
 `ariadion-syntax` currently depends only on `ariadion-core`. A future resolved and
-typed source-semantic model will bridge native syntax into Daidalon without making
-the syntax package depend on IR, runtime, simulators, or Theonoe.
+typed source-semantic model will bridge Python-compatible extension syntax into
+Daidalon without making the syntax package depend on IR, runtime, simulators, or
+Theonoe.
+
+## Frontend and managed allocation
+
+The public language direction is a managed Python quantum extension. Programmers
+create and manipulate logical quantum values; allocation, reuse, layout, and
+physical-resource mapping are compiler responsibilities. The intended frontend is:
+
+```text
+Python-compatible Ariadion source
+    ↓
+extension-aware tokenization / source transformation
+    ↓
+Python AST + Ariadion extension nodes
+    ↓
+resolved quantum semantic model
+    ↓
+lifetime and resource analysis
+    ↓
+allocated provider-neutral CircuitIR
+    ↓
+simulator or hardware backend
+```
+
+The Python parser retains ownership of ordinary Python. Ariadion recognizes only
+explicit quantum constructs, preserving exact original source ranges and identities
+through transformation. A standalone parser for `program name` and `qubits data[2]`
+is not on the current path.
+
+The allocated `CircuitIR` continues to use dense integer targets and an explicit
+`qubit_count`; those are compiler results. Daidalon will expose a logical-to-IR
+allocation artifact for diagnostics, resource reporting, trace navigation, and
+later hardware mapping.
 
 ## Object model
 
@@ -33,17 +66,20 @@ native-language modeling rules.
 
 ### `ariadion-language`
 
-A small Python-first builder. It records user intent and source-level operations,
-including explicit degree, radian, and turn-based rotation angles. It deliberately
-does not simulate or optimize.
+A small width-based Python builder for the current vertical slice. It records
+already allocated integer-target operations, including explicit degree, radian,
+and turn-based rotation angles. It is a compatibility and migration mechanism;
+the next builder prototype will expose logical qubit handles instead of requiring
+`Program(width)`.
 
 ### `ariadion-syntax`
 
-Immutable token and source-AST contracts for native `.ari` programs. It preserves
-written identifiers, symbolic named register declarations and qubit references,
-basis expressions, angle suffixes, complete source ranges, and snapshot
-syntax-node IDs with optional durable editor IDs. It does not parse, resolve names,
-calculate canonical values, or depend on compiled IR. See [the native syntax
+Immutable token and source-contracts for extensions embedded in Python-compatible
+source. It preserves exact spelling, basis expressions, angle suffixes, complete
+source ranges, and snapshot syntax-node IDs with optional durable editor IDs. Its
+schema-v3 named-register document model remains compatibility data, not the future
+public grammar. It does not parse all of Python, resolve names, allocate resources,
+calculate canonical values, or depend on compiled IR. See [the syntax
 specification](../specs/syntax.md).
 
 ### `ariadion-core`
@@ -55,11 +91,16 @@ contracts. It has no dependency on language syntax, IR, compilers, or backends.
 
 Stable dataclasses for qubits, operations, circuits, IR provenance, and canonical
 rotation radians with optional source-display metadata. Provider adapters should
-target this layer rather than source objects.
+target this layer rather than source objects. Its integer targets and
+`CircuitIR.qubit_count` represent an allocated circuit, not user-written resource
+allocation.
 
 ### `daidalon`
 
-Validates source programs and lowers them to semantic IR. Future compiler passes will include canonicalization, decomposition, routing, resource estimation, and backend-specific lowering.
+Validates resolved quantum programs, performs lifetime and resource analysis,
+creates allocation plans, and lowers them to semantic IR. Future compiler passes
+will include canonicalization, decomposition, routing, resource estimation, and
+backend-specific lowering.
 
 ### `ariadion-simulator`
 

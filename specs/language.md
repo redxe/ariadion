@@ -1,6 +1,102 @@
-# Ariadion language model — draft 0
+# Ariadion language model — draft 1
 
-The initial API is embedded in Python. A source program declares a fixed number of qubits and appends explicit operations.
+Ariadion is a managed quantum extension of Python. Programmers express logical
+quantum values, algorithms, relationships, and measurement intent. Ariadion owns
+resource allocation, lifetime analysis, reuse, layout, routing, decomposition,
+and the eventual mapping to simulator or hardware qubits.
+
+## Language charter
+
+1. **Python compatibility:** ordinary valid Python retains ordinary Python meaning
+   unless code explicitly enters an Ariadion quantum construct.
+2. **Logical values, not addresses:** source programs manipulate logical quantum
+   values. Physical qubit indexes and an allocated width are compiler results, not
+   source-level inputs.
+3. **Explicit quantum boundary:** `@quantum` marks code captured as a quantum
+   program. Ordinary functions, imports, classes, exceptions, and collections
+   remain classical Python by default.
+4. **Visible managed resources:** allocation is automatic but observable through
+   compiler artifacts, diagnostics, and debugger views.
+5. **Layered meaning:** source spelling, resolved quantum semantics, resource
+   allocation, and provider-neutral IR remain distinct models.
+6. **No backend guesses:** units, bases, measurement intent, and resource
+   constraints are explicit source or semantic facts before lowering.
+
+## Status and compatibility
+
+This document defines the target public language; the current runtime still
+executes the width-based Python builder described below. `Program(width)` and its
+integer-target operations are compatibility and migration mechanisms, not the
+future source-language model. They remain supported until logical-value lowering
+proves an equivalent vertical slice.
+
+## Python-compatible quantum functions
+
+The first executable frontend must use valid Python and Python's parser. This is a
+target contract, not an implemented API yet:
+
+```python
+from ariadion import Qubit, cx, h, measure, quantum, qubit
+
+
+@quantum
+def bell():
+    left = qubit()
+    right = qubit()
+
+    h(left)
+    cx(left, right)
+
+    return measure(left), measure(right)
+```
+
+`left` and `right` are logical quantum values. They are neither simulator indexes
+nor hardware addresses. The decorator captures supported code for compilation;
+it must not execute quantum operations as ordinary Python calls.
+
+Quantum function parameters may introduce or receive logical values without
+knowing a global qubit count:
+
+```python
+@quantum
+def prepare_plus(target: Qubit):
+    h(target)
+```
+
+Quantum parameters bind logical values rather than physical slots. A return value
+may be a classical measurement result or, when later ownership rules permit it, a
+logical quantum value whose lifetime escapes the function. Neither parameter nor
+return types expose simulator or hardware indexes.
+
+The semantic model will define ownership, aliasing, escaping values, reset, and
+measurement consumption before allocation is implemented. Until then, no frontend
+may imply that a Python assignment copies a quantum state or silently changes
+quantum ownership. Measurement produces a classical result value; the precise
+ownership effect on the measured logical value must be explicit in the later
+semantic contract.
+
+## Logical quantum values and managed resources
+
+Each `qubit()` creation receives a logical identity. Resolved quantum operations
+target those identities, and lifetime analysis determines the peak simultaneously
+live set. Daidalon then allocates dense integer targets for `CircuitIR`.
+
+```text
+logical values and lifetimes
+    -> allocation plan
+    -> allocated CircuitIR.qubit_count and integer targets
+```
+
+The first allocation policy may use one slot per distinct live logical value. Later
+policies can reuse a slot after a value's lifetime ends, introduce ancillas, insert
+resets, route for hardware topology, and report provider-specific requirements.
+The compiler must expose facts such as logical values created, peak live values,
+allocated simulator qubits, and hardware qubits required. A future annotation such
+as `@quantum(max_qubits=12)` is a resource contract or hint, not manual allocation.
+
+## Current compatibility surface
+
+The working builder currently appends operations to a preallocated program:
 
 ```python
 program = Program(2, name="bell")
@@ -8,35 +104,77 @@ program.h(0)
 program.cx(0, 1)
 ```
 
-## Current operations
-
-- `x(target)`
-- `h(target)`
-- `z(target)`
-- `rx(target, angle)`
-- `ry(target, angle)`
-- `rz(target, angle)`
-- `cx(control, target)`
-- `measure(target, key=None)`
+It supports `x`, `h`, `z`, `rx`, `ry`, `rz`, `cx`, and `measure`. Integer targets
+and the constructor width describe already allocated IR-like slots. New source
+features must not extend this API as the long-term user model; the logical-handle
+builder prototype is the next migration step.
 
 ## Angles and rotations
 
-Rotations require an explicit `Angle`, created with `deg()`, `rad()`, or
-`turns()`:
+Rotations require an explicit unit-bearing `Angle`. The valid-Python frontend uses
+`deg()`, `rad()`, or `turns()`:
 
 ```python
-program.rx(0, deg(190))
-program.ry(1, rad(2))
-program.rz(2, turns(0.25))
+@quantum
+def rotate(target: Qubit):
+   rx(target, deg(190))
+   ry(target, rad(2))
+   rz(target, turns(0.25))
 ```
 
-An `Angle` preserves its `source_value` and `source_unit` while carrying a
-canonical `radians` value. The builder retains a bare numeric rotation argument
-long enough for Daidalon to produce a source-linked diagnostic; it never guesses
-whether `program.rx(0, 2)` means degrees, radians, or turns. The diagnostic asks
-the author to write `rad(2)` or `deg(2)` explicitly.
+An `Angle` preserves its source value and unit while carrying a canonical-radians
+semantic value. A later Ariadion extension literal such as `190deg` may preserve
+its exact lexical text as an `AngleLiteral`, but it must lower into the same angle
+semantic model. The compiler never guesses whether a bare numeric argument means
+degrees, radians, or turns.
 
-## Source identity and locations
+## Basis values and measurement intent
+
+A basis is a typed domain concept rather than a backend default. Explicit
+measurement remains available in the Python-compatible frontend:
+
+```python
+result = measure(target, basis=x)
+```
+
+The precise spelling of basis values is not frozen. A quantum function may later
+establish a default basis with `@quantum(basis=z)`, a scoped context such as
+`with basis(x):`, or a custom basis-producing function marked with `@basis`.
+Whatever syntax is adopted, the resolved semantic model must retain the selected
+basis and Daidalon must lower any basis change explicitly. Backends must not infer
+measurement bases.
+
+## Classical and quantum call boundaries
+
+Ordinary Python functions are classical by default. They cannot implicitly create,
+operate on, or capture logical quantum values. A quantum function may call another
+resolved quantum function or an explicitly supported classical subroutine, subject
+to later capture and control-flow rules. Imports, classes, exceptions, collections,
+and ordinary function calls retain Python behavior outside the explicit quantum
+boundary.
+
+A future `@classical` marker may document classical subroutines callable from a
+quantum workflow, but it is not required to preserve ordinary Python semantics.
+The semantic model, rather than a decorator name alone, will determine which values
+cross a classical/quantum call boundary and whether those values are legal.
+
+## Source transformation, identity, and diagnostics
+
+The frontend uses Python's grammar for ordinary Python. Valid-Python quantum
+constructs can parse directly through Python's AST. When Ariadion-specific syntax
+is present, extension-aware tokenization or source transformation runs before
+Python AST parsing and supplies extension nodes alongside the resulting Python AST.
+Transformation must preserve a mapping to original source spans; it must never
+silently redefine unmarked Python syntax.
+
+Python syntax errors remain Python syntax errors. Ariadion extension, capture,
+resolution, type, ownership, and resource failures use source-linked diagnostics
+with exact original locations. `SyntaxDiagnostic` remains independent from
+semantic compiler diagnostics.
+
+The following identity behavior describes the current width-based builder
+compatibility surface. A logical-value frontend will preserve the same
+snapshot-versus-durable distinction without requiring a `Program(width)` source API.
 
 Each `Program` has a `ProgramId` that scopes source and IR artifacts. The default
 is a process-local snapshot ID of the form `snapshot:<creation-index>:<name>`, so
@@ -68,25 +206,28 @@ to the durable node ID when present and otherwise to the snapshot operation ID.
 Program-wide diagnostics may have no source reference; their messages remain useful
 without a file or position.
 
-## Invariants
+`SyntaxNodeId` identifies one parsed source snapshot and `SourceNodeId`, when
+supplied by an editor, identifies a durable source element across edits. Builder
+`SnapshotOperationId` values remain compatibility identities for the existing
+width-based API; future logical operations require their own source and semantic
+identities before allocation generates IR-operation IDs.
 
-1. Qubit indices are zero-based and must be within the declared program width.
-2. A controlled operation may not use the same qubit as control and target.
-3. Source-level operations preserve insertion order.
-4. Measurement is explicit; simulation reports probabilities without sampling unless sampling is requested by a future API.
-5. The compiler, not the source builder, owns semantic validation.
-6. Snapshot operation IDs are deterministic within a program snapshot and preserve
-   operation insertion order, but are not durable across source edits.
-7. Persisted editor state must use frontend-supplied durable source node IDs rather
-   than snapshot operation IDs.
+## Source-model and IR boundary
 
-## Basis direction
+The source model must not contain a physical qubit index or a required global
+width. It establishes written quantum constructs and logical-value relationships;
+the resolved semantic model establishes bindings, types, ownership, aliases,
+function calls, basis values, and lifetimes. Daidalon then creates an allocation
+plan and lowers the result into integer-target `CircuitIR`.
 
-The next language revision will attach an explicit basis descriptor to preparation, observation, and debugging operations. Basis conversion must appear in IR rather than being inferred by a backend.
+```text
+Python-compatible Ariadion source
+    -> Python AST plus Ariadion extension nodes
+    -> resolved quantum semantic model
+    -> lifetime and resource analysis
+    -> allocated provider-neutral CircuitIR
+```
 
-## Native syntax direction
-
-The parser-free native `.ari` source contract is specified separately in
-[`specs/syntax.md`](syntax.md). It preserves written syntax and source identity
-before future name resolution, type checking, and Daidalon lowering connect it to
-this Python-first source model and semantic IR.
+The extension-source contracts are specified separately in
+[`specs/syntax.md`](syntax.md). They retain exact spelling, source ranges, and
+identity without trying to replace Python's AST.

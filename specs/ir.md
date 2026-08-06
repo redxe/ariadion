@@ -10,6 +10,12 @@ CircuitIR
   operations: tuple[Operation, ...]
 ```
 
+`qubit_count` and every integer target describe an **allocated** circuit. They are
+not a future source-language declaration: Daidalon will derive them from logical
+quantum values, lifetimes, resource constraints, and backend requirements. A future
+allocation artifact will preserve the logical-to-IR mapping for diagnostics,
+resource reports, trace navigation, and hardware layout explanations.
+
 Each `Operation` contains:
 
 - a distinct IR operation ID;

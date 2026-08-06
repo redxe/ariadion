@@ -97,20 +97,20 @@ from leaking across package boundaries. Existing examples include `Angle`,
 Future language work should introduce value objects where a bare integer or string
 would lose meaning, including:
 
-- `QubitRef` and `RegisterRef` for named registers;
+- `LogicalQubitId`, `LogicalQubit`, and `QuantumValueRef` for managed values;
 - `Basis` and basis expressions;
 - `MeasurementKey` and classical conditions;
 - `Probability`, `ShotCount`, and backend identifiers; and
 - execution occurrence and breakpoint identities.
 
-For example, named registers should preserve author intent before lowering to a
-physical or simulator index:
+For example, a logical qubit must preserve author intent before allocation assigns
+an IR target:
 
 ```python
 @dataclass(frozen=True, slots=True)
-class QubitRef:
-    register: RegisterId
-    index: int
+class LogicalQubit:
+    id: LogicalQubitId
+    display_name: str | None
 ```
 
 A value object validates itself, compares by value, remains immutable, and has a
@@ -119,17 +119,20 @@ one when the name carries a domain invariant or prevents an ambiguous boundary.
 
 ## Identity across layers
 
-Layers link through stable identifiers, never Python object identity. Native source
-syntax uses a required snapshot identity and optional durable editor identity; the
-current compiled/execution chain can be viewed as:
+Layers link through stable identifiers, never Python object identity. Python
+extension syntax uses a required snapshot identity and optional durable editor
+identity; the planned semantic and allocated chain can be viewed as:
 
 ```text
-Native source AST:
+Python AST + Ariadion extension nodes:
     SyntaxNodeId (one parsed source snapshot)
     SourceNodeId (optional durable editor identity)
 
-Compiled and execution artifacts:
-    SnapshotOperationId (one compiled source snapshot)
+Resolved quantum semantics:
+    LogicalQubitId (one logical quantum value)
+
+Allocated and execution artifacts:
+    SnapshotOperationId (current width-based builder compatibility)
     -> IrOperationId (one semantic operation)
     -> trace step index (one execution occurrence today)
     -> TraceStepInspection
@@ -138,9 +141,12 @@ Compiled and execution artifacts:
 
 `SyntaxNodeId` is required for a parsed source snapshot but does not promise to
 survive edits. `SourceNodeId` must survive source editing when supplied by an
-editor. Snapshot operation IDs are deterministic only inside a compiled snapshot.
-IR operation IDs distinguish lowered or generated semantic operations. Trace steps
-preserve an ordered occurrence of an IR operation during one execution.
+editor. A future `LogicalQubitId` distinguishes a source-level value from any
+allocated target. Snapshot operation IDs are deterministic only inside the current
+width-based builder snapshot; a logical-value frontend will add source-operation
+identity before allocation. IR operation IDs distinguish lowered or generated
+semantic operations. Trace steps preserve an ordered occurrence of an IR operation
+during one execution.
 
 A future `OperationLink` value object may centralize these relationships for
 source navigation, persistent breakpoints, compiler provenance, remote result
@@ -201,8 +207,8 @@ class CompilerPass(Protocol):
 Each pass should return a new immutable artifact or context, add diagnostics,
 preserve or extend provenance, and expose optional analysis data. Likely stages
 include validation, name resolution, type checking, angle normalization, function
-expansion, basis lowering, decomposition, routing, resource estimation, and
-backend lowering.
+expansion, basis lowering, lifetime analysis, allocation, decomposition, routing,
+resource estimation, and backend lowering.
 
 The relevant principle is not the exact `CompilationContext` type. It is that a
 pass has declared inputs, outputs, diagnostics, and provenance effects. Studio can
@@ -259,21 +265,28 @@ consume serialized models rather than scrape terminal text.
 - Split a class when it changes for unrelated reasons; avoid `Program`, runtime,
   or Studio-session god objects.
 
-## Native-language application
+## Python-extension language application
 
-The native `.ari` language must keep author syntax separate from semantic meaning
-and compiled IR. A parser node should preserve spelling and source range; a
-resolved node should preserve symbol binding; a typed node should establish domain
-meaning; and only then should Daidalon lower it to IR.
+The Ariadion Python extension must keep author syntax separate from semantic
+meaning and compiled IR. Python owns ordinary Python parsing; extension nodes
+preserve Ariadion spelling and source ranges; resolved nodes preserve logical-value
+bindings; typed nodes establish domain meaning and ownership; lifetime analysis and
+allocation then assign IR targets.
 
 ```text
-Syntax node -> resolved semantic node -> typed semantic node -> IR operation
+Python AST + extension node
+    -> resolved logical-value node
+    -> typed/owned semantic node
+    -> allocation plan
+    -> IR operation
 ```
 
-For example, `rx data[0], 190deg` retains `190deg` in syntax, becomes an angle in
-the typed model, and lowers to canonical radians plus source metadata in IR.
-Parser nodes must not double as `CircuitIR` operations.
+For example, `rx(target, deg(190))` retains its source angle, becomes an angle in
+the typed model, and lowers to canonical radians plus source metadata in IR. A
+future `190deg` extension literal must lower into that same model. Extension nodes
+must not double as `CircuitIR` operations.
 
-The native source AST now records symbolic named registers and basis expressions.
-The next language milestones are a parser, name-resolution, and lowering pipelines
-that preserve this separation.
+The schema-v3 named-register source AST remains compatibility data. The next
+language milestones are logical quantum values and ownership contracts, resource
+inference, a valid-Python `@quantum` prototype, and only then justified extension
+syntax or editor support.

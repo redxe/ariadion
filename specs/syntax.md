@@ -1,161 +1,138 @@
-# Native Ariadion syntax and source AST — draft 0
+# Ariadion Python-extension syntax and source contracts — draft 1
 
-`ariadion-syntax` defines immutable source contracts for native `.ari` programs.
-It deliberately does **not** include a lexer, parser, name resolver, type checker,
-or IR lowering yet. The first contract freezes written syntax and source identity
-before parser behavior or semantic rules become public.
+`ariadion-syntax` defines immutable, source-preserving contracts for Ariadion
+extensions embedded in Python-compatible source. It does not replace Python's AST,
+include a standalone `.ari` lexer or parser, resolve names, type check, allocate
+resources, or lower to IR.
 
-## Native grammar
+## Public direction
 
-The grammar is expressed in EBNF. Newlines separate declarations and statements;
-blank lines are ignored by a future lexer/parser.
+The future language is a managed Python quantum extension. A public source program
+does not begin with `program name` or `qubits data[2]`, and it does not address a
+qubit by a source-level integer. Those forms are not requirements for the future
+language grammar and must not drive a standalone parser implementation.
 
-```text
-program             = "program" , identifier , newline ,
-                      { newline } ,
-                      { qubit-register-declaration , newline , { newline } } ,
-                      { statement , newline , { newline } } ;
+The first executable frontend will use valid Python; this is the target surface,
+not an implemented API yet:
 
-qubit-register-declaration
-                    = "qubits" , identifier , "[" , integer-literal , "]" ;
+```python
+from ariadion import cx, h, measure, quantum, qubit
 
-statement           = single-qubit-gate
-                    | controlled-gate
-                    | rotation
-                    | measurement ;
 
-single-qubit-gate   = ( "x" | "h" | "z" ) , qubit-reference ;
-controlled-gate     = "cx" , qubit-reference , "," , qubit-reference ;
-rotation            = ( "rx" | "ry" | "rz" ) , qubit-reference , "," ,
-                      angle-literal ;
-measurement         = "measure" , qubit-reference , "in" , basis-expression ,
-                      "->" , identifier ;
-
-qubit-reference     = identifier , "[" , integer-literal , "]" ;
-basis-expression    = identifier ;
-angle-literal       = signed-decimal , ( "deg" | "rad" | "turns" ) ;
-identifier          = letter-or-underscore , { letter | digit | "_" } ;
-integer-literal     = digit , { digit } ;
-signed-decimal      = [ "+" | "-" ] , integer-literal ,
-                      [ "." , integer-literal ] ;
+@quantum
+def bell():
+    left = qubit()
+    right = qubit()
+    h(left)
+    cx(left, right)
+    return measure(left), measure(right)
 ```
 
-The following are valid written programs:
+`left` and `right` are logical quantum values. Resource analysis and allocation
+later decide their lifetimes, reuse, dense IR targets, simulator width, and hardware
+layout.
 
-```text
-program bell
+## Extension-aware frontend
 
-qubits data[2]
+Python owns parsing of ordinary Python. An extension-aware tokenizer or source
+transformation recognizes only explicit Ariadion constructs, preserves a mapping to
+the original source, and then supplies Python AST facts plus Ariadion extension
+nodes to semantic analysis. Unmarked Python must never acquire quantum meaning.
 
-h data[0]
-cx data[0], data[1]
-measure data[0] in z -> result
-```
+Future Ariadion sugar can include unit-bearing angle literals such as `190deg` and
+basis-aware measurement syntax. Such forms are justified only after they lower into
+the same semantic model proven by the valid-Python frontend. A file extension such
+as `.ari` does not imply a second language grammar; it may hold Python-compatible
+Ariadion source when file loading and Studio support need it.
 
-```text
-program rotations
+## Future source AST
 
-qubits data[1]
+The extension AST models only Ariadion concepts; it deliberately does not recreate
+Python's nodes. Intended node families include:
 
-ry data[0], 90deg
-rz data[0], 0.5turns
-```
+- `QuantumFunctionSyntax` for an explicitly marked quantum function;
+- `QuantumValueBindingSyntax` for a logical-value creation or binding;
+- `QuantumOperationSyntax` for an operation over logical values;
+- `MeasurementExpressionSyntax` for a value-producing measurement; and
+- `BasisExpression` and `AngleLiteral` for exact author-written domain values.
 
-The grammar permits zero or more register declarations. It keeps declarations
-before executable statements structurally, but it does not require quantum storage
-or decide whether declarations form a valid quantum layout. A source reference such
-as `data[0]` remains symbolic and is never flattened into a simulator index by the
-syntax layer.
+These nodes retain exact spelling, complete source ranges, a required
+snapshot-scoped `SyntaxNodeId`, and an optional durable editor `SourceNodeId`.
+They describe logical values and measurement intent, never physical indexes or a
+required global allocation width.
 
-## Source AST
+## Existing schema v3 compatibility
 
-`ProgramSyntax` is the immutable root. It keeps ordered `declarations` separate
-from ordered executable `statements`, so declarations cannot appear after a gate
-or measurement. Schema version $3$ accepts a sequence of
-`QubitRegisterDeclaration` values, including an empty sequence, because the source
-AST records syntax rather than semantic validity.
+The current immutable `ProgramSyntax` document model remains available at schema
+version $3$. Its `QubitRegisterDeclaration`, register/index `QubitReference`,
+gate statements, rotations, and basis-aware measurements preserve source data for
+existing frontend documents and tests. It is not a commitment to the future public
+language grammar, and no standalone lexer or parser will be built around it.
 
-Statements are `GateStatement`, `RotationStatement`, and
-`MeasurementStatement`. A `QubitRegisterDeclaration` contains an author-written
-register `name` and `size`; a `QubitReference` contains its symbolic `register`
-and `index`. `GateStatement` represents the currently supported non-rotation
-primitives (`x`, `h`, `z`, and `cx`), while `RotationStatement` retains a
-`RotationAxis`, `QubitReference`, and `AngleLiteral`. `MeasurementStatement`
-contains a `QubitReference`, a `BasisExpression`, and a result-key `Identifier`.
+`BasisExpression`, `AngleLiteral`, `Identifier`, `IntegerLiteral`, and
+`SyntaxLocation` remain useful source-value contracts. In particular,
+`AngleLiteral` preserves exact spelling such as `90deg` or `0.5turns`, its
+`numeric_text`, and unit suffix without converting to `float` or canonical radians.
+`BasisExpression` remains an author-written value rather than an IR enum.
 
-`BasisExpression` currently contains an `Identifier` such as `x`, `y`, or `z`.
-It is deliberately not an IR enum: later syntax can introduce named bases such as
-`basis diagonal = ...` without replacing the source expression model.
+The v3 register declaration and indexed reference shapes are transitional source
+data. Future extension nodes use bindings to logical quantum values instead of a
+required explicit register size or global source index. Existing serialized v3
+documents must remain interpretable as v3 until a deliberate migration is defined.
 
-Every AST node contains a `SyntaxLocation`, which combines:
+## Source identities and semantic boundary
 
-- a complete one-based `SourceRange`; and
-- a required snapshot-scoped `SyntaxNodeId`; and
-- an optional durable `SourceNodeId` supplied by an editor.
+Every AST node has a `SyntaxLocation` containing a complete one-based
+`SourceRange`, a required snapshot-scoped `SyntaxNodeId`, and an optional durable
+editor `SourceNodeId`. A `SyntaxNodeId` is unique within one parsed document
+snapshot and does not survive edits. A supplied `SourceNodeId` is separately unique
+and is the only identity intended to persist selection, breakpoints, or tutorial
+state across edits. Neither identity relies on Python object identity.
 
-`SyntaxNodeId` is unique within a `ProgramSyntax` and can be assigned by an
-ordinary CLI parser for one document snapshot. It is not claimed to survive edits.
-`SourceNodeId`, when present, must also be unique and is the only identity intended
-to persist editor selection, breakpoints, or tutorial state across edits. Neither
-identity relies on Python object identity.
-
-`Identifier`, `IntegerLiteral`, and `AngleLiteral` are source values rather than
-semantic values. An `AngleLiteral` preserves spelling such as `90deg` or
-`0.5turns`, its exact `numeric_text`, and its unit suffix. It does not convert to
-`float`, calculate canonical radians, or decide numeric representability; typed
-semantic analysis will make those decisions later using an explicit numeric policy.
-
-## Deliberately deferred semantic validation
-
-The syntax AST accepts grammatically valid text even when later layers will reject
-its meaning. For example, this is a valid source AST:
-
-```text
-qubits data[2]
-measure missing[7] in banana -> result
-```
-
-Later name resolution and typed semantic validation determine that `missing` is an
-unknown register, `7` is out of range when a register is known, and `banana` is an
-unknown basis. They also own duplicate register-name checks, positive register
-size checks, and whether a program requires quantum storage. The syntax package
-must not flatten references, impose those semantic rules, or import IR to do so.
+Source contracts preserve what the author wrote; later layers establish bindings,
+types, quantum ownership, aliases, basis meanings, function calls, lifetimes, and
+allocation. In particular, syntax must not validate a physical target range, infer
+a basis, create an allocation width, or import IR to decide those meanings.
 
 ## Tokens and diagnostics
 
 `TokenKind` and `Token` define the lexical vocabulary and preserve original token
-spelling plus a complete source range. They are contracts for a future lexer, not
-a parser implementation. The future lexer owns fixed-token spelling validation and
-reserved-word classification. Token constructors intentionally preserve the spelling
-provided by that lexer; they validate only token shape, EOF spelling, and location.
+spelling plus a complete source range. They support future extension-aware
+tokenization or source transformation; they do not require a standalone `.ari`
+lexer or parser. The extension-aware frontend owns fixed-token spelling validation
+and reserved-word classification. Token constructors intentionally preserve the
+spelling supplied by that frontend; they validate only token shape, EOF spelling,
+and location.
 
-`SyntaxDiagnostic` is independent from Daidalon diagnostics. A lexer or parser can
-report an `S...` source error with a source range before name resolution, type
-checking, or IR lowering exists. Semantic diagnostics will remain a later layer.
+`SyntaxDiagnostic` is independent from Daidalon diagnostics. The extension-aware
+frontend can report an `S...` source error with an original source range before
+name resolution, type checking, or IR lowering exists. Semantic diagnostics remain
+a later layer.
 
 ## Serialization
 
 AST values, tokens, source locations, and syntax diagnostics provide deterministic
-`to_dict()` and canonical `to_json()` output. `ProgramSyntax` documents its
-`schema_version` as $3$. Version $3$ replaces the single fixed-width declaration
-with ordered named register declarations and adds a basis expression to
-measurements. Version $2$ remains the prior serialized shape; clients must not
-interpret a version $3$ document as version $2$. AST fixtures and frontend
-documents therefore evolve independently from execution traces and IR.
+`to_dict()` and canonical `to_json()` output. `ProgramSyntax` remains schema
+version $3$ for existing serialized documents. Version $3$ is a compatibility
+shape with named-register declarations and basis-aware measurements; clients must
+not interpret it as version $2$, nor treat it as the permanent public language
+grammar. Future Python-extension frontend documents need their own explicit schema
+version and migration path.
 
 ## Boundary
 
 The intended path is:
 
 ```text
-written syntax
-    -> immutable source AST
+Python-compatible source
+    -> extension-aware transformation and Python AST
+    -> immutable Ariadion extension nodes
     -> resolved semantic model
-    -> typed semantic model
-    -> Daidalon lowering
-    -> CircuitIR
+    -> typed model, lifetime analysis, and allocation plan
+    -> allocated CircuitIR
 ```
 
-Parser nodes must never double as `CircuitIR` operations. Syntax preserves author
-spelling and source location; later semantic layers establish names, types, and
-canonical values; IR captures provider-neutral compiled meaning.
+Extension nodes must never double as `CircuitIR` operations. Syntax preserves
+author spelling and source location; later semantic layers establish logical-value
+bindings, types, ownership, bases, and canonical values; allocation creates dense
+integer targets; IR captures provider-neutral compiled meaning.
