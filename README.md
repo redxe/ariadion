@@ -52,6 +52,7 @@ Expected probabilities:
 ```text
 packages/
   sdk/             Ariadion public facade
+  core/            shared identity and source-location contracts
   language/        Python-first program model
   ir/              semantic circuit IR
   daidalon/        compiler and validation passes

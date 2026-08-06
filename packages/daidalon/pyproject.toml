@@ -3,7 +3,7 @@ name = "daidalon"
 version = "0.1.0"
 description = "Compiler and synthesis engine for Ariadion"
 requires-python = ">=3.11"
-dependencies = ["ariadion-language", "ariadion-ir"]
+dependencies = ["ariadion-core", "ariadion-language", "ariadion-ir"]
 
 [build-system]
 requires = ["setuptools>=68"]

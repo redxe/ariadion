@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from itertools import count
 
-from ariadion_ir import OperationId, SourceRange
+from ariadion_core import (
+    ProgramId,
+    SnapshotOperationId,
+    SourceNodeId,
+    SourceRange,
+    require_nonempty_identifier,
+)
+
+
+_PROGRAM_COUNTER = count()
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,12 +22,14 @@ class SourceOperation:
     targets: tuple[int, ...]
     controls: tuple[int, ...] = ()
     key: str | None = None
-    id: OperationId | None = None
+    id: SnapshotOperationId = field(kw_only=True)
+    source_node_id: SourceNodeId | None = None
     source_range: SourceRange | None = None
 
     def __post_init__(self) -> None:
-        if self.id is not None and not self.id:
-            raise ValueError("source operation ID must be non-empty")
+        require_nonempty_identifier(self.id, label="snapshot operation ID")
+        if self.source_node_id is not None:
+            require_nonempty_identifier(self.source_node_id, label="source node ID")
 
 
 class Program:
@@ -32,15 +44,24 @@ class Program:
         qubit_count: int,
         *,
         name: str = "program",
-        source_id: str | None = None,
+        program_id: ProgramId | None = None,
+        source_id: ProgramId | None = None,
     ) -> None:
+        if program_id is not None and source_id is not None:
+            raise ValueError("program_id and source_id cannot both be provided")
         self.name = name
         self.qubit_count = qubit_count
-        self.source_id = source_id if source_id is not None else f"program:{name}"
-        if not self.source_id:
-            raise ValueError("program source_id must be non-empty")
+        requested_program_id = program_id if program_id is not None else source_id
+        self.id = (
+            requested_program_id
+            if requested_program_id is not None
+            else _default_program_id(name)
+        )
+        require_nonempty_identifier(self.id, label="program ID")
+        # Compatibility alias for callers of the original source-identity API.
+        self.source_id = self.id
         self._operations: list[SourceOperation] = []
-        self._operation_ids: set[OperationId] = set()
+        self._operation_ids: set[SnapshotOperationId] = set()
 
     @property
     def operations(self) -> tuple[SourceOperation, ...]:
@@ -50,12 +71,14 @@ class Program:
         self,
         target: int,
         *,
-        source_id: OperationId | None = None,
+        source_node_id: SourceNodeId | None = None,
+        source_id: SourceNodeId | None = None,
         source_range: SourceRange | None = None,
     ) -> Program:
         return self._append(
             "x",
             (target,),
+            source_node_id=source_node_id,
             source_id=source_id,
             source_range=source_range or _capture_callsite(),
         )
@@ -64,12 +87,14 @@ class Program:
         self,
         target: int,
         *,
-        source_id: OperationId | None = None,
+        source_node_id: SourceNodeId | None = None,
+        source_id: SourceNodeId | None = None,
         source_range: SourceRange | None = None,
     ) -> Program:
         return self._append(
             "h",
             (target,),
+            source_node_id=source_node_id,
             source_id=source_id,
             source_range=source_range or _capture_callsite(),
         )
@@ -78,12 +103,14 @@ class Program:
         self,
         target: int,
         *,
-        source_id: OperationId | None = None,
+        source_node_id: SourceNodeId | None = None,
+        source_id: SourceNodeId | None = None,
         source_range: SourceRange | None = None,
     ) -> Program:
         return self._append(
             "z",
             (target,),
+            source_node_id=source_node_id,
             source_id=source_id,
             source_range=source_range or _capture_callsite(),
         )
@@ -93,13 +120,15 @@ class Program:
         control: int,
         target: int,
         *,
-        source_id: OperationId | None = None,
+        source_node_id: SourceNodeId | None = None,
+        source_id: SourceNodeId | None = None,
         source_range: SourceRange | None = None,
     ) -> Program:
         return self._append(
             "cx",
             (target,),
             controls=(control,),
+            source_node_id=source_node_id,
             source_id=source_id,
             source_range=source_range or _capture_callsite(),
         )
@@ -109,13 +138,15 @@ class Program:
         target: int,
         *,
         key: str | None = None,
-        source_id: OperationId | None = None,
+        source_node_id: SourceNodeId | None = None,
+        source_id: SourceNodeId | None = None,
         source_range: SourceRange | None = None,
     ) -> Program:
         return self._append(
             "measure",
             (target,),
             key=key,
+            source_node_id=source_node_id,
             source_id=source_id,
             source_range=source_range or _capture_callsite(),
         )
@@ -127,28 +158,38 @@ class Program:
         *,
         controls: tuple[int, ...] = (),
         key: str | None = None,
-        source_id: OperationId | None = None,
+        source_node_id: SourceNodeId | None = None,
+        source_id: SourceNodeId | None = None,
         source_range: SourceRange | None = None,
     ) -> Program:
-        operation_id = (
-            source_id
-            if source_id is not None
-            else OperationId(f"{self.source_id}:operation:{len(self._operations)}")
+        durable_node_id = _resolve_source_node_id(source_node_id, source_id)
+        operation = SourceOperation(
+            name,
+            targets,
+            controls,
+            key,
+            id=SnapshotOperationId(f"{self.id}:operation:{len(self._operations)}"),
+            source_node_id=durable_node_id,
+            source_range=source_range,
         )
-        if operation_id in self._operation_ids:
-            raise ValueError(f"source operation ID must be unique: {operation_id}")
-        self._operation_ids.add(operation_id)
-        self._operations.append(
-            SourceOperation(
-                name,
-                targets,
-                controls,
-                key,
-                id=operation_id,
-                source_range=source_range,
-            )
-        )
+        if operation.id in self._operation_ids:
+            raise ValueError(f"snapshot operation ID must be unique: {operation.id}")
+        self._operations.append(operation)
+        self._operation_ids.add(operation.id)
         return self
+
+
+def _default_program_id(name: str) -> ProgramId:
+    return ProgramId(f"snapshot:{next(_PROGRAM_COUNTER)}:{name}")
+
+
+def _resolve_source_node_id(
+    source_node_id: SourceNodeId | None,
+    source_id: SourceNodeId | None,
+) -> SourceNodeId | None:
+    if source_node_id is not None and source_id is not None:
+        raise ValueError("source_node_id and source_id cannot both be provided")
+    return source_node_id if source_node_id is not None else source_id
 
 
 def _capture_callsite() -> SourceRange | None:

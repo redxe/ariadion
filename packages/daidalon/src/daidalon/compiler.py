@@ -3,7 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from ariadion_ir import CircuitIR, OpCode, Operation, OperationId, SourceRange, SourceRef
+from ariadion_core import (
+    IrOperationId,
+    ProgramId,
+    SnapshotOperationId,
+    SourceIdentity,
+    SourceNodeId,
+    SourceRange,
+    SourceRef,
+    require_nonempty_identifier,
+)
+from ariadion_ir import CircuitIR, OpCode, Operation
 from ariadion_language import Program, SourceOperation
 
 
@@ -22,12 +32,24 @@ class Diagnostic:
     severity: DiagnosticSeverity = DiagnosticSeverity.ERROR
 
     @property
-    def source_id(self) -> OperationId | None:
+    def source_id(self) -> SourceIdentity | None:
         return self.source.source_id if self.source is not None else None
 
     @property
     def source_range(self) -> SourceRange | None:
         return self.source.source_range if self.source is not None else None
+
+    @property
+    def program_id(self) -> ProgramId | None:
+        return self.source.program_id if self.source is not None else None
+
+    @property
+    def snapshot_operation_id(self) -> SnapshotOperationId | None:
+        return self.source.snapshot_operation_id if self.source is not None else None
+
+    @property
+    def source_node_id(self) -> SourceNodeId | None:
+        return self.source.source_node_id if self.source is not None else None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -59,10 +81,8 @@ def compile_program(program: Program) -> CircuitIR:
     if diagnostics:
         raise CompileError(tuple(diagnostics))
 
-    operations = tuple(
-        _lower(program, index, operation) for index, operation in enumerate(program.operations)
-    )
-    return CircuitIR(program.name, program.qubit_count, operations)
+    operations = tuple(_lower(program, operation) for operation in program.operations)
+    return CircuitIR(program.id, program.name, program.qubit_count, operations)
 
 
 def _validate(program: Program) -> list[Diagnostic]:
@@ -116,13 +136,15 @@ def _validate(program: Program) -> list[Diagnostic]:
     return diagnostics
 
 
-def _lower(program: Program, index: int, operation: SourceOperation) -> Operation:
+def _lower(program: Program, operation: SourceOperation) -> Operation:
+    source = _source_ref(program, operation)
     return Operation(
         opcode=_OPCODE_MAP[operation.name],
         targets=operation.targets,
+        id=make_ir_operation_id(source, "source-lowering", 0),
         controls=operation.controls,
         key=operation.key,
-        source=_source_ref(program, index, operation),
+        source=source,
     )
 
 
@@ -133,13 +155,26 @@ def _operation_diagnostic(
     code: str,
     message: str,
 ) -> Diagnostic:
-    return Diagnostic(code, message, index, _source_ref(program, index, operation))
+    return Diagnostic(code, message, index, _source_ref(program, operation))
 
 
-def _source_ref(program: Program, index: int, operation: SourceOperation) -> SourceRef:
-    source_id = (
-        operation.id
-        if operation.id is not None
-        else OperationId(f"{program.source_id}:operation:{index}")
+def make_ir_operation_id(
+    source: SourceRef,
+    transformation: str,
+    output_index: int,
+) -> IrOperationId:
+    require_nonempty_identifier(transformation, label="IR transformation")
+    if not isinstance(output_index, int) or output_index < 0:
+        raise ValueError("IR transformation output index must be a non-negative integer")
+    return IrOperationId(
+        f"{source.snapshot_operation_id}:daidalon:{transformation}:{output_index}"
     )
-    return SourceRef.from_range(source_id, operation.source_range)
+
+
+def _source_ref(program: Program, operation: SourceOperation) -> SourceRef:
+    return SourceRef.from_range(
+        program_id=program.id,
+        snapshot_operation_id=operation.id,
+        source_range=operation.source_range,
+        source_node_id=operation.source_node_id,
+    )

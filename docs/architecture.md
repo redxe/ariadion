@@ -7,21 +7,15 @@ Ariadion is both a programming model and an interactive environment. The initial
 ## Dependency direction
 
 ```text
-Ariadion SDK
-    |
-    +--> language model
-    |        |
-    |        v
-    +--> semantic IR <--- Daidalon compiler
-             |                 |
-             v                 v
-          runtime --------> validation passes
-          /   |   \
-         v    v    v
- simulator  Theonoe  visualization
+ariadion-core
+    ├── ariadion-language ─┐
+    └── ariadion-ir ───────┼── Daidalon ──> ariadion-runtime
+                                                    │                    ├── simulator
+Ariadion SDK ─────────────┴────────────────────┼── Theonoe
+                                                                                             └── visualization
 ```
 
-The compiler produces immutable semantic IR. Runtime backends consume IR. Debuggers and visualizations observe execution artifacts but do not change source semantics. Each source operation has a deterministic identity that Daidalon preserves in the lowered operation and its diagnostics, allowing future traces, breakpoints, and views to map back to source without reparsing output.
+The compiler produces immutable semantic IR. Runtime backends consume IR. Debuggers and visualizations observe execution artifacts but do not change source semantics. `ariadion-core` owns neutral identity and source-location contracts so the language model and IR remain siblings. Daidalon preserves source references in lowered operations and diagnostics while assigning distinct IR-operation IDs for generated compiler output.
 
 ## Packages
 
@@ -29,9 +23,15 @@ The compiler produces immutable semantic IR. Runtime backends consume IR. Debugg
 
 A small Python-first builder. It records user intent and source-level operations. It deliberately does not simulate or optimize.
 
+### `ariadion-core`
+
+Shared identity, source-reference, source-range, and deterministic serialization
+contracts. It has no dependency on language syntax, IR, compilers, or backends.
+
 ### `ariadion-ir`
 
-Stable dataclasses for qubits, operations, circuits, and source locations. Provider adapters should target this layer rather than source objects.
+Stable dataclasses for qubits, operations, circuits, and IR provenance. Provider
+adapters should target this layer rather than source objects.
 
 ### `daidalon`
 

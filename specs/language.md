@@ -18,14 +18,22 @@ program.cx(0, 1)
 
 ## Source identity and locations
 
-Each `Program` owns a deterministic source-ID namespace. By default it is
-`program:<name>`; a frontend should pass a stable value such as a project-relative
-file path through `Program(..., source_id="examples/bell.py")` when it needs IDs
-that remain distinct across source units.
+Each `Program` has a `ProgramId` that scopes source and IR artifacts. The default
+is a process-local snapshot ID of the form `snapshot:<creation-index>:<name>`, so
+two ordinary default-named programs do not collide. Frontends should pass a stable
+document or project identity through `Program(..., program_id="examples/bell.py")`
+when source artifacts leave the current process.
 
-Every operation appended through the builder receives an ID of the form
-`<program-source-id>:operation:<insertion-index>`. IDs are never derived from a
-memory address or random value, and lowering preserves them unchanged.
+Every builder-created operation receives a `SnapshotOperationId` of the form
+`<program-id>:operation:<insertion-index>`. It is deterministic within one program
+snapshot and suitable for a compiled trace, but it is not durable across edits:
+inserting an earlier operation renumbers later snapshot IDs.
+
+A frontend that needs durable breakpoints, lesson checkpoints, or selected syntax
+nodes must supply a `SourceNodeId` through `source_node_id`. Ariadion preserves it
+separately from the snapshot ID; it does not attempt to infer durable identity from
+Python line numbers. The prior `source_id` parameters remain compatibility aliases
+for `program_id` and `source_node_id` respectively.
 
 The builder captures the caller's file and one-based line number when Python makes
 that information available. A frontend with richer location data can pass an
@@ -33,8 +41,10 @@ explicit `SourceRange` to any operation method, including one-based `column`,
 `end_line`, and `end_column` values. Locations are optional; the operation ID is
 always present for builder-created operations.
 
-Compiler diagnostics retain their diagnostic code and operation index, then expose
-the same `source_id` and `source_range` through their immutable source reference.
+Compiler diagnostics retain their code and operation index, then expose
+`program_id`, `snapshot_operation_id`, `source_node_id`, and `source_range` through
+their immutable source reference. The compatibility `source_id` property resolves
+to the durable node ID when present and otherwise to the snapshot operation ID.
 Program-wide diagnostics may have no source reference; their messages remain useful
 without a file or position.
 
@@ -45,8 +55,10 @@ without a file or position.
 3. Source-level operations preserve insertion order.
 4. Measurement is explicit; simulation reports probabilities without sampling unless sampling is requested by a future API.
 5. The compiler, not the source builder, owns semantic validation.
-6. Source-operation IDs are deterministic within a program source namespace and
-	preserve operation insertion order.
+6. Snapshot operation IDs are deterministic within a program snapshot and preserve
+   operation insertion order, but are not durable across source edits.
+7. Persisted editor state must use frontend-supplied durable source node IDs rather
+   than snapshot operation IDs.
 
 ## Basis direction
 

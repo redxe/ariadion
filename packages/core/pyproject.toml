@@ -1,9 +1,8 @@
 [project]
-name = "ariadion-ir"
+name = "ariadion-core"
 version = "0.1.0"
-description = "Semantic intermediate representation for Ariadion"
+description = "Shared identity and source-location contracts for Ariadion"
 requires-python = ">=3.11"
-dependencies = ["ariadion-core"]
 
 [build-system]
 requires = ["setuptools>=68"]

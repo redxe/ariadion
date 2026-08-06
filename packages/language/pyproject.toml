@@ -3,7 +3,7 @@ name = "ariadion-language"
 version = "0.1.0"
 description = "Python-first language model for Ariadion"
 requires-python = ">=3.11"
-dependencies = ["ariadion-ir"]
+dependencies = ["ariadion-core"]
 
 [build-system]
 requires = ["setuptools>=68"]

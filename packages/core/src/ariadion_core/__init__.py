@@ -1,27 +1,23 @@
-from ariadion_core import (
+from .identity import (
     IrOperationId,
     OperationId,
     ProgramId,
     SnapshotOperationId,
     SourceIdentity,
     SourceNodeId,
-    SourceRange,
-    SourceRef,
+    require_nonempty_identifier,
 )
-
-from .model import CircuitIR, OpCode, Operation, OperationProvenance
+from .source import SourceRange, SourceRef, canonical_json
 
 __all__ = [
-    "CircuitIR",
     "IrOperationId",
-    "OpCode",
-    "Operation",
     "OperationId",
-    "OperationProvenance",
     "ProgramId",
     "SnapshotOperationId",
     "SourceIdentity",
     "SourceNodeId",
     "SourceRange",
     "SourceRef",
+    "canonical_json",
+    "require_nonempty_identifier",
 ]

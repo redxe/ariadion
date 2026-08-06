@@ -1,5 +1,19 @@
-from ariadion_ir import OperationId, SourceRange
+from ariadion_core import (
+    OperationId,
+    ProgramId,
+    SnapshotOperationId,
+    SourceNodeId,
+    SourceRange,
+)
 
 from .program import Program, SourceOperation
 
-__all__ = ["OperationId", "Program", "SourceOperation", "SourceRange"]
+__all__ = [
+    "OperationId",
+    "Program",
+    "ProgramId",
+    "SnapshotOperationId",
+    "SourceNodeId",
+    "SourceOperation",
+    "SourceRange",
+]
