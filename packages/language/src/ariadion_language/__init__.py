@@ -8,10 +8,12 @@ from ariadion_core import (
 
 from .angle import Angle, AngleUnit, deg, rad, turns
 from .program import Program, SourceOperation
+from .values import Bit, Qubit
 
 __all__ = [
     "Angle",
     "AngleUnit",
+    "Bit",
     "OperationId",
     "Program",
     "ProgramId",
@@ -19,6 +21,7 @@ __all__ = [
     "SourceNodeId",
     "SourceOperation",
     "SourceRange",
+    "Qubit",
     "deg",
     "rad",
     "turns",

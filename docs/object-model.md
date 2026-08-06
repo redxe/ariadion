@@ -94,21 +94,23 @@ from leaking across package boundaries. Existing examples include `Angle`,
 `AngleMetadata`, `ProgramId`, `SourceNodeId`, `SnapshotOperationId`,
 `IrOperationId`, `SourceRange`, and `SourceRef`.
 
-Future language work should introduce value objects where a bare integer or string
-would lose meaning, including:
+Existing and future language work should use value objects where a bare integer or
+string would lose meaning, including:
 
-- `LogicalQubitId`, `LogicalQubit`, and `QuantumValueRef` for managed values;
+- public `Qubit` and `Bit`, plus compiler-only `LogicalQubitId` and
+    `LogicalQubitValue` contracts;
 - `Basis` and basis expressions;
 - `MeasurementKey` and classical conditions;
 - `Probability`, `ShotCount`, and backend identifiers; and
 - execution occurrence and breakpoint identities.
 
-For example, a logical qubit must preserve author intent before allocation assigns
-an IR target:
+At the public boundary, `Qubit()` creates a logical quantum value. It has no
+physical construction mode, index, or allocation field. The compiler records its
+resolved identity separately before allocation assigns an IR target:
 
 ```python
 @dataclass(frozen=True, slots=True)
-class LogicalQubit:
+class LogicalQubitValue:
     id: LogicalQubitId
     display_name: str | None
 ```
@@ -129,7 +131,7 @@ Python AST + Ariadion extension nodes:
     SourceNodeId (optional durable editor identity)
 
 Resolved quantum semantics:
-    LogicalQubitId (one logical quantum value)
+    LogicalQubitId / LogicalQubitValue (one logical quantum value)
 
 Allocated and execution artifacts:
     SnapshotOperationId (current width-based builder compatibility)
@@ -141,12 +143,11 @@ Allocated and execution artifacts:
 
 `SyntaxNodeId` is required for a parsed source snapshot but does not promise to
 survive edits. `SourceNodeId` must survive source editing when supplied by an
-editor. A future `LogicalQubitId` distinguishes a source-level value from any
-allocated target. Snapshot operation IDs are deterministic only inside the current
-width-based builder snapshot; a logical-value frontend will add source-operation
-identity before allocation. IR operation IDs distinguish lowered or generated
-semantic operations. Trace steps preserve an ordered occurrence of an IR operation
-during one execution.
+editor. `LogicalQubitId` distinguishes a source-level value from any allocated
+target. Snapshot operation IDs are deterministic only inside the current width-based
+builder snapshot; `LogicalOperationId` preserves source-operation identity before
+allocation. IR operation IDs distinguish lowered or generated semantic operations.
+Trace steps preserve an ordered occurrence of an IR operation during one execution.
 
 A future `OperationLink` value object may centralize these relationships for
 source navigation, persistent breakpoints, compiler provenance, remote result
@@ -285,6 +286,11 @@ For example, `rx(target, deg(190))` retains its source angle, becomes an angle i
 the typed model, and lowers to canonical radians plus source metadata in IR. A
 future `190deg` extension literal must lower into that same model. Extension nodes
 must not double as `CircuitIR` operations.
+
+`Qubit` to `Bit` is an observation boundary in semantic analysis. An explicit
+measurement models timing-sensitive algorithm behavior; a terminal typed classical
+return may create an implicit observation. `Qubit` truth testing must not silently
+observe a value, and a Python alias must never create another quantum state.
 
 The schema-v3 named-register source AST remains compatibility data. The next
 language milestones are logical quantum values and ownership contracts, resource

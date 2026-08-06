@@ -54,6 +54,12 @@ The allocated `CircuitIR` continues to use dense integer targets and an explicit
 allocation artifact for diagnostics, resource reporting, trace navigation, and
 later hardware mapping.
 
+At the public boundary, `Qubit` is already a logical value and `Bit` is a distinct
+classical observation result. `LogicalQubitId`, `LogicalQubitValue`, and
+`LogicalOperationId` are compiler-semantic identities; allocated slots and integer
+targets are backend-facing facts. No public `Qubit` constructor accepts a physical
+or simulator location.
+
 ## Object model
 
 Objects clarify ownership, invariants, and relationships; they do not justify
@@ -68,9 +74,17 @@ native-language modeling rules.
 
 A small width-based Python builder for the current vertical slice. It records
 already allocated integer-target operations, including explicit degree, radian,
-and turn-based rotation angles. It is a compatibility and migration mechanism;
-the next builder prototype will expose logical qubit handles instead of requiring
-`Program(width)`.
+and turn-based rotation angles. Alongside the builder, the package exposes
+immutable public `Qubit` and `Bit` domain values without adding them to the
+width-based API. The builder is a compatibility and migration mechanism; its next
+prototype will operate on `Qubit` values instead of requiring `Program(width)`.
+
+### `ariadion-semantics`
+
+Immutable pre-allocation contracts for logical quantum values, logical operations,
+bases, observations, and function effects. It depends only on `ariadion-core` and
+contains no allocated integer targets, circuit width, backend policy, or lowering.
+Daidalon will consume these contracts for lifetime analysis and allocation.
 
 ### `ariadion-syntax`
 

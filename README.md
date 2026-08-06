@@ -94,7 +94,8 @@ packages/
   sdk/             Ariadion public facade
   core/            shared identity and source-location contracts
   language/        Python-first program model
-  syntax/          immutable native .ari token and source-AST contracts
+  semantics/       pre-allocation logical quantum-value contracts
+  syntax/          immutable Python-extension source and compatibility AST contracts
   ir/              semantic circuit IR
   daidalon/        compiler and validation passes
   runtime/         orchestration layer
@@ -120,5 +121,5 @@ tests/               vertical-slice tests
 
 See [`docs/architecture.md`](docs/architecture.md), [the object-model design
 guide](docs/object-model.md), [`specs/language.md`](specs/language.md), [the
-native syntax specification](specs/syntax.md), [`specs/runtime.md`](specs/runtime.md),
+Python-extension syntax specification](specs/syntax.md), [`specs/runtime.md`](specs/runtime.md),
 [`specs/inspection.md`](specs/inspection.md), and [`specs/debugger.md`](specs/debugger.md).

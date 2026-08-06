@@ -16,21 +16,22 @@ The first executable frontend will use valid Python; this is the target surface,
 not an implemented API yet:
 
 ```python
-from ariadion import cx, h, measure, quantum, qubit
+from ariadion import Bit, Qubit, cx, h, quantum
 
 
-@quantum
-def bell():
-    left = qubit()
-    right = qubit()
+@quantum(basis=z)
+def bell() -> tuple[Bit, Bit]:
+    left = Qubit()
+    right = Qubit()
     h(left)
     cx(left, right)
-    return measure(left), measure(right)
+    return left, right
 ```
 
 `left` and `right` are logical quantum values. Resource analysis and allocation
 later decide their lifetimes, reuse, dense IR targets, simulator width, and hardware
-layout.
+layout. The declared classical return type creates terminal observations; explicit
+measurement remains available when an algorithm needs an earlier observation.
 
 ## Extension-aware frontend
 

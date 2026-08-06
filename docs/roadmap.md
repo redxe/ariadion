@@ -27,7 +27,9 @@
 ## Milestone 1 — managed language semantics
 
 - logical quantum-value identities and handles
+- public `Qubit` and `Bit` domain contracts
 - ownership, aliasing, measurement, reset, and escape rules
+- inferred classical, quantum, and hybrid function effects
 - lifetime analysis, allocation plans, and resource reports
 - explicit computational and custom bases
 - measurement values, classical control, and reusable quantum functions
@@ -36,7 +38,7 @@
 ## Milestone 2 — decorated Python frontend
 
 - `@quantum` capture using Python's AST
-- logical `qubit()` creation and typed quantum parameters
+- logical `Qubit()` creation and typed quantum parameters
 - lowering through Daidalon into allocated `CircuitIR`
 - source-to-trace links that display logical names
 - extension-aware diagnostics and source transformation

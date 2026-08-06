@@ -36,31 +36,45 @@ The first executable frontend must use valid Python and Python's parser. This is
 target contract, not an implemented API yet:
 
 ```python
-from ariadion import Qubit, cx, h, measure, quantum, qubit
+from ariadion import Bit, Qubit, cx, h, quantum
 
 
-@quantum
-def bell():
-    left = qubit()
-    right = qubit()
+@quantum(basis=z)
+def bell() -> tuple[Bit, Bit]:
+   left = Qubit()
+   right = Qubit()
 
-    h(left)
-    cx(left, right)
+   h(left)
+   cx(left, right)
 
-    return measure(left), measure(right)
+   return left, right
 ```
 
-`left` and `right` are logical quantum values. They are neither simulator indexes
-nor hardware addresses. The decorator captures supported code for compilation;
-it must not execute quantum operations as ordinary Python calls.
+`Qubit` is the public logical quantum-value type. “Logical qubit” is compiler
+terminology, not a second user-facing wrapper or construction mode. `left` and
+`right` are neither simulator indexes nor hardware addresses. The decorator
+captures supported code for compilation; it must not execute quantum operations as
+ordinary Python calls.
 
-Quantum function parameters may introduce or receive logical values without
-knowing a global qubit count:
+`Qubit()` is the only public construction mode. There is no lowercase factory,
+logical-mode flag, or public logical-value wrapper; physical locations, simulator
+indexes, hardware indexes, and allocated slots are compiler concepts only.
+
+The `tuple[Bit, Bit]` return annotation requires classical result values. Returning
+the two `Qubit` values across that boundary creates terminal observations in the
+function basis policy. It does not require source-level terminal `measure()` calls.
+The compiler will later infer that the values are simultaneously live and allocate
+two dense IR targets for the existing `CircuitIR`.
+
+Quantum function parameters receive logical values without knowing a global qubit
+count. Returning a quantum value remains a quantum return, not an observation:
 
 ```python
 @quantum
-def prepare_plus(target: Qubit):
-    h(target)
+def prepare_plus() -> Qubit:
+   value = Qubit()  # Managed logical value.
+   h(value)
+   return value
 ```
 
 Quantum parameters bind logical values rather than physical slots. A return value
@@ -75,9 +89,21 @@ quantum ownership. Measurement produces a classical result value; the precise
 ownership effect on the measured logical value must be explicit in the later
 semantic contract.
 
+The initial conversion policy is:
+
+```text
+Qubit -> Qubit       no observation
+Qubit -> Bit         observation boundary
+Qubit -> bool        semantic diagnostic
+Bit -> bool          ordinary classical conversion
+```
+
+In particular, `if q:` for a `Qubit` is rejected initially. Ariadion must not
+silently insert a mid-circuit measurement through ordinary Python truth testing.
+
 ## Logical quantum values and managed resources
 
-Each `qubit()` creation receives a logical identity. Resolved quantum operations
+Each `Qubit()` creation receives a logical identity. Resolved quantum operations
 target those identities, and lifetime analysis determines the peak simultaneously
 live set. Daidalon then allocates dense integer targets for `CircuitIR`.
 
@@ -131,11 +157,16 @@ degrees, radians, or turns.
 ## Basis values and measurement intent
 
 A basis is a typed domain concept rather than a backend default. Explicit
-measurement remains available in the Python-compatible frontend:
+measurement remains available when observation timing changes algorithm meaning:
 
 ```python
 result = measure(target, basis=x)
 ```
+
+Use explicit measurement for mid-circuit feedback, post-selection, exact timing,
+basis-sensitive steps, reset and reuse, error-correction syndromes, or partial
+observation of an entangled system. Returning a `Qubit` where a declared `Bit` is
+required is instead a terminal observation boundary.
 
 The precise spelling of basis values is not frozen. A quantum function may later
 establish a default basis with `@quantum(basis=z)`, a scoped context such as
@@ -157,6 +188,24 @@ A future `@classical` marker may document classical subroutines callable from a
 quantum workflow, but it is not required to preserve ordinary Python semantics.
 The semantic model, rather than a decorator name alone, will determine which values
 cross a classical/quantum call boundary and whether those values are legal.
+
+## Effect defaults and constraints
+
+The target source-effect model has two defaults:
+
+```text
+.py file:
+   classical Python by default; @quantum opts into quantum compilation
+
+.ari file:
+   quantum-effect inference by default; @classical explicitly forces classical execution
+```
+
+This is a language target only; `.ari` parsing is not implemented. Internally,
+semantic analysis reserves `FunctionEffect.CLASSICAL`, `FunctionEffect.QUANTUM`,
+and `FunctionEffect.HYBRID`. Source annotations act as constraints that the future
+analyzer checks against operations and value flow rather than as a substitute for
+effect inference.
 
 ## Source transformation, identity, and diagnostics
 
