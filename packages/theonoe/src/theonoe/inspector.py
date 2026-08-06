@@ -3,11 +3,15 @@ from __future__ import annotations
 import cmath
 from collections.abc import Sequence
 from dataclasses import dataclass
-from math import isfinite
+from math import isclose, isfinite
 from typing import Final
 
 from ariadion_core import canonical_json
-from ariadion_simulator import SimulationResult
+from ariadion_simulator import (
+    EXPECTED_STATE_VECTOR_NORM,
+    STATE_VECTOR_NORM_ABS_TOLERANCE,
+    SimulationResult,
+)
 
 
 DEFAULT_EPSILON: Final = 1e-12
@@ -163,6 +167,7 @@ class StateTransition:
     after: StateReport
     basis_state_changes: tuple[BasisStateChange, ...]
     entanglement: EntanglementTransition
+    global_phase_delta_radians: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -172,6 +177,7 @@ class StateTransition:
                 change.to_dict() for change in self.basis_state_changes
             ],
             "entanglement": self.entanglement.to_dict(),
+            "global_phase_delta_radians": self.global_phase_delta_radians,
         }
 
     def to_json(self) -> str:
@@ -182,6 +188,8 @@ def inspect_state(
     result: SimulationResult,
     *,
     epsilon: float = DEFAULT_EPSILON,
+    separability_tolerance: float = SEPARABILITY_ABS_TOLERANCE,
+    normalization_tolerance: float = STATE_VECTOR_NORM_ABS_TOLERANCE,
 ) -> StateReport:
     """Inspect the final state of a simulation result."""
 
@@ -189,6 +197,8 @@ def inspect_state(
         result.amplitudes,
         result.circuit.qubit_count,
         epsilon=epsilon,
+        separability_tolerance=separability_tolerance,
+        normalization_tolerance=normalization_tolerance,
     )
 
 
@@ -198,18 +208,39 @@ def inspect_amplitudes(
     *,
     epsilon: float = DEFAULT_EPSILON,
     separability_tolerance: float = SEPARABILITY_ABS_TOLERANCE,
+    normalization_tolerance: float = STATE_VECTOR_NORM_ABS_TOLERANCE,
 ) -> StateReport:
     """Inspect an exact state-vector snapshot without requiring runtime contracts."""
 
-    values = _validated_amplitudes(amplitudes, qubit_count)
+    values = _validated_amplitudes(
+        amplitudes,
+        qubit_count,
+        normalization_tolerance=normalization_tolerance,
+    )
     _validate_non_negative_finite(epsilon, label="epsilon")
     _validate_non_negative_finite(
         separability_tolerance,
         label="separability_tolerance",
     )
+    return _inspect_validated_amplitudes(
+        values,
+        qubit_count,
+        epsilon=epsilon,
+        separability_tolerance=separability_tolerance,
+    )
+
+
+def _inspect_validated_amplitudes(
+    amplitudes: tuple[complex, ...],
+    qubit_count: int,
+    *,
+    epsilon: float,
+    separability_tolerance: float,
+) -> StateReport:
+    """Build a report from a previously validated normalized state vector."""
 
     states: list[BasisState] = []
-    for index, amplitude in enumerate(values):
+    for index, amplitude in enumerate(amplitudes):
         probability = abs(amplitude) ** 2
         if probability <= epsilon:
             continue
@@ -223,8 +254,8 @@ def inspect_amplitudes(
         )
 
     reduced_density_matrices = tuple(
-        inspect_reduced_density_matrix(
-            values,
+        _reduced_density_matrix_from_values(
+            amplitudes,
             qubit_count,
             qubit,
             separability_tolerance=separability_tolerance,
@@ -262,10 +293,15 @@ def inspect_reduced_density_matrix(
     qubit_index: int,
     *,
     separability_tolerance: float = SEPARABILITY_ABS_TOLERANCE,
+    normalization_tolerance: float = STATE_VECTOR_NORM_ABS_TOLERANCE,
 ) -> ReducedDensityMatrix:
     """Calculate one qubit's reduced density matrix and purity."""
 
-    values = _validated_amplitudes(amplitudes, qubit_count)
+    values = _validated_amplitudes(
+        amplitudes,
+        qubit_count,
+        normalization_tolerance=normalization_tolerance,
+    )
     _validate_non_negative_finite(
         separability_tolerance,
         label="separability_tolerance",
@@ -274,6 +310,22 @@ def inspect_reduced_density_matrix(
         raise ValueError("qubit_index must be an integer")
     if not 0 <= qubit_index < qubit_count:
         raise ValueError("qubit_index must be within the state-vector width")
+    return _reduced_density_matrix_from_values(
+        values,
+        qubit_count,
+        qubit_index,
+        separability_tolerance=separability_tolerance,
+    )
+
+
+def _reduced_density_matrix_from_values(
+    amplitudes: tuple[complex, ...],
+    qubit_count: int,
+    qubit_index: int,
+    *,
+    separability_tolerance: float,
+) -> ReducedDensityMatrix:
+    """Build one reduced density matrix from validated normalized amplitudes."""
 
     mask = 1 << qubit_index
     rho_00 = 0j
@@ -283,7 +335,7 @@ def inspect_reduced_density_matrix(
         if base & mask:
             continue
         partner = base | mask
-        zero, one = values[base], values[partner]
+        zero, one = amplitudes[base], amplitudes[partner]
         rho_00 += zero * zero.conjugate()
         rho_11 += one * one.conjugate()
         rho_01 += zero * one.conjugate()
@@ -307,31 +359,70 @@ def inspect_state_transition(
     *,
     epsilon: float = DEFAULT_EPSILON,
     separability_tolerance: float = SEPARABILITY_ABS_TOLERANCE,
+    normalization_tolerance: float = STATE_VECTOR_NORM_ABS_TOLERANCE,
+    before_report: StateReport | None = None,
+    after_report: StateReport | None = None,
 ) -> StateTransition:
-    """Inspect two linked state snapshots and calculate their visible difference."""
+    """Inspect two snapshots and calculate their global-phase-invariant difference.
 
-    before_values = _validated_amplitudes(before_amplitudes, qubit_count)
-    after_values = _validated_amplitudes(after_amplitudes, qubit_count)
-    before = inspect_amplitudes(
+    `before_report` and `after_report` let callers reuse reports already produced
+    for the corresponding normalized snapshots.
+    """
+
+    before_values = _validated_amplitudes(
+        before_amplitudes,
+        qubit_count,
+        normalization_tolerance=normalization_tolerance,
+    )
+    after_values = _validated_amplitudes(
+        after_amplitudes,
+        qubit_count,
+        normalization_tolerance=normalization_tolerance,
+    )
+    _validate_non_negative_finite(epsilon, label="epsilon")
+    _validate_non_negative_finite(
+        separability_tolerance,
+        label="separability_tolerance",
+    )
+    before = before_report or _inspect_validated_amplitudes(
         before_values,
         qubit_count,
         epsilon=epsilon,
         separability_tolerance=separability_tolerance,
     )
-    after = inspect_amplitudes(
+    after = after_report or _inspect_validated_amplitudes(
         after_values,
         qubit_count,
         epsilon=epsilon,
         separability_tolerance=separability_tolerance,
     )
+    _validate_precomputed_report(before, qubit_count, label="before_report")
+    _validate_precomputed_report(after, qubit_count, label="after_report")
+    canonical_before, _ = _canonicalize_global_phase(before_values)
+    canonical_after, _ = _canonicalize_global_phase(after_values)
+    basis_state_changes = _basis_state_changes(
+        canonical_before,
+        canonical_after,
+        qubit_count,
+        epsilon,
+    )
     return StateTransition(
-        before,
-        after,
-        _basis_state_changes(before_values, after_values, qubit_count, epsilon),
-        _entanglement_transition(
+        before=before,
+        after=after,
+        basis_state_changes=basis_state_changes,
+        entanglement=_entanglement_transition(
             before.entangled_qubits,
             after.entangled_qubits,
             qubit_count,
+        ),
+        global_phase_delta_radians=(
+            _global_phase_delta(before_values, after_values)
+            if _state_vectors_match(
+                canonical_before,
+                canonical_after,
+                tolerance=normalization_tolerance,
+            )
+            else None
         ),
     )
 
@@ -418,6 +509,8 @@ def _heuristic_subsystems(
 def _validated_amplitudes(
     amplitudes: Sequence[complex],
     qubit_count: int,
+    *,
+    normalization_tolerance: float,
 ) -> tuple[complex, ...]:
     if isinstance(qubit_count, bool) or not isinstance(qubit_count, int):
         raise ValueError("qubit_count must be an integer")
@@ -433,7 +526,68 @@ def _validated_amplitudes(
         for amplitude in values
     ):
         raise ValueError("amplitudes must be finite")
+    _validate_non_negative_finite(
+        normalization_tolerance,
+        label="normalization_tolerance",
+    )
+    norm = sum(abs(amplitude) ** 2 for amplitude in values)
+    if not isclose(
+        norm,
+        EXPECTED_STATE_VECTOR_NORM,
+        rel_tol=0.0,
+        abs_tol=normalization_tolerance,
+    ):
+        raise ValueError(
+            "amplitudes must have unit norm within normalization_tolerance"
+        )
     return values
+
+
+def _validate_precomputed_report(
+    report: StateReport,
+    qubit_count: int,
+    *,
+    label: str,
+) -> None:
+    if not isinstance(report, StateReport):
+        raise ValueError(f"{label} must be a StateReport")
+    if report.qubit_count != qubit_count:
+        raise ValueError(f"{label} qubit_count must match the state-vector width")
+
+
+def _canonicalize_global_phase(
+    amplitudes: tuple[complex, ...],
+) -> tuple[tuple[complex, ...], float]:
+    reference = max(amplitudes, key=abs)
+    phase = cmath.phase(reference)
+    factor = cmath.exp(-1j * phase)
+    return tuple(amplitude * factor for amplitude in amplitudes), phase
+
+
+def _global_phase_delta(
+    before_amplitudes: tuple[complex, ...],
+    after_amplitudes: tuple[complex, ...],
+) -> float:
+    reference_index = max(
+        range(len(before_amplitudes)),
+        key=lambda index: abs(before_amplitudes[index]),
+    )
+    return cmath.phase(
+        after_amplitudes[reference_index]
+        * before_amplitudes[reference_index].conjugate()
+    )
+
+
+def _state_vectors_match(
+    before_amplitudes: tuple[complex, ...],
+    after_amplitudes: tuple[complex, ...],
+    *,
+    tolerance: float,
+) -> bool:
+    return all(
+        abs(after - before) <= tolerance
+        for before, after in zip(before_amplitudes, after_amplitudes)
+    )
 
 
 def _validate_non_negative_finite(value: float, *, label: str) -> None:

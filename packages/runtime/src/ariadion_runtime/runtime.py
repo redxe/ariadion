@@ -13,7 +13,6 @@ from ariadion_visualization import render_circuit
 from daidalon import compile_program
 from theonoe import StateReport, inspect_state, render_report
 
-from .inspection import TraceInspection, inspect_execution_trace
 from .trace import (
     ExecutionTrace,
     TraceCaptureOptions,
@@ -28,7 +27,6 @@ class RunResult:
     circuit: str
     report: str
     trace: ExecutionTrace | None = None
-    trace_inspection: TraceInspection | None = None
 
 
 def run_program(
@@ -38,7 +36,6 @@ def run_program(
 ) -> RunResult:
     ir = compile_program(program)
     execution_trace = None
-    trace_inspection = None
     if trace is not None and trace.enabled:
         captured_execution = simulate(ir, trace=trace)
         if not isinstance(captured_execution, SimulationExecution):  # pragma: no cover
@@ -47,7 +44,6 @@ def run_program(
         execution_trace = captured_execution.trace
         if not isinstance(execution_trace, ExecutionTrace):  # pragma: no cover
             raise RuntimeError("trace-enabled simulation did not return an execution trace")
-        trace_inspection = inspect_execution_trace(execution_trace)
     else:
         simulation = simulate(ir)
     inspection = inspect_state(simulation)
@@ -58,5 +54,4 @@ def run_program(
         circuit=render_circuit(ir),
         report=render_report(inspection),
         trace=execution_trace,
-        trace_inspection=trace_inspection,
     )

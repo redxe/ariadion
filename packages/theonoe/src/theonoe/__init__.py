@@ -1,6 +1,7 @@
 from .inspector import (
 	DEFAULT_EPSILON,
 	SEPARABILITY_ABS_TOLERANCE,
+	STATE_VECTOR_NORM_ABS_TOLERANCE,
 	BasisState,
 	BasisStateChange,
 	EntanglementTransition,
@@ -18,6 +19,7 @@ from .inspector import (
 __all__ = [
 	"DEFAULT_EPSILON",
 	"SEPARABILITY_ABS_TOLERANCE",
+	"STATE_VECTOR_NORM_ABS_TOLERANCE",
 	"BasisState",
 	"BasisStateChange",
 	"EntanglementTransition",

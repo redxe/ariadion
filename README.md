@@ -30,7 +30,7 @@ python tools/test.py
 Or use the modules directly:
 
 ```python
-from ariadion import Program, TraceCaptureOptions, run
+from ariadion import Program, TraceCaptureOptions, inspect_execution_trace, run
 
 program = Program(2, name="bell")
 program.h(0).cx(0, 1)
@@ -43,8 +43,7 @@ trace = result.trace
 assert trace is not None
 print(trace.steps[0].after.amplitudes)
 
-trace_inspection = result.trace_inspection
-assert trace_inspection is not None
+trace_inspection = inspect_execution_trace(trace)
 print(trace_inspection.steps[0].transition.basis_state_changes)
 ```
 

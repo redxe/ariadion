@@ -50,12 +50,14 @@ an explicit future runtime policy.
 
 ## Per-step inspection
 
-Runtime can project a captured `ExecutionTrace` into a `TraceInspection`. Each
-step binds its immutable IR operation identity and source reference to Theonoe's
-before/after state reports, basis-state changes, reduced density matrices, purity,
-and entanglement transition. This is a read-only derived artifact: it never mutates
-the trace or simulator state. See [Theonoe trace inspection](inspection.md) for
-the inspection data and separability semantics.
+Consumers can explicitly project a captured `ExecutionTrace` into a
+`TraceInspection` with `inspect_execution_trace()`. Trace capture alone does not
+perform Theonoe analysis. Each inspection step binds its immutable IR operation
+identity and source reference to Theonoe's before/after state reports, basis-state
+changes, reduced density matrices, purity, and entanglement transition. This is a
+read-only derived artifact: it never mutates the trace or simulator state. See
+[Theonoe trace inspection](inspection.md) for the inspection data and separability
+semantics.
 
 ## Immutability and metadata
 

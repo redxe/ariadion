@@ -45,8 +45,8 @@ A dependency-free state-vector reference backend. It favors clarity and correctn
 
 Builds inspectable snapshots: basis probabilities, amplitudes, phase, reduced
 density matrices, purity-based separability facts, and explicitly heuristic
-subsystem groups. Runtime applies these analyses to immutable execution traces;
-Theonoe neither mutates traces nor controls simulation.
+subsystem groups. Runtime exposes an explicit projection from immutable execution
+traces to these analyses; Theonoe neither mutates traces nor controls simulation.
 
 ### `ariadion-visualization`
 
@@ -58,8 +58,8 @@ Coordinates compilation, execution, inspection, and rendering. It is the first v
 
 It also owns the versioned execution-trace contract consumed by debugger and Studio
 clients. It adapts simulator raw capture into that contract and projects it through
-Theonoe per-step inspection so backends can opt in without changing source or IR
-semantics.
+Theonoe only when a consumer explicitly requests inspection, so capture and
+interpretation remain independently selectable.
 
 ## Near-term vertical slice
 

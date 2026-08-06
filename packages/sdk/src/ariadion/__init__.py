@@ -1,6 +1,7 @@
 from ariadion_language import Program, ProgramId, SourceNodeId, SourceRange
 from ariadion_runtime import (
     ExecutionTrace,
+    INSPECTION_SCHEMA_VERSION,
     RunResult,
     StateSnapshot,
     TraceInspection,
@@ -22,6 +23,7 @@ def run(
 
 __all__ = [
     "ExecutionTrace",
+    "INSPECTION_SCHEMA_VERSION",
     "Program",
     "ProgramId",
     "RunResult",

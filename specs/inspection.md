@@ -2,8 +2,8 @@
 
 Theonoe inspects immutable state vectors and state transitions. It does not mutate
 an `ExecutionTrace`, simulate operations, or decide execution policy. Runtime
-projects a captured execution trace into a `TraceInspection` only after simulation
-has completed.
+exposes `inspect_execution_trace()` as an explicit projection from a captured
+execution trace into a `TraceInspection`.
 
 ## State reports
 
@@ -11,6 +11,10 @@ has completed.
 basis states with amplitude, probability, and principal phase, filtered by the
 configured probability epsilon (default $10^{-12}$). Full state vectors remain in
 the execution trace; filtering exists only for inspection display data.
+
+Theonoe accepts normalized pure state vectors only. Every public amplitude input
+must have norm one within `STATE_VECTOR_NORM_ABS_TOLERANCE` (default $10^{-12}$).
+Invalid vectors are rejected; inspection never silently normalizes them.
 
 Each report also contains one `ReducedDensityMatrix` per qubit. A reduced matrix
 includes all $2 \times 2$ complex matrix elements, purity, and whether the qubit
@@ -35,8 +39,11 @@ factorization and entanglement witnesses.
 `StateTransition` contains a before and after `StateReport`, basis-state changes,
 and an `EntanglementTransition`. Every basis change records amplitudes,
 probabilities, probability delta, and a relative phase delta when both amplitudes
-are visible. An `EntanglementTransition` records newly entangled, newly separable,
-persistent entangled, and persistent separable qubits.
+are visible. Theonoe canonicalizes each snapshot's global phase before comparing
+basis states, so global-phase-equivalent vectors do not produce basis changes. If
+the snapshots are physically equivalent, `global_phase_delta_radians` records the
+otherwise unobservable phase delta. An `EntanglementTransition` records newly
+entangled, newly separable, persistent entangled, and persistent separable qubits.
 
 The runtime-owned `TraceStepInspection` binds this analysis to the immutable IR
 operation identity, source reference, optional measurement data, and step index.
@@ -46,5 +53,7 @@ operation identity, source reference, optional measurement data, and step index.
 
 All inspection records are frozen dataclasses with `to_dict()` and canonical
 `to_json()` output. Complex values are serialized as real/imaginary component
-objects. `TraceInspection.trace_schema_version` preserves the associated
-`ExecutionTrace.schema_version` when storing or exchanging an inspection.
+objects. `TraceInspection.inspection_schema_version` independently versions the
+inspection payload, while `TraceInspection.trace_schema_version` preserves the
+associated `ExecutionTrace.schema_version` when storing or exchanging an
+inspection. The initial `INSPECTION_SCHEMA_VERSION` is $1$.

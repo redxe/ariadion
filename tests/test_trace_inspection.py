@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import math
 import unittest
+from dataclasses import replace
+from unittest.mock import patch
 
 from ariadion import (
     Program,
@@ -13,8 +15,13 @@ from ariadion import (
     run,
 )
 from ariadion_ir import OpCode
-from ariadion_runtime import ExecutionMode
-from theonoe import inspect_amplitudes
+from ariadion_runtime import ExecutionMode, INSPECTION_SCHEMA_VERSION
+from theonoe import (
+    STATE_VECTOR_NORM_ABS_TOLERANCE,
+    inspect_amplitudes,
+    inspect_reduced_density_matrix,
+    inspect_state_transition,
+)
 
 
 class TraceInspectionTests(unittest.TestCase):
@@ -24,10 +31,11 @@ class TraceInspectionTests(unittest.TestCase):
         program.cx(0, 1, source_node_id=SourceNodeId("node:bell:cx"))
 
         result = run(program, trace=TraceCaptureOptions(enabled=True))
-        inspection = result.trace_inspection
+        trace = result.trace
 
-        self.assertIsNotNone(inspection)
-        assert inspection is not None
+        self.assertIsNotNone(trace)
+        assert trace is not None
+        inspection = inspect_execution_trace(trace)
         self.assertEqual(inspection.circuit_id, result.ir.id)
         self.assertEqual(inspection.initial.states[0].label, "|00>")
         self.assertEqual(inspection.initial.states[0].probability, 1.0)
@@ -85,10 +93,12 @@ class TraceInspectionTests(unittest.TestCase):
         program = Program(1, program_id=ProgramId("examples/phase-inspection.py"))
         program.h(0).z(0)
 
-        inspection = run(program, trace=TraceCaptureOptions(enabled=True)).trace_inspection
+        result = run(program, trace=TraceCaptureOptions(enabled=True))
+        trace = result.trace
 
-        self.assertIsNotNone(inspection)
-        assert inspection is not None
+        self.assertIsNotNone(trace)
+        assert trace is not None
+        inspection = inspect_execution_trace(trace)
         z_transition = inspection.steps[1].transition
         self.assertEqual(
             tuple(change.label for change in z_transition.basis_state_changes),
@@ -106,10 +116,12 @@ class TraceInspectionTests(unittest.TestCase):
         program = Program(1, program_id=ProgramId("examples/measurement-inspection.py"))
         program.h(0).measure(0, key="result")
 
-        inspection = run(program, trace=TraceCaptureOptions(enabled=True)).trace_inspection
+        result = run(program, trace=TraceCaptureOptions(enabled=True))
+        trace = result.trace
 
-        self.assertIsNotNone(inspection)
-        assert inspection is not None
+        self.assertIsNotNone(trace)
+        assert trace is not None
+        inspection = inspect_execution_trace(trace)
         measurement_step = inspection.steps[-1]
         self.assertEqual(measurement_step.opcode, OpCode.MEASURE)
         self.assertEqual(measurement_step.transition.basis_state_changes, ())
@@ -145,21 +157,72 @@ class TraceInspectionTests(unittest.TestCase):
             ((0, 1, 2, 3),),
         )
 
+    def test_inspection_rejects_non_normalized_vectors(self) -> None:
+        invalid_amplitudes = (math.sqrt(0.5) + 0j, 0j)
+
+        with self.assertRaisesRegex(ValueError, "unit norm"):
+            inspect_amplitudes(invalid_amplitudes, 1)
+        with self.assertRaisesRegex(ValueError, "unit norm"):
+            inspect_reduced_density_matrix(invalid_amplitudes, 1, 0)
+        with self.assertRaisesRegex(ValueError, "unit norm"):
+            inspect_state_transition(invalid_amplitudes, (1 + 0j, 0j), 1)
+        with self.assertRaisesRegex(ValueError, "unit norm"):
+            inspect_state_transition((1 + 0j, 0j), invalid_amplitudes, 1)
+
+        self.assertEqual(STATE_VECTOR_NORM_ABS_TOLERANCE, 1e-12)
+
+    def test_global_phase_does_not_create_basis_state_changes(self) -> None:
+        program = Program(1, program_id=ProgramId("examples/global-phase.py"))
+        program.x(0).z(0)
+
+        result = run(program, trace=TraceCaptureOptions(enabled=True))
+        trace = result.trace
+
+        self.assertIsNotNone(trace)
+        assert trace is not None
+        z_transition = inspect_execution_trace(trace).steps[-1].transition
+        self.assertEqual(z_transition.basis_state_changes, ())
+        self.assertIsNotNone(z_transition.global_phase_delta_radians)
+        assert z_transition.global_phase_delta_radians is not None
+        self.assertAlmostEqual(abs(z_transition.global_phase_delta_radians), math.pi)
+
+    def test_trace_inspection_reuses_each_snapshot_report_once(self) -> None:
+        program = Program(1, program_id=ProgramId("examples/cached-inspection.py"))
+        program.h(0).z(0).measure(0, key="result")
+        result = run(program, trace=TraceCaptureOptions(enabled=True))
+        trace = result.trace
+
+        self.assertIsNotNone(trace)
+        assert trace is not None
+        with patch(
+            "ariadion_runtime.inspection.inspect_amplitudes",
+            wraps=inspect_amplitudes,
+        ) as snapshot_inspector:
+            inspection = inspect_execution_trace(trace)
+
+        self.assertEqual(snapshot_inspector.call_count, len(trace.steps) + 1)
+        self.assertEqual(inspection.final, result.inspection)
+
     def test_trace_inspection_is_versioned_structured_data(self) -> None:
         result = run(Program(1).h(0), trace=TraceCaptureOptions(enabled=True))
-        inspection = result.trace_inspection
+        trace = result.trace
 
-        self.assertIsNotNone(inspection)
-        assert inspection is not None
-        self.assertIsNotNone(result.trace)
-        assert result.trace is not None
-        self.assertEqual(inspect_execution_trace(result.trace), inspection)
+        self.assertIsNotNone(trace)
+        assert trace is not None
+        inspection = inspect_execution_trace(trace)
+        self.assertEqual(inspect_execution_trace(trace), inspection)
         payload = json.loads(inspection.to_json())
         self.assertEqual(payload["circuit_id"], result.ir.id)
-        self.assertEqual(payload["trace_schema_version"], result.trace.schema_version)
+        self.assertEqual(
+            payload["inspection_schema_version"],
+            INSPECTION_SCHEMA_VERSION,
+        )
+        self.assertEqual(payload["trace_schema_version"], trace.schema_version)
         self.assertEqual(payload["steps"][0]["operation"]["opcode"], "H")
         self.assertEqual(payload["steps"][0]["transition"]["after"]["states"][0]["label"], "|0>")
         self.assertEqual(result.trace.metadata.mode, ExecutionMode.EXACT)
+        with self.assertRaisesRegex(ValueError, "inspection_schema_version"):
+            replace(inspection, inspection_schema_version=2)
 
 
 if __name__ == "__main__":
