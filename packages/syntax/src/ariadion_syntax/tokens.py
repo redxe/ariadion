@@ -19,6 +19,7 @@ class TokenKind(str, Enum):
     RZ = "rz"
     CX = "cx"
     MEASURE = "measure"
+    IN = "in"
     IDENTIFIER = "identifier"
     INTEGER_LITERAL = "integer_literal"
     ANGLE_LITERAL = "angle_literal"

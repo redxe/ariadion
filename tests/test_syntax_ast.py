@@ -7,13 +7,14 @@ from ariadion_core import SourceNodeId, SourceRange, SyntaxNodeId
 from ariadion_syntax import (
     AngleLiteral,
     AngleLiteralUnit,
+    BasisExpression,
     GateStatement,
     Identifier,
     IntegerLiteral,
     MeasurementStatement,
     PrimitiveGate,
     ProgramSyntax,
-    QubitDeclaration,
+    QubitRegisterDeclaration,
     QubitReference,
     RotationAxis,
     RotationStatement,
@@ -30,10 +31,7 @@ class SyntaxAstTests(unittest.TestCase):
         program = ProgramSyntax(
             name=self._identifier("bell", "program:name", 1, 9),
             declarations=(
-                QubitDeclaration(
-                    self._integer("2", "qubits:count", 3, 8),
-                    self._location("qubits", 3, 1, 9),
-                ),
+                self._declaration("qubits", 3, name="data", size="2"),
             ),
             statements=(
                 GateStatement(
@@ -51,6 +49,7 @@ class SyntaxAstTests(unittest.TestCase):
                 ),
                 MeasurementStatement(
                     self._qubit("measure:target", 7, 9),
+                    self._basis("z", "measure:basis", 7, 20),
                     self._identifier("result", "measure:key", 7, 17),
                     self._location("measure", 7, 1, 23),
                 ),
@@ -59,15 +58,20 @@ class SyntaxAstTests(unittest.TestCase):
         )
 
         payload = program.to_dict()
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], 3)
         self.assertEqual(payload["name"]["spelling"], "bell")
-        self.assertEqual(payload["declarations"][0]["kind"], "qubit_declaration")
+        self.assertEqual(
+            payload["declarations"][0]["kind"], "qubit_register_declaration"
+        )
+        self.assertEqual(payload["declarations"][0]["name"]["spelling"], "data")
+        self.assertEqual(payload["declarations"][0]["size"]["value"], 2)
         self.assertEqual(payload["statements"][0]["gate"], "h")
         self.assertEqual(
             payload["statements"][1]["operands"][0]["register"]["spelling"],
-            "q",
+            "data",
         )
         self.assertEqual(payload["statements"][1]["operands"][1]["index"]["value"], 1)
+        self.assertEqual(payload["statements"][2]["basis"]["name"]["spelling"], "z")
         self.assertEqual(payload["statements"][2]["result_key"]["spelling"], "result")
         self.assertNotIn("items", payload)
         self.assertEqual(json.loads(program.to_json()), payload)
@@ -86,10 +90,7 @@ class SyntaxAstTests(unittest.TestCase):
         program = ProgramSyntax(
             name=self._identifier("rotations", "program:name", 1, 9),
             declarations=(
-                QubitDeclaration(
-                    self._integer("1", "qubits:count", 3, 8),
-                    self._location("qubits", 3, 1, 9),
-                ),
+                self._declaration("qubits", 3, name="data"),
             ),
             statements=(
                 RotationStatement(
@@ -136,6 +137,7 @@ class SyntaxAstTests(unittest.TestCase):
         token = Token(TokenKind.H, "h", source_range)
         lexer_owned_fixed_spelling = Token(TokenKind.H, "not-h", source_range)
         lexer_owned_keyword = Token(TokenKind.IDENTIFIER, "program", source_range)
+        basis_keyword = Token(TokenKind.IN, "in", source_range)
         eof = Token(TokenKind.EOF, "", source_range)
         diagnostic = SyntaxDiagnostic(
             code="S001",
@@ -148,6 +150,7 @@ class SyntaxAstTests(unittest.TestCase):
         self.assertEqual(lexer_owned_fixed_spelling.to_dict()["spelling"], "not-h")
         self.assertEqual(lexer_owned_keyword.to_dict()["kind"], "identifier")
         self.assertEqual(lexer_owned_keyword.to_dict()["spelling"], "program")
+        self.assertEqual(basis_keyword.to_dict()["kind"], "in")
         self.assertEqual(eof.to_dict()["spelling"], "")
         self.assertEqual(diagnostic.severity, SyntaxDiagnosticSeverity.ERROR)
         self.assertEqual(diagnostic.to_dict()["code"], "S001")
@@ -182,34 +185,65 @@ class SyntaxAstTests(unittest.TestCase):
                 self._location("invalid:cx", 1, 1, 7),
             )
 
-    def test_program_root_rejects_missing_duplicate_and_misordered_declarations(self) -> None:
-        name = self._identifier("invalid", "program:name", 1, 9)
-        location = self._location("program", 1, 1, 16)
-        first_declaration = self._declaration("first", 3)
-        second_declaration = self._declaration("second", 4)
-
-        with self.assertRaisesRegex(ValueError, "exactly one qubit declaration"):
-            ProgramSyntax(
-                name=name,
-                declarations=(),
-                statements=(),
-                location=location,
+        with self.assertRaisesRegex(ValueError, "measurement basis must be BasisExpression"):
+            MeasurementStatement(
+                qubit,
+                self._identifier("z", "invalid:basis", 1, 10),
+                self._identifier("result", "invalid:key", 1, 15),
+                self._location("invalid:measure", 1, 1, 21),
             )
 
-        with self.assertRaisesRegex(ValueError, "exactly one qubit declaration"):
-            ProgramSyntax(
-                name=name,
-                declarations=(first_declaration, second_declaration),
-                statements=(),
-                location=location,
-            )
+    def test_program_root_preserves_structure_and_defers_register_semantics(self) -> None:
+        first_declaration = self._declaration("first", 3, name="data", size="2")
+        second_declaration = self._declaration("second", 4, name="data", size="0")
+        unresolved_measurement = MeasurementStatement(
+            self._qubit("measure:target", 6, 9, register="missing", index="7"),
+            self._basis("banana", "measure:basis", 6, 23),
+            self._identifier("result", "measure:key", 6, 33),
+            self._location("measure", 6, 1, 39),
+        )
+        program = ProgramSyntax(
+            name=self._identifier("unresolved", "program:name", 1, 9),
+            declarations=(first_declaration, second_declaration),
+            statements=(unresolved_measurement,),
+            location=self._location("program", 1, 1, 20),
+        )
+
+        self.assertEqual(len(program.declarations), 2)
+        self.assertEqual(program.declarations[1].name.spelling, "data")
+        self.assertEqual(program.declarations[1].size.value, 0)
+        self.assertEqual(unresolved_measurement.target.register.spelling, "missing")
+        self.assertEqual(unresolved_measurement.target.index.value, 7)
+        self.assertEqual(unresolved_measurement.basis.name.spelling, "banana")
+
+        no_storage_program = ProgramSyntax(
+            name=self._identifier("empty", "empty:program:name", 1, 9),
+            declarations=(),
+            statements=(),
+            location=self._location("empty:program", 1, 1, 14),
+        )
+        self.assertEqual(no_storage_program.declarations, ())
 
         with self.assertRaisesRegex(ValueError, "statements must be Statement"):
             ProgramSyntax(
-                name=name,
+                name=self._identifier("invalid", "invalid:program:name", 1, 9),
                 declarations=(first_declaration,),
                 statements=(second_declaration,),
-                location=location,
+                location=self._location("invalid:program", 1, 1, 16),
+            )
+
+        with self.assertRaisesRegex(ValueError, "declarations must be QubitRegisterDeclaration"):
+            ProgramSyntax(
+                name=self._identifier("invalid", "gate:program:name", 1, 9),
+                declarations=(
+                    GateStatement(
+                        PrimitiveGate.H,
+                        (self._qubit("gate:target", 3, 3),),
+                        self._location("gate", 3, 1, 10),
+                    ),
+                ),
+                statements=(),
+                location=self._location("gate:program", 1, 1, 16),
             )
 
     def test_syntax_snapshot_identity_is_required_and_durable_identity_is_optional(self) -> None:
@@ -232,9 +266,10 @@ class SyntaxAstTests(unittest.TestCase):
         )
 
         duplicate_snapshot_name = self._identifier("dup", "duplicate", 1, 9)
-        duplicate_snapshot_declaration = QubitDeclaration(
-            self._integer("1", "duplicate:count", 3, 8),
-            self._location("duplicate", 3, 1, 9),
+        duplicate_snapshot_declaration = QubitRegisterDeclaration(
+            self._identifier("data", "duplicate:register", 3, 8),
+            self._integer("1", "duplicate:size", 3, 13),
+            self._location("duplicate", 3, 1, 15),
         )
         with self.assertRaisesRegex(ValueError, "syntax node IDs must be unique"):
             ProgramSyntax(
@@ -254,13 +289,14 @@ class SyntaxAstTests(unittest.TestCase):
                 durable_source_node_id="editor:duplicate",
             ),
         )
-        duplicate_durable_declaration = QubitDeclaration(
-            self._integer("1", "durable:count", 3, 8),
+        duplicate_durable_declaration = QubitRegisterDeclaration(
+            self._identifier("data", "durable:register", 3, 8),
+            self._integer("1", "durable:size", 3, 13),
             self._location(
                 "durable:declaration",
                 3,
                 1,
-                9,
+                15,
                 durable_source_node_id="editor:duplicate",
             ),
         )
@@ -270,6 +306,39 @@ class SyntaxAstTests(unittest.TestCase):
                 declarations=(duplicate_durable_declaration,),
                 statements=(),
                 location=self._location("durable:program", 1, 1, 16),
+            )
+
+    def test_register_and_basis_children_participate_in_identity_validation(self) -> None:
+        first_register = self._declaration("register:first", 3, name="data")
+        second_register = QubitRegisterDeclaration(
+            self._identifier("other", "register:first:name", 4, 8),
+            self._integer("1", "register:second:size", 4, 14),
+            self._location("register:second", 4, 1, 16),
+        )
+        with self.assertRaisesRegex(ValueError, "syntax node IDs must be unique"):
+            ProgramSyntax(
+                name=self._identifier("duplicate_register", "register:program:name", 1, 9),
+                declarations=(first_register, second_register),
+                statements=(),
+                location=self._location("register:program", 1, 1, 27),
+            )
+
+        duplicate_basis_name = BasisExpression(
+            self._identifier("z", "measurement:duplicate", 5, 20),
+            self._location("measurement:basis", 5, 20, 21),
+        )
+        duplicate_basis_measurement = MeasurementStatement(
+            self._qubit("measurement:target", 5, 9),
+            duplicate_basis_name,
+            self._identifier("result", "measurement:duplicate", 5, 25),
+            self._location("measurement", 5, 1, 31),
+        )
+        with self.assertRaisesRegex(ValueError, "syntax node IDs must be unique"):
+            ProgramSyntax(
+                name=self._identifier("duplicate_basis", "measurement:program:name", 1, 9),
+                declarations=(self._declaration("measurement:register", 3),),
+                statements=(duplicate_basis_measurement,),
+                location=self._location("measurement:program", 1, 1, 24),
             )
 
     def test_angle_literal_keeps_large_decimal_text_without_float_conversion(self) -> None:
@@ -292,18 +361,41 @@ class SyntaxAstTests(unittest.TestCase):
         line: int,
         column: int,
         *,
+        register: str = "data",
         index: str = "0",
     ) -> QubitReference:
+        index_column = column + len(register) + 1
         return QubitReference(
-            register=self._identifier("q", f"{prefix}:register", line, column),
-            index=self._integer(index, f"{prefix}:index", line, column + 2),
-            location=self._location(prefix, line, column, column + 4),
+            register=self._identifier(register, f"{prefix}:register", line, column),
+            index=self._integer(index, f"{prefix}:index", line, index_column),
+            location=self._location(
+                prefix,
+                line,
+                column,
+                index_column + len(index) + 1,
+            ),
         )
 
-    def _declaration(self, prefix: str, line: int) -> QubitDeclaration:
-        return QubitDeclaration(
-            self._integer("1", f"{prefix}:count", line, 8),
-            self._location(prefix, line, 1, 9),
+    def _basis(self, spelling: str, node_id: str, line: int, column: int) -> BasisExpression:
+        return BasisExpression(
+            self._identifier(spelling, f"{node_id}:name", line, column),
+            self._location(node_id, line, column, column + len(spelling)),
+        )
+
+    def _declaration(
+        self,
+        prefix: str,
+        line: int,
+        *,
+        name: str = "data",
+        size: str = "1",
+    ) -> QubitRegisterDeclaration:
+        name_column = 8
+        size_column = name_column + len(name) + 1
+        return QubitRegisterDeclaration(
+            self._identifier(name, f"{prefix}:name", line, name_column),
+            self._integer(size, f"{prefix}:size", line, size_column),
+            self._location(prefix, line, 1, size_column + len(size) + 1),
         )
 
     def _identifier(self, spelling: str, node_id: str, line: int, column: int) -> Identifier:

@@ -5,17 +5,19 @@ It deliberately does **not** include a lexer, parser, name resolver, type checke
 or IR lowering yet. The first contract freezes written syntax and source identity
 before parser behavior or semantic rules become public.
 
-## Initial grammar
+## Native grammar
 
 The grammar is expressed in EBNF. Newlines separate declarations and statements;
 blank lines are ignored by a future lexer/parser.
 
 ```text
 program             = "program" , identifier , newline ,
-                      { newline } , qubit-declaration ,
-                      { newline , statement } , { newline } ;
+                      { newline } ,
+                      { qubit-register-declaration , newline , { newline } } ,
+                      { statement , newline , { newline } } ;
 
-qubit-declaration   = "qubits" , integer-literal ;
+qubit-register-declaration
+                    = "qubits" , identifier , "[" , integer-literal , "]" ;
 
 statement           = single-qubit-gate
                     | controlled-gate
@@ -26,9 +28,11 @@ single-qubit-gate   = ( "x" | "h" | "z" ) , qubit-reference ;
 controlled-gate     = "cx" , qubit-reference , "," , qubit-reference ;
 rotation            = ( "rx" | "ry" | "rz" ) , qubit-reference , "," ,
                       angle-literal ;
-measurement         = "measure" , qubit-reference , "->" , identifier ;
+measurement         = "measure" , qubit-reference , "in" , basis-expression ,
+                      "->" , identifier ;
 
 qubit-reference     = identifier , "[" , integer-literal , "]" ;
+basis-expression    = identifier ;
 angle-literal       = signed-decimal , ( "deg" | "rad" | "turns" ) ;
 identifier          = letter-or-underscore , { letter | digit | "_" } ;
 integer-literal     = digit , { digit } ;
@@ -36,43 +40,52 @@ signed-decimal      = [ "+" | "-" ] , integer-literal ,
                       [ "." , integer-literal ] ;
 ```
 
-The initial examples are therefore valid written programs:
+The following are valid written programs:
 
 ```text
 program bell
 
-qubits 2
+qubits data[2]
 
-h q[0]
-cx q[0], q[1]
-measure q[0] -> result
+h data[0]
+cx data[0], data[1]
+measure data[0] in z -> result
 ```
 
 ```text
 program rotations
 
-qubits 1
+qubits data[1]
 
-ry q[0], 90deg
-rz q[0], 0.5turns
+ry data[0], 90deg
+rz data[0], 0.5turns
 ```
 
-The grammar recognizes a register name in every qubit reference but does not yet
-assign register semantics. In this first source contract, `q[0]` remains a written
-reference; it is not flattened into a simulator index.
+The grammar permits zero or more register declarations. It keeps declarations
+before executable statements structurally, but it does not require quantum storage
+or decide whether declarations form a valid quantum layout. A source reference such
+as `data[0]` remains symbolic and is never flattened into a simulator index by the
+syntax layer.
 
 ## Source AST
 
 `ProgramSyntax` is the immutable root. It keeps ordered `declarations` separate
 from ordered executable `statements`, so declarations cannot appear after a gate
-or measurement. Schema version $2$ currently requires exactly one
-`QubitDeclaration`; the separate declaration sequence will grow when named
-register declarations are introduced.
+or measurement. Schema version $3$ accepts a sequence of
+`QubitRegisterDeclaration` values, including an empty sequence, because the source
+AST records syntax rather than semantic validity.
 
 Statements are `GateStatement`, `RotationStatement`, and
-`MeasurementStatement`. `GateStatement` represents the currently supported
-non-rotation primitives (`x`, `h`, `z`, and `cx`), while `RotationStatement`
-retains a `RotationAxis`, `QubitReference`, and `AngleLiteral`.
+`MeasurementStatement`. A `QubitRegisterDeclaration` contains an author-written
+register `name` and `size`; a `QubitReference` contains its symbolic `register`
+and `index`. `GateStatement` represents the currently supported non-rotation
+primitives (`x`, `h`, `z`, and `cx`), while `RotationStatement` retains a
+`RotationAxis`, `QubitReference`, and `AngleLiteral`. `MeasurementStatement`
+contains a `QubitReference`, a `BasisExpression`, and a result-key `Identifier`.
+
+`BasisExpression` currently contains an `Identifier` such as `x`, `y`, or `z`.
+It is deliberately not an IR enum: later syntax can introduce named bases such as
+`basis diagonal = ...` without replacing the source expression model.
 
 Every AST node contains a `SyntaxLocation`, which combines:
 
@@ -92,6 +105,22 @@ semantic values. An `AngleLiteral` preserves spelling such as `90deg` or
 `float`, calculate canonical radians, or decide numeric representability; typed
 semantic analysis will make those decisions later using an explicit numeric policy.
 
+## Deliberately deferred semantic validation
+
+The syntax AST accepts grammatically valid text even when later layers will reject
+its meaning. For example, this is a valid source AST:
+
+```text
+qubits data[2]
+measure missing[7] in banana -> result
+```
+
+Later name resolution and typed semantic validation determine that `missing` is an
+unknown register, `7` is out of range when a register is known, and `banana` is an
+unknown basis. They also own duplicate register-name checks, positive register
+size checks, and whether a program requires quantum storage. The syntax package
+must not flatten references, impose those semantic rules, or import IR to do so.
+
 ## Tokens and diagnostics
 
 `TokenKind` and `Token` define the lexical vocabulary and preserve original token
@@ -108,9 +137,11 @@ checking, or IR lowering exists. Semantic diagnostics will remain a later layer.
 
 AST values, tokens, source locations, and syntax diagnostics provide deterministic
 `to_dict()` and canonical `to_json()` output. `ProgramSyntax` documents its
-`schema_version` as $2$. Version $2$ separates declarations from statements and
-serializes snapshot and optional durable node identities separately. AST fixtures
-and frontend documents therefore evolve independently from execution traces and IR.
+`schema_version` as $3$. Version $3$ replaces the single fixed-width declaration
+with ordered named register declarations and adds a basis expression to
+measurements. Version $2$ remains the prior serialized shape; clients must not
+interpret a version $3$ document as version $2$. AST fixtures and frontend
+documents therefore evolve independently from execution traces and IR.
 
 ## Boundary
 

@@ -14,7 +14,7 @@ from ariadion_core import (
 )
 
 
-SYNTAX_AST_SCHEMA_VERSION: Final = 2
+SYNTAX_AST_SCHEMA_VERSION: Final = 3
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _INTEGER_PATTERN = re.compile(r"[0-9]+\Z")
 _ANGLE_NUMBER_PATTERN = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?\Z")
@@ -174,21 +174,48 @@ class QubitReference:
 
 
 @dataclass(frozen=True, slots=True)
-class QubitDeclaration:
-    """The initial fixed-width `qubits N` declaration syntax node."""
+class BasisExpression:
+    """A source-level basis name, not an IR enum or resolved semantic basis."""
 
-    count: IntegerLiteral
+    name: Identifier
     location: SyntaxLocation
 
     def __post_init__(self) -> None:
-        if not isinstance(self.count, IntegerLiteral):
-            raise ValueError("qubit declaration count must be IntegerLiteral")
-        _validate_location(self.location, label="qubit declaration")
+        if not isinstance(self.name, Identifier):
+            raise ValueError("basis expression name must be Identifier")
+        _validate_location(self.location, label="basis expression")
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "kind": "qubit_declaration",
-            "count": self.count.to_dict(),
+            "kind": "basis_expression",
+            "name": self.name.to_dict(),
+            "location": self.location.to_dict(),
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class QubitRegisterDeclaration:
+    """A written `qubits name[size]` declaration with unresolved semantics."""
+
+    name: Identifier
+    size: IntegerLiteral
+    location: SyntaxLocation
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, Identifier):
+            raise ValueError("qubit register declaration name must be Identifier")
+        if not isinstance(self.size, IntegerLiteral):
+            raise ValueError("qubit register declaration size must be IntegerLiteral")
+        _validate_location(self.location, label="qubit register declaration")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "qubit_register_declaration",
+            "name": self.name.to_dict(),
+            "size": self.size.to_dict(),
             "location": self.location.to_dict(),
         }
 
@@ -285,15 +312,18 @@ class RotationStatement:
 
 @dataclass(frozen=True, slots=True)
 class MeasurementStatement:
-    """A written measurement target and result-key destination."""
+    """A written basis-aware measurement with an unresolved result key."""
 
     target: QubitReference
+    basis: BasisExpression
     result_key: Identifier
     location: SyntaxLocation
 
     def __post_init__(self) -> None:
         if not isinstance(self.target, QubitReference):
             raise ValueError("measurement target must be QubitReference")
+        if not isinstance(self.basis, BasisExpression):
+            raise ValueError("measurement basis must be BasisExpression")
         if not isinstance(self.result_key, Identifier):
             raise ValueError("measurement result_key must be Identifier")
         _validate_location(self.location, label="measurement statement")
@@ -302,6 +332,7 @@ class MeasurementStatement:
         return {
             "kind": "measurement_statement",
             "target": self.target.to_dict(),
+            "basis": self.basis.to_dict(),
             "result_key": self.result_key.to_dict(),
             "location": self.location.to_dict(),
         }
@@ -310,7 +341,7 @@ class MeasurementStatement:
         return canonical_json(self.to_dict())
 
 
-Declaration: TypeAlias = QubitDeclaration
+Declaration: TypeAlias = QubitRegisterDeclaration
 Statement: TypeAlias = GateStatement | RotationStatement | MeasurementStatement
 ProgramItem: TypeAlias = Declaration | Statement
 
@@ -328,12 +359,12 @@ class ProgramSyntax:
         if not isinstance(self.name, Identifier):
             raise ValueError("program syntax name must be Identifier")
         if not isinstance(self.declarations, tuple) or not all(
-            isinstance(declaration, QubitDeclaration)
+            isinstance(declaration, QubitRegisterDeclaration)
             for declaration in self.declarations
         ):
-            raise ValueError("program syntax declarations must be Declaration values in a tuple")
-        if len(self.declarations) != 1:
-            raise ValueError("program syntax requires exactly one qubit declaration")
+            raise ValueError(
+                "program syntax declarations must be QubitRegisterDeclaration values in a tuple"
+            )
         if not isinstance(self.statements, tuple) or not all(
             isinstance(statement, (GateStatement, RotationStatement, MeasurementStatement))
             for statement in self.statements
@@ -429,7 +460,9 @@ def _validate_unique_node_ids(program: ProgramSyntax) -> None:
 def _iter_locations(program: ProgramSyntax) -> tuple[SyntaxLocation, ...]:
     locations: list[SyntaxLocation] = [program.location, program.name.location]
     for declaration in program.declarations:
-        locations.extend((declaration.location, declaration.count.location))
+        locations.extend(
+            (declaration.location, declaration.name.location, declaration.size.location)
+        )
     for statement in program.statements:
         locations.extend(_statement_locations(statement))
     return tuple(locations)
@@ -456,5 +489,7 @@ def _statement_locations(statement: Statement) -> tuple[SyntaxLocation, ...]:
         statement.target.location,
         statement.target.register.location,
         statement.target.index.location,
+        statement.basis.location,
+        statement.basis.name.location,
         statement.result_key.location,
     )

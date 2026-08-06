@@ -274,6 +274,6 @@ For example, `rx data[0], 190deg` retains `190deg` in syntax, becomes an angle i
 the typed model, and lowers to canonical radians plus source metadata in IR.
 Parser nodes must not double as `CircuitIR` operations.
 
-This supports the next language milestones: native syntax and source AST, named
-registers and explicit basis semantics, then parser, name-resolution, and lowering
-pipelines.
+The native source AST now records symbolic named registers and basis expressions.
+The next language milestones are a parser, name-resolution, and lowering pipelines
+that preserve this separation.
