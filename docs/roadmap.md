@@ -14,27 +14,41 @@
 - human-readable, structured explanations for arbitrary rotations
 - immutable syntax identities, source literals, and schema-versioned frontend contracts
 - hand-built `LogicalProgram` allocation through `CircuitIR`, trace, and inspection
-- declaration-order `dense-no-reuse-v1` allocation artifacts and logical-to-IR provenance
+- declaration-order `dense-no-reuse-v1` logical-slot allocation artifacts and logical-to-IR provenance
+- declared `ClassicalBitId` outputs, readout plans, and exact terminal joint classical distributions
+- terminal analytical observation projection with no sampling, collapse, or mid-circuit feedback
 
 ## Next sequence
 
 The next implementation work must preserve this order:
 
-1. Prototype `@quantum` capture with Python AST.
-2. Infer terminal observations at `Qubit`-to-`Bit` boundaries.
+1. Add a typed `LogicalRotationOperation` with a unit-bearing `SemanticAngle`, then lower it to canonical allocated-IR radians:
+
+   ```python
+   @dataclass(frozen=True, slots=True)
+   class LogicalRotationOperation:
+	   id: LogicalOperationId
+	   axis: RotationAxis
+	   target: LogicalQubitId
+	   angle: SemanticAngle
+	   source: SemanticSourceRef | None = None
+   ```
+2. Prototype `@quantum` capture with Python AST.
 3. Add lifetime analysis and slot reuse beyond `dense-no-reuse-v1`.
-4. Define noise-channel contracts and bind them to simulation requests.
-5. Add a small density-matrix noisy simulator.
-6. Add scheduling and T1/T2 idle decoherence.
-7. Add reliability goals and bare-execution estimates.
-8. Add pluggable protection-planning interfaces.
-9. Add encoded-QEC simulation and decoder integration later.
+4. Define sampled terminal and mid-circuit execution: shots, seeds, outcomes, collapse, feedback, reset, and post-measurement traces.
+5. Define noise-channel contracts and bind them to simulation requests.
+6. Add a small density-matrix noisy simulator.
+7. Add scheduling and T1/T2 idle decoherence.
+8. Add reliability goals and bare-execution estimates.
+9. Add pluggable protection-planning interfaces.
+10. Add encoded-QEC simulation and decoder integration later.
 
 ## Milestone 1 — value, effect, and observation contracts
 
 - public `Qubit` and `Bit` domain contracts
 - internal logical-value identities and pre-allocation operations
-- explicit and inferred observation contracts with typed bases and reasons
+- explicit and inferred observation contracts with typed bases, reasons, result IDs, and ordered outputs
+- exact terminal execution distributions that preserve output correlation without claiming sampled collapse
 - classical, quantum, and hybrid function-effect contracts
 - source-level aliasing, escape, reset, and conversion rules
 - diagnostics with original Python-compatible source ranges
@@ -43,8 +57,8 @@ The next implementation work must preserve this order:
 
 - hand-build a logical Bell program using semantic identities
 - lower it through Daidalon into allocated `CircuitIR`
-- add `AllocationPlan` and logical-to-IR provenance
-- run the resulting IR through simulation, trace capture, and inspection
+- add `LogicalSlotAllocationPlan`, `ReadoutPlan`, observation metadata, and logical-to-IR provenance
+- run the resulting IR through simulation, trace capture, inspection, and exact classical output calculation
 - use deterministic declaration-order allocation with no reuse or lifetime analysis
 
 ## Milestone 3 — decorated Python frontend and inferred observations

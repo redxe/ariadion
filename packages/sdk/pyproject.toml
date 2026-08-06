@@ -3,7 +3,7 @@ name = "ariadion"
 version = "0.1.0"
 description = "Python SDK for visible, basis-aware quantum programming"
 requires-python = ">=3.11"
-dependencies = ["ariadion-language", "ariadion-runtime"]
+dependencies = ["ariadion-language", "ariadion-runtime", "ariadion-semantics"]
 
 [build-system]
 requires = ["setuptools>=68"]

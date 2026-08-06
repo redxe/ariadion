@@ -16,10 +16,10 @@ The first executable frontend will use valid Python; this is the target surface,
 not an implemented API yet:
 
 ```python
-from ariadion import Bit, Qubit, cx, h, quantum, z
+from ariadion import Bit, Qubit, basis, cx, h, quantum
 
 
-@quantum(basis=z)
+@quantum(basis=basis.z)
 def bell() -> tuple[Bit, Bit]:
     left = Qubit()
     right = Qubit()

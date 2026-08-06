@@ -27,7 +27,10 @@ separate execution-occurrence identity.
 zero-based and identifies the corresponding executed operation. A trace with an
 empty circuit therefore has an initial state and zero steps; a one-operation trace
 has one step at index zero. Every step records `before` and `after` snapshots, and
-the next step must begin with the preceding step's `after` snapshot.
+the next step must begin with the preceding step's `after` snapshot. For an exact
+terminal observation, `after` is the retained analytical state rather than a
+sampled physical post-measurement state. `ExecutionTrace.retained_analytic_state`
+is the explicit name for that final analytical snapshot.
 
 ## Exact state and sampled measurements
 
@@ -39,7 +42,10 @@ Every amplitude component must be finite; `NaN` and infinities are invalid.
 `ExecutionMetadata.mode` labels a complete trace as `exact` or `sampled`.
 `MeasurementEvent` makes exact probabilities and sampled outcomes mutually
 exclusive: an `exact_probabilities` record contains probability data, while a
-`sampled_outcome` record contains one bit per measured target. Exact traces reject
+`sampled_outcome` record contains one bit per measured target. Its required
+`execution_kind` makes the semantic boundary explicit:
+`exact_terminal_distribution` is an analytical terminal projection, and
+`sampled_collapse` is reserved for future sampled collapse. Exact traces reject
 sampled outcomes by invariant. A measurement event can attach only to a `MEASURE`
 operation with the same operation ID, targets, and key. Targets must be unique and
 fit the snapshot width. Exact records have exactly $2^n$ finite, non-negative
@@ -47,6 +53,14 @@ probabilities for $n$ targets, and those probabilities must sum to one within an
 absolute tolerance of $10^{-12}$. The reference simulator emits exact
 probabilities without collapsing the state vector; sampling and collapse require
 an explicit future runtime policy.
+
+When runtime executes a `LogicalCompilationResult`, its `ReadoutPlan` maps lowered
+observations to the declared flat output order. Runtime returns one
+`ExactClassicalDistribution` over all ordered `ClassicalBitId` values. This preserves
+correlations: Bell results in order `(left, right)` are $00 \mapsto 0.5$,
+$01 \mapsto 0$, $10 \mapsto 0$, and $11 \mapsto 0.5$, not two unrelated 50/50
+records. Discarded observations remain trace events but are absent from that public
+output distribution.
 
 ### Measurement bit order
 
@@ -81,7 +95,9 @@ without requiring a specific simulator or provider implementation.
 
 ## Serialization and versioning
 
-`ExecutionTrace` starts at `schema_version = 1`. All contract records provide
+`ExecutionTrace` uses `schema_version = 2`, which added explicit observation
+execution kinds. Schema-v1 traces are rejected rather than silently interpreted
+under terminal analytical-projection semantics. All contract records provide
 `to_dict()` and canonical `to_json()` output. Consumers must reject unsupported
 future schema versions rather than guessing their meaning. Additive optional fields
 are preferred for compatible evolution; semantic changes require a new schema

@@ -15,6 +15,7 @@ from ariadion_runtime import (
     MeasurementEvent,
     MeasurementBitOrder,
     MeasurementRecordKind,
+    ObservationExecutionKind,
     ResourceMetric,
     StateSnapshot,
     TraceCaptureOptions,
@@ -106,6 +107,7 @@ class TraceContractTests(unittest.TestCase):
             MeasurementRecordKind.SAMPLED_OUTCOME,
             key="result",
             outcome=(0,),
+            execution_kind=ObservationExecutionKind.SAMPLED_COLLAPSE,
         )
 
         exact_step = TraceStep(0, operation, snapshot, snapshot, measurement=exact)
@@ -264,6 +266,13 @@ class TraceContractTests(unittest.TestCase):
         self.assertEqual(payload["metadata"]["resource_metrics"][0]["name"], "statevector_bytes")
         self.assertEqual(trace.to_json(), trace.to_json())
         self.assertFalse(TraceCaptureOptions().enabled)
+
+    def test_schema_version_one_is_rejected_after_observation_execution_upgrade(self) -> None:
+        circuit = compile_program(Program(1, program_id=ProgramId("examples/schema.py")))
+        initial = StateSnapshot(circuit.id, circuit.qubit_count, (1 + 0j, 0j))
+
+        with self.assertRaisesRegex(ValueError, "supported trace schema"):
+            ExecutionTrace(circuit.id, initial, schema_version=1)
 
 
 if __name__ == "__main__":

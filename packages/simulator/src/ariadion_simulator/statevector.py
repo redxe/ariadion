@@ -87,6 +87,30 @@ class SimulationNormError(RuntimeError):
         )
 
 
+class ExactTerminalObservationError(ValueError):
+    """Raised when exact state-vector execution encounters a non-terminal observation."""
+
+    code: Final = "A202"
+
+    def __init__(
+        self,
+        *,
+        observed_operation_id: IrOperationId,
+        observed_step_index: int,
+        following_operation_id: IrOperationId,
+        following_step_index: int,
+    ) -> None:
+        self.observed_operation_id = observed_operation_id
+        self.observed_step_index = observed_step_index
+        self.following_operation_id = following_operation_id
+        self.following_step_index = following_step_index
+        super().__init__(
+            f"{self.code}: exact state-vector execution supports terminal observations only "
+            f"(observation at step {observed_step_index}, later operation at step "
+            f"{following_step_index})"
+        )
+
+
 @overload
 def simulate(circuit: CircuitIR) -> SimulationResult: ...
 
@@ -135,8 +159,19 @@ def _simulate_execution(
     state[0] = 1 + 0j
     initial_amplitudes = tuple(state) if retain_trace else None
     steps: list[SimulationTraceStep] | None = [] if retain_trace else None
+    terminal_observation: tuple[IrOperationId, int] | None = None
 
     for index, operation in enumerate(circuit.operations):
+        if terminal_observation is not None and operation.opcode is not OpCode.MEASURE:
+            observed_operation_id, observed_step_index = terminal_observation
+            raise ExactTerminalObservationError(
+                observed_operation_id=observed_operation_id,
+                observed_step_index=observed_step_index,
+                following_operation_id=operation.id,
+                following_step_index=index,
+            )
+        if operation.opcode is OpCode.MEASURE and terminal_observation is None:
+            terminal_observation = (operation.id, index)
         before_amplitudes = tuple(state) if retain_trace else None
         state = apply_operation(state, operation)
         if operation.opcode is not OpCode.MEASURE:
@@ -186,8 +221,8 @@ def apply_operation(state: list[complex], operation: Operation) -> list[complex]
     elif operation.opcode is OpCode.CX:
         _apply_cx(state, operation.controls[0], operation.targets[0])
     elif operation.opcode is OpCode.MEASURE:
-        # The reference simulator keeps the full state. Measurement sampling and
-        # collapse will be introduced with explicit runtime policies.
+        # Exact terminal projection retains the analytical pre-observation state.
+        # Sampling and collapse require an explicit future runtime policy.
         return state
     else:  # pragma: no cover - protects future enum expansion
         raise ValueError(f"unsupported opcode: {operation.opcode}")

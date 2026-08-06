@@ -10,12 +10,12 @@ Ariadion is both a programming model and an interactive environment. The initial
 ariadion-core
     ├── ariadion-language ─┐
     ├── ariadion-ir ───────┼── Daidalon ──> ariadion-runtime
-    ├── ariadion-semantics │
+    ├── ariadion-semantics ├──────────────> ariadion-runtime
     └── ariadion-syntax ───┘   (future frontend input)
 
 ariadion-runtime ──> simulator / Theonoe / visualization
 
-Ariadion SDK ───────────────────────────────────────> language and runtime
+Ariadion SDK ───────────────────────────────────────> language, semantics, and runtime
 ```
 
 The compiler produces immutable semantic IR. Runtime backends consume IR. Debuggers
@@ -64,23 +64,26 @@ through transformation. A standalone parser for `program name` and `qubits data[
 is not on the current path.
 
 The allocated `CircuitIR` continues to use dense integer targets and an explicit
-`qubit_count`; those are compiler results. Daidalon now exposes an `AllocationPlan`
-beside the resulting IR. The first policy, `dense-no-reuse-v1`, maps declaration
-order to slots 0, 1, 2, 3 and sets both peak live and allocated counts to the
-number of declared logical values. It deliberately does not infer lifetimes or
-reuse slots. Later allocation artifacts can support diagnostics, resource reporting,
-trace navigation, and hardware mapping. Before a future optimized allocation, a
-schedule makes duration and idle-time assumptions explicit; reliability analysis
-compares its estimate to a requested failure budget; a protection-and-allocation
-plan can then select a feasible bare or protected realization.
+`qubit_count`; those are compiler results. Daidalon now exposes a
+`LogicalSlotAllocationPlan` beside the resulting IR. The first policy,
+`dense-no-reuse-v1`, maps declaration order to execution slots 0, 1, 2, 3 and sets
+both peak live and allocated counts to the number of declared logical values. It
+deliberately does not infer lifetimes or reuse slots. This is not a physical or
+protected allocation: a later physical plan may map one source `Qubit` to many
+hardware qubits. Later allocation artifacts can support diagnostics, resource
+reporting, trace navigation, and hardware mapping. Before a future optimized
+allocation, a schedule makes duration and idle-time assumptions explicit;
+reliability analysis compares its estimate to a requested failure budget; a
+protection-and-allocation plan can then select a feasible bare or protected
+realization.
 
 At the public boundary, `Qubit` is already a logical value and `Bit` is a distinct
-classical observation result. `LogicalQubitId`, `LogicalQubitValue`, and
-`LogicalOperationId` are compiler-semantic identities; allocated slots and integer
-targets are backend-facing facts. No public `Qubit` constructor accepts a physical
-or simulator location. Its API must not expose whether its realization is bare,
-mitigated, error-detected, or fault-tolerantly protected. Those are compiler-plan
-facts, not source-value representations.
+classical observation result. `LogicalQubitId`, `ClassicalBitId`,
+`LogicalQubitValue`, and `LogicalOperationId` are compiler-semantic identities;
+allocated slots and integer targets are backend-facing facts. No public `Qubit`
+constructor accepts a physical or simulator location. Its API must not expose
+whether its realization is bare, mitigated, error-detected, or fault-tolerantly
+protected. Those are compiler-plan facts, not source-value representations.
 
 ## Reliability planning and protection boundaries
 
@@ -152,13 +155,14 @@ prototype will operate on `Qubit` values instead of requiring `Program(width)`.
 ### `ariadion-semantics`
 
 Immutable pre-allocation contracts for logical quantum values, `LogicalProgram`,
-gate-shaped `QuantumInstruction` values, observations, function effects,
-reliability goals, layered noise profiles, composable simulation requests, and
-protection-plan descriptions. It depends only on `ariadion-core` and contains no
-allocated integer targets, circuit width, backend policy, noise engine, QEC planner,
-or lowering. Daidalon consumes the logical program contracts for the current
-declaration-order allocation slice; lifetime analysis, scheduling, reliability
-analysis, and optimized allocation remain future work.
+gate-shaped `QuantumInstruction` values, observations, declared `ClassicalBitValue`
+results, deterministic output order, function effects, reliability goals, layered
+noise profiles, composable simulation requests, and protection-plan descriptions.
+It depends only on `ariadion-core` and contains no allocated integer targets,
+circuit width, backend policy, noise engine, QEC planner, or lowering. Daidalon
+consumes the logical program contracts for the current declaration-order allocation
+slice; lifetime analysis, scheduling, reliability analysis, and optimized allocation
+remain future work.
 
 ### `ariadion-syntax`
 
@@ -173,7 +177,10 @@ specification](../specs/syntax.md).
 ### `ariadion-core`
 
 Shared identity, source-reference, source-range, and deterministic serialization
-contracts. It has no dependency on language syntax, IR, compilers, or backends.
+contracts. `SourceRef` serializes its canonical `SourceOperationId` alongside an
+optional compatibility `SnapshotOperationId`, preserving both identity forms across
+semantic and builder-derived artifacts. It has no dependency on language syntax, IR,
+compilers, or backends.
 
 ### `ariadion-ir`
 
@@ -185,19 +192,25 @@ allocation.
 
 ### `daidalon`
 
-Validates resolved quantum programs, creates an explicit deterministic allocation
-plan, and lowers current logical gate and Z-basis observation instructions to
-semantic IR. The current `dense-no-reuse-v1` policy is intentionally not lifetime
-analysis. Future compiler passes will include canonicalization, decomposition,
-routing, scheduling, bare-execution estimation, protection planning, resource
-estimation, and backend-specific lowering.
+Validates resolved quantum programs, creates an explicit deterministic
+`LogicalSlotAllocationPlan` plus `ReadoutPlan`, and lowers current logical gate and
+Z-basis observation instructions to semantic IR. Lowered `MEASURE` operations carry
+declared result identity, basis, and reason as `ObservationMetadata`; output order
+is not inferred from operation order. The current `dense-no-reuse-v1` policy is
+intentionally not lifetime analysis. Future compiler passes will include
+canonicalization, decomposition, routing, scheduling, bare-execution estimation,
+protection planning, resource estimation, physical allocation, and backend-specific
+lowering.
 
 ### `ariadion-simulator`
 
 A dependency-free state-vector reference backend. It favors clarity and correctness
-over performance, including standard `RX`, `RY`, and `RZ` matrices over canonical
-radians. When explicitly enabled, it retains raw immutable amplitude transitions,
-but it does not depend on runtime trace contracts or interpret those states.
+over performance, including standard allocated-IR `RX`, `RY`, and `RZ` matrices over
+canonical radians. Exact logical execution permits only terminal observations and
+retains the analytical amplitude state while runtime calculates a distribution; it
+does not sample or collapse the state. When explicitly enabled, it retains raw
+immutable amplitude transitions, but it does not depend on runtime trace contracts
+or interpret those states.
 
 ### `theonoe`
 
@@ -215,14 +228,20 @@ Turns semantic IR and execution snapshots into textual or structured views. The 
 
 ### `ariadion-runtime`
 
-Coordinates compilation, execution, inspection, and rendering. It is the first vertical slice used by the CLI, examples, and future Studio.
+Coordinates compilation, execution, inspection, and rendering. It is the first
+vertical slice used by the CLI, examples, and future Studio. For a compiled logical
+program, it combines simulator amplitudes with `ReadoutPlan.output_order` to return
+one `ExactClassicalDistribution`, preserving classical correlations rather than
+exposing independent marginal observations.
 
-It also owns the versioned execution-trace contract consumed by debugger and Studio
-clients. It adapts simulator raw capture into that contract and projects it through
-Theonoe only when a consumer explicitly requests inspection, so capture and
-interpretation remain independently selectable. Its frontend-neutral
-`TraceDebuggerSession` and `TraceStepViewModel` compose IR, trace, and inspection
-data without managing terminal interaction.
+It also owns the versioned schema-v2 execution-trace contract consumed by debugger
+and Studio clients. It adapts simulator raw capture into that contract and projects
+it through Theonoe only when a consumer explicitly requests inspection, so capture
+and interpretation remain independently selectable. Measurement events distinguish
+an analytic terminal projection from a future sampled execution, and the trace's
+retained analytical state is not a physical post-measurement state. Its
+frontend-neutral `TraceDebuggerSession` and `TraceStepViewModel` compose IR, trace,
+and inspection data without managing terminal interaction.
 
 ### `ariadion-cli`
 
@@ -233,10 +252,15 @@ Studio can reuse those models without scraping CLI text.
 ## Near-term vertical slice
 
 ```text
-write or hand-build -> validate -> allocate -> lower -> simulate -> trace -> inspect
+write or hand-build -> validate -> logical slots/readout -> lower -> simulate -> trace -> inspect
 ```
 
 A change is considered vertically complete only when it can be exercised from the SDK and covered by a runtime-level test.
+
+For the current exact terminal-observation path, the runtime calculates a joint
+classical distribution without sampling or mutating the retained analytical state.
+This is not physical post-measurement state evolution. Sampled collapse and
+mid-circuit feedback remain separate execution capabilities.
 
 ## Research references
 

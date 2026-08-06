@@ -1,4 +1,4 @@
-from .runtime import RunResult, run_program
+from .runtime import LogicalRunResult, RunResult, run_logical_program, run_program
 from .debugger import (
 	TRACE_DEBUGGER_SCHEMA_VERSION,
 	TraceDebuggerError,
@@ -16,9 +16,11 @@ from .trace import (
 	ExecutionMetadata,
 	ExecutionMode,
 	ExecutionTrace,
+	ExactClassicalDistribution,
 	MeasurementBitOrder,
 	MeasurementEvent,
 	MeasurementRecordKind,
+	ObservationExecutionKind,
 	ResourceMetric,
 	StateRepresentation,
 	StateSnapshot,
@@ -37,10 +39,13 @@ __all__ = [
 	"ExecutionMetadata",
 	"ExecutionMode",
 	"ExecutionTrace",
+	"ExactClassicalDistribution",
 	"INSPECTION_SCHEMA_VERSION",
 	"MeasurementBitOrder",
 	"MeasurementEvent",
 	"MeasurementRecordKind",
+	"LogicalRunResult",
+	"ObservationExecutionKind",
 	"ResourceMetric",
 	"RotationAxis",
 	"RotationEffect",
@@ -58,5 +63,6 @@ __all__ = [
 	"TraceStep",
 	"TraceStepViewModel",
 	"inspect_execution_trace",
+	"run_logical_program",
 	"run_program",
 ]

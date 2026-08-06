@@ -6,8 +6,10 @@ from math import isclose, isfinite, pi, tau
 from typing import Final
 
 from ariadion_core import (
+    ClassicalBitId,
     IrOperationId,
     LogicalOperationId,
+    LogicalQubitId,
     ProgramId,
     SnapshotOperationId,
     SourceIdentity,
@@ -110,6 +112,36 @@ class AngleMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class ObservationMetadata:
+    """Resolved observation identity retained on a lowered measurement operation."""
+
+    logical_qubit_id: LogicalQubitId
+    result_id: ClassicalBitId
+    basis_name: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(
+            self.logical_qubit_id,
+            label="observation logical qubit ID",
+        )
+        require_nonempty_identifier(self.result_id, label="observation result ID")
+        require_nonempty_identifier(self.basis_name, label="observation basis name")
+        require_nonempty_identifier(self.reason, label="observation reason")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "logical_qubit_id": self.logical_qubit_id,
+            "result_id": self.result_id,
+            "basis_name": self.basis_name,
+            "reason": self.reason,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
 class Operation:
     opcode: OpCode
     targets: tuple[int, ...]
@@ -120,9 +152,19 @@ class Operation:
     provenance: OperationProvenance | None = None
     angle_radians: float | None = None
     angle_metadata: AngleMetadata | None = None
+    observation: ObservationMetadata | None = None
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.id, label="IR operation ID")
+        if self.observation is not None:
+            if not isinstance(self.observation, ObservationMetadata):
+                raise ValueError("operation observation must be ObservationMetadata")
+            if self.opcode is not OpCode.MEASURE:
+                raise ValueError("only MEASURE operations can carry observation metadata")
+            if self.key != str(self.observation.result_id):
+                raise ValueError(
+                    "observation measurement key must match the observation result ID"
+                )
         is_rotation = self.opcode in _ROTATION_OPCODES
         if is_rotation:
             if isinstance(self.angle_radians, bool) or not isinstance(
@@ -192,6 +234,9 @@ class Operation:
             "angle_radians": self.angle_radians,
             "angle_metadata": (
                 self.angle_metadata.to_dict() if self.angle_metadata is not None else None
+            ),
+            "observation": (
+                self.observation.to_dict() if self.observation is not None else None
             ),
             "source": self.source.to_dict() if self.source is not None else None,
             "provenance": (

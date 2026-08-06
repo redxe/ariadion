@@ -11,10 +11,14 @@ from ariadion_language import (
     rad,
     turns,
 )
+from ariadion_semantics import Basis, BasisNamespace, basis
 from ariadion_runtime import (
     ExecutionTrace,
+    ExactClassicalDistribution,
     INSPECTION_SCHEMA_VERSION,
+    LogicalRunResult,
     MeasurementBitOrder,
+    ObservationExecutionKind,
     RunResult,
     RotationAxis,
     RotationEffect,
@@ -28,6 +32,7 @@ from ariadion_runtime import (
     TraceCaptureOptions,
     TraceStepViewModel,
     inspect_execution_trace,
+    run_logical_program,
     run_program,
 )
 
@@ -45,10 +50,15 @@ def run(
 __all__ = [
     "Angle",
     "AngleUnit",
+    "Basis",
+    "BasisNamespace",
     "Bit",
     "ExecutionTrace",
+    "ExactClassicalDistribution",
     "INSPECTION_SCHEMA_VERSION",
     "MeasurementBitOrder",
+    "LogicalRunResult",
+    "ObservationExecutionKind",
     "Program",
     "ProgramId",
     "Qubit",
@@ -66,9 +76,11 @@ __all__ = [
     "TraceInspection",
     "TraceCaptureOptions",
     "TraceStepViewModel",
+    "basis",
     "inspect_execution_trace",
     "deg",
     "rad",
     "run",
+    "run_logical_program",
     "turns",
 ]

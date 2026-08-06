@@ -6,6 +6,7 @@ from math import isclose, isfinite
 from typing import Final
 
 from ariadion_core import (
+    ClassicalBitId,
     IrOperationId,
     ProgramId,
     SourceIdentity,
@@ -19,7 +20,7 @@ from ariadion_ir import CircuitIR, OpCode, Operation, OperationProvenance
 from ariadion_simulator import SimulationResult, SimulationTrace, SimulationTraceStep
 
 
-EXECUTION_TRACE_SCHEMA_VERSION: Final = 1
+EXECUTION_TRACE_SCHEMA_VERSION: Final = 2
 _EXACT_MEASUREMENT_PROBABILITY_ABS_TOLERANCE: Final = 1e-12
 
 
@@ -37,10 +38,74 @@ class MeasurementRecordKind(str, Enum):
     SAMPLED_OUTCOME = "sampled_outcome"
 
 
+class ObservationExecutionKind(str, Enum):
+    """Whether an observation is analytically projected or physically sampled."""
+
+    EXACT_TERMINAL_DISTRIBUTION = "exact_terminal_distribution"
+    SAMPLED_COLLAPSE = "sampled_collapse"
+
+
 class MeasurementBitOrder(str, Enum):
     """Maps target positions to outcome bit positions for every measurement."""
 
     TARGETS_LSB_FIRST = "targets_lsb_first"
+
+
+@dataclass(frozen=True, slots=True)
+class ExactClassicalDistribution:
+    """One exact joint distribution over ordered declared classical outputs."""
+
+    result_ids: tuple[ClassicalBitId, ...]
+    probabilities: tuple[float, ...]
+    bit_order: MeasurementBitOrder = MeasurementBitOrder.TARGETS_LSB_FIRST
+
+    def __post_init__(self) -> None:
+        _require_tuple(self.result_ids, label="exact classical distribution result_ids")
+        for result_id in self.result_ids:
+            require_nonempty_identifier(
+                result_id,
+                label="exact classical distribution result ID",
+            )
+        _require_tuple(
+            self.probabilities,
+            label="exact classical distribution probabilities",
+        )
+        if not isinstance(self.bit_order, MeasurementBitOrder):
+            raise ValueError(
+                "exact classical distribution bit_order must be MeasurementBitOrder"
+            )
+        expected_probability_count = 1 << len(self.result_ids)
+        if len(self.probabilities) != expected_probability_count:
+            raise ValueError(
+                "exact classical distribution probability count must equal 2**result_count"
+            )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not isfinite(float(value))
+            or value < 0
+            for value in self.probabilities
+        ):
+            raise ValueError(
+                "exact classical distribution probabilities must be finite non-negative values"
+            )
+        if not isclose(
+            sum(self.probabilities),
+            1.0,
+            rel_tol=0.0,
+            abs_tol=_EXACT_MEASUREMENT_PROBABILITY_ABS_TOLERANCE,
+        ):
+            raise ValueError("exact classical distribution probabilities must sum to one")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "result_ids": list(self.result_ids),
+            "probabilities": list(self.probabilities),
+            "bit_order": self.bit_order.value,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +250,9 @@ class MeasurementEvent:
     probabilities: tuple[float, ...] = ()
     outcome: tuple[int, ...] | None = None
     bit_order: MeasurementBitOrder = MeasurementBitOrder.TARGETS_LSB_FIRST
+    execution_kind: ObservationExecutionKind = (
+        ObservationExecutionKind.EXACT_TERMINAL_DISTRIBUTION
+    )
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.operation_id, label="measurement operation ID")
@@ -192,6 +260,10 @@ class MeasurementEvent:
             raise ValueError("measurement record kind must be a MeasurementRecordKind")
         if not isinstance(self.bit_order, MeasurementBitOrder):
             raise ValueError("measurement bit_order must be a MeasurementBitOrder")
+        if not isinstance(self.execution_kind, ObservationExecutionKind):
+            raise ValueError(
+                "measurement execution_kind must be an ObservationExecutionKind"
+            )
         _require_tuple(self.targets, label="measurement targets")
         if not self.targets:
             raise ValueError("measurement targets must not be empty")
@@ -205,6 +277,10 @@ class MeasurementEvent:
         _require_tuple(self.probabilities, label="measurement probabilities")
 
         if self.kind is MeasurementRecordKind.EXACT_PROBABILITIES:
+            if self.execution_kind is not ObservationExecutionKind.EXACT_TERMINAL_DISTRIBUTION:
+                raise ValueError(
+                    "exact measurement records require exact terminal distribution execution"
+                )
             expected_probability_count = 1 << len(self.targets)
             if len(self.probabilities) != expected_probability_count:
                 raise ValueError(
@@ -228,6 +304,8 @@ class MeasurementEvent:
             ):
                 raise ValueError("measurement probabilities must sum to one")
         elif self.kind is MeasurementRecordKind.SAMPLED_OUTCOME:
+            if self.execution_kind is not ObservationExecutionKind.SAMPLED_COLLAPSE:
+                raise ValueError("sampled measurement records require sampled collapse execution")
             if self.probabilities:
                 raise ValueError("sampled measurement records cannot contain exact probabilities")
             if self.outcome is None:
@@ -250,6 +328,7 @@ class MeasurementEvent:
             "probabilities": list(self.probabilities),
             "outcome": list(self.outcome) if self.outcome is not None else None,
             "bit_order": self.bit_order.value,
+            "execution_kind": self.execution_kind.value,
         }
 
     def to_json(self) -> str:
@@ -355,8 +434,10 @@ class ExecutionTrace:
             raise ValueError("execution trace steps must contain TraceStep values")
         if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int):
             raise ValueError("execution trace schema_version must be an integer")
-        if self.schema_version < 1:
-            raise ValueError("execution trace schema_version must be positive")
+        if self.schema_version != EXECUTION_TRACE_SCHEMA_VERSION:
+            raise ValueError(
+                "execution trace schema_version must match the supported trace schema"
+            )
         operation_ids = tuple(step.ir_operation_id for step in self.steps)
         if len(operation_ids) != len(set(operation_ids)):
             raise ValueError("trace IR operation IDs must be unique")
@@ -386,7 +467,15 @@ class ExecutionTrace:
 
     @property
     def final_state(self) -> StateSnapshot:
+        """Return the retained analytic state, not a sampled post-measurement state."""
+
         return self.steps[-1].after if self.steps else self.initial_state
+
+    @property
+    def retained_analytic_state(self) -> StateSnapshot:
+        """Explicit name for the exact state retained through terminal projections."""
+
+        return self.final_state
 
     def to_dict(self) -> dict[str, object]:
         return {

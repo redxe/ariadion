@@ -37,10 +37,10 @@ The first executable frontend must use valid Python and Python's parser. This is
 target contract, not an implemented API yet:
 
 ```python
-from ariadion import Bit, Qubit, cx, h, quantum, z
+from ariadion import Bit, Qubit, basis, cx, h, quantum
 
 
-@quantum(basis=z)
+@quantum(basis=basis.z)
 def bell() -> tuple[Bit, Bit]:
    left = Qubit()
    right = Qubit()
@@ -63,12 +63,14 @@ quantum state. In the example, `left` and `right` have overlapping lifetimes, so
 Daidalon will eventually infer a peak allocation of two slots even though neither
 source value contains a target, index, or address.
 
-The `tuple[Bit, Bit]` return annotation requires classical result values. Returning
-the two `Qubit` values creates visible compiler-inserted terminal observations in
-the function's `z` basis policy. Compiler artifacts and execution traces retain
-those observations, their bases, and their reasons; source code does not need
-terminal `measure()` calls. The compiler will later lower the simultaneously live
-values to two dense targets in allocated `CircuitIR`.
+The `tuple[Bit, Bit]` return annotation requires two ordered classical result
+values. Returning the two `Qubit` values creates visible compiler-inserted terminal
+observations in the function's declared `basis.z` policy. Each observation produces
+a distinct `ClassicalBitId`; compiler artifacts retain its result identity, basis,
+reason, and output order. Source code does not need terminal `measure()` calls.
+The compiler lowers the simultaneously live values to dense targets in allocated
+`CircuitIR`, while preserving result IDs separately from operation IDs and Python
+variable names.
 
 The terminology boundary is deliberate:
 
@@ -78,6 +80,9 @@ Qubit
 
 LogicalQubitId
    Internal semantic identity for a Qubit before allocation.
+
+ClassicalBitId
+   Internal semantic identity for one declared Bit result of an observation.
 
 AllocatedQubitSlot
    Dense simulator or backend slot selected by Daidalon.
@@ -135,11 +140,17 @@ In particular, `if q:` for a `Qubit` is rejected initially. Ariadion must not
 silently insert a mid-circuit measurement through ordinary Python truth testing.
 
 The resolved semantic `Observation` records its own `LogicalOperationId`, the
-`LogicalQubitId`, selected `Basis`, an `ObservationReason`, and an optional source
-reference. Reasons distinguish an explicit `observe(...)` call from an inferred
-classical return, classical assignment, branch-condition, or program-output
-boundary. This lets compiler artifacts and execution traces explain an observation
-without pretending it was a user-written low-level `MEASURE` operation.
+observed `LogicalQubitId`, a produced `ClassicalBitId`, selected `Basis`, an
+`ObservationReason`, and an optional source reference. A `LogicalProgram` declares
+the corresponding `ClassicalBitValue` and a flat, deterministic tuple of output
+identities. Classical outputs must reference declared produced values; a quantum
+output remains quantum and does not cause an observation. Every declared classical
+value has exactly one observation producer, whether or not it is a public output.
+Reasons distinguish an explicit `observe(...)` call from an inferred classical
+return, classical
+assignment, branch-condition, or program-output boundary. This lets compiler
+artifacts and execution traces explain an observation without pretending it was a
+user-written low-level `MEASURE` operation.
 
 ## Logical quantum values and managed resources
 
@@ -157,15 +168,34 @@ logical values and lifetimes
     -> allocated CircuitIR.qubit_count and integer targets
 ```
 
-The current `dense-no-reuse-v1` allocation policy uses one slot per declared
-logical value, reports equal peak-live and allocated counts, and never reuses a
-slot. Later policies can reuse a slot after a value's lifetime ends, introduce
-ancillas, insert resets, route for hardware topology, select a
+The current `dense-no-reuse-v1` `LogicalSlotAllocationPlan` uses one slot per
+declared logical value, reports equal peak-live and allocated counts, and never
+reuses a slot. It is an execution-slot artifact, not a physical or protected
+hardware allocation: a later physical plan may map one source `Qubit` to many
+hardware qubits. Later policies can reuse a slot after a value's lifetime ends,
+introduce ancillas, insert resets, route for hardware topology, select a
 `ProtectedRealization`, and report provider-specific requirements. The compiler
 must expose facts such as logical values created, peak live values, allocated
 simulator qubits, hardware qubits, and planning assumptions. A future annotation
 such as `@quantum(max_qubits=12)` is a resource contract or hint, not manual
 allocation.
+
+## Classical outputs and exact terminal observations
+
+The current logical execution slice supports only terminal Z-basis observations.
+`ReadoutPlan` preserves every allocated observation and the original flat output
+order. Exact execution computes one `ExactClassicalDistribution` across the ordered
+classical outputs, rather than pretending that separate 50/50 marginal records
+express a correlated result. For Bell outputs in order `(left_result, right_result)`,
+the distribution is $00 \mapsto 0.5$, $01 \mapsto 0$, $10 \mapsto 0$, and
+$11 \mapsto 0.5$.
+
+Exact simulation may calculate a terminal observation distribution without
+sampling or mutating the retained analytical state. This is not physical
+post-measurement state evolution. Sampled collapse and mid-circuit feedback are
+separate execution capabilities. The exact engine rejects a gate after an
+observation with `A202`; future sampled execution must define shots, seeds,
+individual outcomes, collapse, feedback, reset, and trace granularity.
 
 ## Current compatibility surface
 
@@ -201,6 +231,11 @@ its exact lexical text as an `AngleLiteral`, but it must lower into the same ang
 semantic model. The compiler never guesses whether a bare numeric argument means
 degrees, radians, or turns.
 
+The current `LogicalGateOperation` deliberately contains no parameterless `RX`,
+`RY`, or `RZ` members. A future `LogicalRotationOperation` must use a unit-bearing
+semantic angle before lowering into canonical allocated-IR radians; it must not use
+an untyped parameter dictionary.
+
 ## Basis values and measurement intent
 
 A basis is a typed domain concept rather than a backend default. Explicit
@@ -209,7 +244,7 @@ measurement remains available when observation timing changes algorithm meaning:
 ```python
 result = observe(
      target,
-     basis=x,
+   basis=basis.x,
      reset=True,
 )
 ```
@@ -222,12 +257,15 @@ syndrome extraction, partial observation of entangled values, reset and storage
 reuse, and repeated sampling policies. Returning a `Qubit` where a declared `Bit`
 is required is instead an inferred terminal observation boundary.
 
-The precise spelling of basis values is not frozen. A quantum function may later
-establish a default basis with `@quantum(basis=z)`, a scoped context such as
-`with basis(x):`, or a custom basis-producing function marked with `@basis`.
-Whatever syntax is adopted, the resolved semantic model must retain the selected
-basis and Daidalon must lower any basis change explicitly. Backends must not infer
-measurement bases.
+The public namespace is `basis.x`, `basis.y`, `basis.z`, and
+`basis.named("custom-name")`; lower-case basis constants are not exported because
+they would collide with gate functions such as `x(target)` and `z(target)`. A
+quantum function may later establish a default basis with
+`@quantum(basis=basis.z)`. Whatever additional syntax is adopted, the resolved
+semantic model must retain the selected basis and Daidalon must lower any basis
+change explicitly. The future frontend's default terminal-observation basis is
+`basis.z` only when the language contract declares that policy; backends must not
+infer measurement bases.
 
 ## Effect defaults and constraints
 
@@ -308,7 +346,9 @@ inserting an earlier operation renumbers later snapshot IDs.
 Every source construct can instead have a neutral `SourceOperationId`. `SourceRef`
 stores that canonical identity. For a builder-derived reference,
 `snapshot_operation_id` remains an optional compatibility property; a semantic
-program never invents a builder snapshot ID.
+program never invents a builder snapshot ID. Serialized source references retain
+both `source_operation_id` and `snapshot_operation_id`; the latter is `null` for a
+semantic reference without builder compatibility data.
 
 A frontend that needs durable breakpoints, lesson checkpoints, or selected syntax
 nodes must supply a `SourceNodeId` through `source_node_id`. Ariadion preserves it
@@ -333,8 +373,11 @@ their messages remain useful without a file or position.
 supplied by an editor, identifies a durable source element across edits. Builder
 `SnapshotOperationId` values remain compatibility identities for the existing
 width-based API. Logical instructions use `LogicalOperationId`, including
-observations, so the persistent identity chain is
-`SourceOperationId -> LogicalOperationId -> IrOperationId -> trace occurrence`.
+observations, and each observation produces a `ClassicalBitId`, so the persistent
+identity chain is
+`SourceOperationId -> LogicalOperationId -> IrOperationId -> trace occurrence`
+beside the value/result chain
+`LogicalQubitId -> ClassicalBitId -> ordered classical output`.
 
 ## Source-model and IR boundary
 

@@ -5,6 +5,7 @@ from enum import Enum
 from typing import TypeAlias
 
 from ariadion_core import (
+    ClassicalBitId,
     LogicalOperationId,
     LogicalQubitId,
     ProgramId,
@@ -31,9 +32,6 @@ class LogicalGateOpCode(str, Enum):
     X = "x"
     H = "h"
     Z = "z"
-    RX = "rx"
-    RY = "ry"
-    RZ = "rz"
     CX = "cx"
 
 
@@ -64,6 +62,29 @@ class Basis:
 
 
 @dataclass(frozen=True, slots=True)
+class BasisNamespace:
+    """Public basis namespace kept distinct from gate-function names."""
+
+    @property
+    def x(self) -> Basis:
+        return Basis("x")
+
+    @property
+    def y(self) -> Basis:
+        return Basis("y")
+
+    @property
+    def z(self) -> Basis:
+        return Basis("z")
+
+    def named(self, name: str) -> Basis:
+        return Basis(name)
+
+
+basis = BasisNamespace()
+
+
+@dataclass(frozen=True, slots=True)
 class LogicalQubitValue:
     """A resolved logical quantum value before lifetime analysis or allocation."""
 
@@ -77,6 +98,32 @@ class LogicalQubitValue:
             require_nonempty_identifier(self.display_name, label="logical qubit display name")
         if self.source is not None and not isinstance(self.source, SourceRef):
             raise ValueError("logical qubit source must be SourceRef")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "display_name": self.display_name,
+            "source": self.source.to_dict() if self.source is not None else None,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class ClassicalBitValue:
+    """A declared classical result value before exact or sampled execution."""
+
+    id: ClassicalBitId
+    display_name: str | None = None
+    source: SemanticSourceRef | None = None
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.id, label="classical bit ID")
+        if self.display_name is not None:
+            require_nonempty_identifier(self.display_name, label="classical bit display name")
+        if self.source is not None and not isinstance(self.source, SourceRef):
+            raise ValueError("classical bit source must be SourceRef")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -136,6 +183,7 @@ class Observation:
 
     id: LogicalOperationId
     qubit_id: LogicalQubitId
+    result_id: ClassicalBitId
     basis: Basis
     reason: ObservationReason
     source: SemanticSourceRef | None = None
@@ -143,6 +191,7 @@ class Observation:
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.id, label="observation logical operation ID")
         require_nonempty_identifier(self.qubit_id, label="observed logical qubit ID")
+        require_nonempty_identifier(self.result_id, label="observation result ID")
         if not isinstance(self.basis, Basis):
             raise ValueError("observation basis must be Basis")
         if not isinstance(self.reason, ObservationReason):
@@ -154,6 +203,7 @@ class Observation:
         return {
             "id": self.id,
             "qubit_id": self.qubit_id,
+            "result_id": self.result_id,
             "basis": self.basis.to_dict(),
             "reason": self.reason.value,
             "source": self.source.to_dict() if self.source is not None else None,
@@ -174,14 +224,22 @@ class LogicalProgram:
     name: str
     qubits: tuple[LogicalQubitValue, ...]
     instructions: tuple[QuantumInstruction, ...]
+    classical_bits: tuple[ClassicalBitValue, ...] = ()
+    outputs: tuple[ClassicalBitId | LogicalQubitId, ...] = ()
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.id, label="logical program ID")
         require_nonempty_identifier(self.name, label="logical program name")
         _require_tuple(self.qubits, label="logical program qubits")
         _require_tuple(self.instructions, label="logical program instructions")
+        _require_tuple(self.classical_bits, label="logical program classical_bits")
+        _require_tuple(self.outputs, label="logical program outputs")
         if not all(isinstance(qubit, LogicalQubitValue) for qubit in self.qubits):
             raise ValueError("logical program qubits must contain LogicalQubitValue values")
+        if not all(isinstance(bit, ClassicalBitValue) for bit in self.classical_bits):
+            raise ValueError(
+                "logical program classical_bits must contain ClassicalBitValue values"
+            )
         if not all(
             isinstance(instruction, (LogicalGateOperation, Observation))
             for instruction in self.instructions
@@ -194,11 +252,23 @@ class LogicalProgram:
         for qubit in self.qubits:
             _validate_source_program(qubit.source, self.id, label="logical qubit")
 
+        classical_bit_ids = tuple(bit.id for bit in self.classical_bits)
+        _require_unique_identifiers(
+            classical_bit_ids,
+            label="logical program classical bit IDs",
+        )
+        known_classical_bit_ids = set(classical_bit_ids)
+        if known_qubit_ids & known_classical_bit_ids:
+            raise ValueError("logical qubit IDs and classical bit IDs must be distinct")
+        for bit in self.classical_bits:
+            _validate_source_program(bit.source, self.id, label="classical bit")
+
         instruction_ids = tuple(instruction.id for instruction in self.instructions)
         _require_unique_identifiers(
             instruction_ids,
             label="logical program instruction IDs",
         )
+        observed_result_ids: list[ClassicalBitId] = []
         for instruction in self.instructions:
             _validate_source_program(
                 instruction.source,
@@ -210,6 +280,12 @@ class LogicalProgram:
                 referenced_qubits = instruction.controls + instruction.targets
             else:
                 referenced_qubits = (instruction.qubit_id,)
+                observed_result_ids.append(instruction.result_id)
+                if instruction.result_id not in known_classical_bit_ids:
+                    raise ValueError(
+                        "logical observation references an undeclared classical bit: "
+                        f"{instruction.result_id}"
+                    )
             for qubit_id in referenced_qubits:
                 if qubit_id not in known_qubit_ids:
                     raise ValueError(
@@ -217,12 +293,42 @@ class LogicalProgram:
                         f"{qubit_id}"
                     )
 
+        _require_unique_identifiers(
+            tuple(observed_result_ids),
+            label="logical program observation result IDs",
+        )
+        observed_result_id_set = set(observed_result_ids)
+        unproduced_result_ids = known_classical_bit_ids - observed_result_id_set
+        if unproduced_result_ids:
+            missing_result_id = next(
+                bit.id for bit in self.classical_bits if bit.id in unproduced_result_ids
+            )
+            raise ValueError(
+                "logical program classical bit must have an observation producer: "
+                f"{missing_result_id}"
+            )
+        for output in self.outputs:
+            require_nonempty_identifier(output, label="logical program output ID")
+            if output in known_classical_bit_ids:
+                if output not in observed_result_id_set:
+                    raise ValueError(
+                        "logical program classical outputs must have an observation producer: "
+                        f"{output}"
+                    )
+            elif output not in known_qubit_ids:
+                raise ValueError(
+                    "logical program output references an undeclared value: "
+                    f"{output}"
+                )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "id": self.id,
             "name": self.name,
             "qubits": [qubit.to_dict() for qubit in self.qubits],
             "instructions": [instruction.to_dict() for instruction in self.instructions],
+            "classical_bits": [bit.to_dict() for bit in self.classical_bits],
+            "outputs": list(self.outputs),
         }
 
     def to_json(self) -> str:

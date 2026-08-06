@@ -4,6 +4,7 @@ import json
 import unittest
 
 from ariadion_core import (
+    ClassicalBitId,
     LogicalOperationId,
     LogicalQubitId,
     ProgramId,
@@ -11,9 +12,15 @@ from ariadion_core import (
     SourceRef,
 )
 from ariadion_ir import OpCode
-from ariadion_runtime import TraceCaptureOptions, inspect_execution_trace
+from ariadion_runtime import (
+    ObservationExecutionKind,
+    TraceCaptureOptions,
+    inspect_execution_trace,
+    run_logical_program,
+)
 from ariadion_semantics import (
     Basis,
+    ClassicalBitValue,
     LogicalGateOpCode,
     LogicalGateOperation,
     LogicalProgram,
@@ -21,7 +28,6 @@ from ariadion_semantics import (
     Observation,
     ObservationReason,
 )
-from ariadion_simulator import SimulationExecution, simulate
 from daidalon import (
     LOGICAL_ALLOCATION_POLICY_NAME,
     CompileError,
@@ -36,14 +42,26 @@ class LogicalCompilationTests(unittest.TestCase):
         first = compile_logical_program(program)
         second = compile_logical_program(program)
 
-        self.assertEqual(first.allocation.policy_name, LOGICAL_ALLOCATION_POLICY_NAME)
         self.assertEqual(
-            first.allocation.to_dict(),
+            first.logical_allocation.policy_name,
+            LOGICAL_ALLOCATION_POLICY_NAME,
+        )
+        self.assertIs(first.allocation, first.logical_allocation)
+        self.assertEqual(
+            first.logical_allocation.to_dict(),
             {
                 "policy_name": "dense-no-reuse-v1",
                 "entries": [
-                    {"logical_qubit_id": "logical:bell:left", "slot": 0},
-                    {"logical_qubit_id": "logical:bell:right", "slot": 1},
+                    {
+                        "logical_qubit_id": "logical:bell:left",
+                        "display_name": "left",
+                        "slot": 0,
+                    },
+                    {
+                        "logical_qubit_id": "logical:bell:right",
+                        "display_name": "right",
+                        "slot": 1,
+                    },
                 ],
                 "peak_live_qubits": 2,
                 "allocated_qubit_count": 2,
@@ -51,15 +69,39 @@ class LogicalCompilationTests(unittest.TestCase):
         )
         self.assertEqual(first.ir.qubit_count, 2)
         self.assertEqual(
+            first.readout.to_dict(),
+            {
+                "observations": [
+                    {
+                        "result_id": "classical:bell:left",
+                        "logical_qubit_id": "logical:bell:left",
+                        "allocated_slot": 0,
+                        "basis": {"name": "z"},
+                        "reason": "program_output",
+                        "logical_operation_id": "logical-op:bell:observe-left",
+                    },
+                    {
+                        "result_id": "classical:bell:right",
+                        "logical_qubit_id": "logical:bell:right",
+                        "allocated_slot": 1,
+                        "basis": {"name": "z"},
+                        "reason": "program_output",
+                        "logical_operation_id": "logical-op:bell:observe-right",
+                    },
+                ],
+                "output_order": ["classical:bell:left", "classical:bell:right"],
+            },
+        )
+        self.assertEqual(
             [
-                (operation.opcode, operation.targets, operation.controls)
+                (operation.opcode, operation.targets, operation.controls, operation.key)
                 for operation in first.ir.operations
             ],
             [
-                (OpCode.H, (0,), ()),
-                (OpCode.CX, (1,), (0,)),
-                (OpCode.MEASURE, (0,), ()),
-                (OpCode.MEASURE, (1,), ()),
+                (OpCode.H, (0,), (), None),
+                (OpCode.CX, (1,), (0,), None),
+                (OpCode.MEASURE, (0,), (), "classical:bell:left"),
+                (OpCode.MEASURE, (1,), (), "classical:bell:right"),
             ],
         )
         self.assertEqual(
@@ -77,23 +119,53 @@ class LogicalCompilationTests(unittest.TestCase):
             first.ir.operations[1].provenance.parent_logical_operation_ids,
             (LogicalOperationId("logical-op:bell:cx"),),
         )
+        self.assertEqual(
+            first.ir.operations[2].observation.to_dict()
+            if first.ir.operations[2].observation is not None
+            else None,
+            {
+                "logical_qubit_id": "logical:bell:left",
+                "result_id": "classical:bell:left",
+                "basis_name": "z",
+                "reason": "program_output",
+            },
+        )
 
     def test_bell_compilation_runs_through_trace_and_inspection(self) -> None:
-        compilation = compile_logical_program(_bell_program())
-        execution = simulate(compilation.ir, trace=TraceCaptureOptions(enabled=True))
+        execution = run_logical_program(
+            _bell_program(),
+            trace=TraceCaptureOptions(enabled=True),
+        )
 
-        self.assertIsInstance(execution, SimulationExecution)
         self.assertIsNotNone(execution.trace)
         assert execution.trace is not None
         trace = execution.trace
         inspection = inspect_execution_trace(trace)
 
-        self.assertAlmostEqual(execution.result.probabilities[0], 0.5)
-        self.assertAlmostEqual(execution.result.probabilities[3], 0.5)
+        self.assertAlmostEqual(execution.simulation.probabilities[0], 0.5)
+        self.assertAlmostEqual(execution.simulation.probabilities[3], 0.5)
+        self.assertEqual(
+            execution.classical_output_distribution.result_ids,
+            (
+                ClassicalBitId("classical:bell:left"),
+                ClassicalBitId("classical:bell:right"),
+            ),
+        )
+        for observed, expected in zip(
+            execution.classical_output_distribution.probabilities,
+            (0.5, 0.0, 0.0, 0.5),
+        ):
+            self.assertAlmostEqual(observed, expected)
+        self.assertEqual(len(execution.classical_output_distribution.probabilities), 4)
+        self.assertEqual(
+            execution.pre_observation_state.amplitudes,
+            execution.simulation.amplitudes,
+        )
+        self.assertEqual(execution.pre_observation_inspection.entangled_qubits, (0, 1))
         self.assertEqual(len(trace.steps), 4)
         self.assertEqual(
             tuple(step.ir_operation_id for step in trace.steps),
-            tuple(operation.id for operation in compilation.ir.operations),
+            tuple(operation.id for operation in execution.compilation.ir.operations),
         )
         self.assertEqual(
             trace.steps[2].provenance.parent_logical_operation_ids,
@@ -103,11 +175,47 @@ class LogicalCompilationTests(unittest.TestCase):
         self.assertAlmostEqual(trace.steps[2].measurement.probabilities[1], 0.5)
         self.assertAlmostEqual(trace.steps[3].measurement.probabilities[0], 0.5)
         self.assertAlmostEqual(trace.steps[3].measurement.probabilities[1], 0.5)
-        self.assertEqual(inspection.final.entangled_qubits, (0, 1))
+        self.assertEqual(len(trace.steps[2].measurement.probabilities), 2)
+        self.assertNotEqual(
+            execution.classical_output_distribution.probabilities,
+            trace.steps[2].measurement.probabilities,
+        )
+        self.assertEqual(
+            trace.steps[2].measurement.execution_kind,
+            ObservationExecutionKind.EXACT_TERMINAL_DISTRIBUTION,
+        )
+        self.assertEqual(inspection.retained_analytic_state.entangled_qubits, (0, 1))
         self.assertEqual(
             inspection.steps[1].provenance.parent_logical_operation_ids,
             (LogicalOperationId("logical-op:bell:cx"),),
         )
+
+    def test_discarded_observation_remains_lowered_but_not_a_public_output(self) -> None:
+        bell = _bell_program()
+        program = LogicalProgram(
+            bell.id,
+            bell.name,
+            bell.qubits,
+            bell.instructions,
+            bell.classical_bits,
+            (ClassicalBitId("classical:bell:left"),),
+        )
+
+        execution = run_logical_program(
+            program,
+            trace=TraceCaptureOptions(enabled=True),
+        )
+
+        self.assertEqual(
+            execution.classical_output_distribution.result_ids,
+            (ClassicalBitId("classical:bell:left"),),
+        )
+        self.assertAlmostEqual(execution.classical_output_distribution.probabilities[0], 0.5)
+        self.assertAlmostEqual(execution.classical_output_distribution.probabilities[1], 0.5)
+        self.assertEqual(len(execution.compilation.readout.observations), 2)
+        self.assertIsNotNone(execution.trace)
+        assert execution.trace is not None
+        self.assertEqual(execution.trace.steps[-1].operation.key, "classical:bell:right")
 
     def test_semantic_source_identity_is_preserved_without_a_snapshot_identity(self) -> None:
         program_id = ProgramId("logical:source-identity")
@@ -142,6 +250,7 @@ class LogicalCompilationTests(unittest.TestCase):
         observation = Observation(
             LogicalOperationId("logical-op:basis:observe"),
             qubit.id,
+            ClassicalBitId("classical:basis-result"),
             Basis("x"),
             ObservationReason.EXPLICIT,
         )
@@ -150,6 +259,7 @@ class LogicalCompilationTests(unittest.TestCase):
             "unsupported-basis",
             (qubit,),
             (observation,),
+            (ClassicalBitValue(observation.result_id),),
         )
 
         with self.assertRaises(CompileError) as captured:
@@ -161,11 +271,47 @@ class LogicalCompilationTests(unittest.TestCase):
         self.assertIsNone(diagnostic.source)
         self.assertIn("only z-basis observations", diagnostic.message)
 
+    def test_gate_after_observation_has_terminal_observation_diagnostic(self) -> None:
+        qubit = LogicalQubitValue(LogicalQubitId("logical:terminal-qubit"))
+        result = ClassicalBitValue(ClassicalBitId("classical:terminal-result"))
+        observation = Observation(
+            LogicalOperationId("logical-op:terminal:observe"),
+            qubit.id,
+            result.id,
+            Basis("z"),
+            ObservationReason.EXPLICIT,
+        )
+        late_gate = LogicalGateOperation(
+            LogicalOperationId("logical-op:terminal:late-h"),
+            LogicalGateOpCode.H,
+            (qubit.id,),
+        )
+        program = LogicalProgram(
+            ProgramId("logical:non-terminal-observation"),
+            "non-terminal-observation",
+            (qubit,),
+            (observation, late_gate),
+            (result,),
+        )
+
+        with self.assertRaises(CompileError) as captured:
+            compile_logical_program(program)
+
+        self.assertEqual(captured.exception.diagnostics[0].code, "A202")
+
 
 def _bell_program() -> LogicalProgram:
     program_id = ProgramId("logical:bell")
     left = LogicalQubitValue(LogicalQubitId("logical:bell:left"), display_name="left")
     right = LogicalQubitValue(LogicalQubitId("logical:bell:right"), display_name="right")
+    left_result = ClassicalBitValue(
+        ClassicalBitId("classical:bell:left"),
+        display_name="left_result",
+    )
+    right_result = ClassicalBitValue(
+        ClassicalBitId("classical:bell:right"),
+        display_name="right_result",
+    )
     return LogicalProgram(
         program_id,
         "bell",
@@ -185,16 +331,20 @@ def _bell_program() -> LogicalProgram:
             Observation(
                 LogicalOperationId("logical-op:bell:observe-left"),
                 left.id,
+                left_result.id,
                 Basis("z"),
                 ObservationReason.PROGRAM_OUTPUT,
             ),
             Observation(
                 LogicalOperationId("logical-op:bell:observe-right"),
                 right.id,
+                right_result.id,
                 Basis("z"),
                 ObservationReason.PROGRAM_OUTPUT,
             ),
         ),
+        (left_result, right_result),
+        (left_result.id, right_result.id),
     )
 
 

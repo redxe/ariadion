@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import unittest
 from pathlib import Path
@@ -65,9 +66,49 @@ class VerticalSliceTests(unittest.TestCase):
                 '{"column":1,"end_column":13,"end_line":4,'
                 '"file":"examples/bell.py","line":4,'
                 '"program_id":"examples/bell.py",'
+                '"snapshot_operation_id":"examples/bell.py:operation:0",'
                 '"source_node_id":null,'
                 '"source_operation_id":"examples/bell.py:operation:0"}'
             ),
+        )
+
+    def test_source_serialization_preserves_neutral_and_snapshot_identities(self) -> None:
+        legacy = SourceRef(
+            program_id=ProgramId("documents/legacy"),
+            snapshot_operation_id=SnapshotOperationId("documents/legacy:operation:0"),
+        )
+        semantic = SourceRef(
+            program_id=ProgramId("documents/semantic"),
+            source_operation_id=SourceOperationId("source-operation:semantic:0"),
+        )
+
+        self.assertEqual(
+            json.loads(legacy.to_json()),
+            {
+                "program_id": "documents/legacy",
+                "source_operation_id": "documents/legacy:operation:0",
+                "snapshot_operation_id": "documents/legacy:operation:0",
+                "source_node_id": None,
+                "file": None,
+                "line": None,
+                "column": None,
+                "end_line": None,
+                "end_column": None,
+            },
+        )
+        self.assertEqual(
+            json.loads(semantic.to_json()),
+            {
+                "program_id": "documents/semantic",
+                "source_operation_id": "source-operation:semantic:0",
+                "snapshot_operation_id": None,
+                "source_node_id": None,
+                "file": None,
+                "line": None,
+                "column": None,
+                "end_line": None,
+                "end_column": None,
+            },
         )
 
     def test_diagnostic_links_to_its_source_operation(self) -> None:

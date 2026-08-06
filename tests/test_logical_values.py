@@ -10,16 +10,19 @@ from pathlib import Path
 import ariadion
 from ariadion import Bit, Qubit
 from ariadion_core import (
+    ClassicalBitId,
     IrOperationId,
     LogicalOperationId,
     LogicalQubitId,
     ProgramId,
     SnapshotOperationId,
     SourceNodeId,
+    SourceOperationId,
     SyntaxNodeId,
 )
 from ariadion_semantics import (
     Basis,
+    ClassicalBitValue,
     FunctionEffect,
     LogicalGateOpCode,
     LogicalGateOperation,
@@ -27,6 +30,7 @@ from ariadion_semantics import (
     LogicalQubitValue,
     Observation,
     ObservationReason,
+    basis,
 )
 
 
@@ -40,6 +44,10 @@ _TARGET_LANGUAGE_DOCUMENTS = (
 
 class LogicalValueTests(unittest.TestCase):
     def test_logical_identity_types_are_distinct_from_source_and_ir_identities(self) -> None:
+        self.assertIsNot(ClassicalBitId, LogicalQubitId)
+        self.assertIsNot(ClassicalBitId, LogicalOperationId)
+        self.assertIsNot(ClassicalBitId, SnapshotOperationId)
+        self.assertIsNot(ClassicalBitId, SourceOperationId)
         self.assertIsNot(LogicalQubitId, LogicalOperationId)
         self.assertIsNot(LogicalQubitId, SyntaxNodeId)
         self.assertIsNot(LogicalQubitId, SourceNodeId)
@@ -137,6 +145,7 @@ class LogicalValueTests(unittest.TestCase):
         observation = Observation(
             LogicalOperationId("logical-operation:observe-left"),
             LogicalQubitId("logical:left"),
+            ClassicalBitId("classical:left-result"),
             Basis("z"),
             ObservationReason.CLASSICAL_RETURN,
         )
@@ -148,6 +157,7 @@ class LogicalValueTests(unittest.TestCase):
             {
                 "id": "logical-operation:observe-left",
                 "qubit_id": "logical:left",
+                "result_id": "classical:left-result",
                 "basis": {"name": "z"},
                 "reason": "classical_return",
                 "source": None,
@@ -158,6 +168,10 @@ class LogicalValueTests(unittest.TestCase):
     def test_logical_program_keeps_ordered_instructions_without_allocation_fields(self) -> None:
         left = LogicalQubitValue(LogicalQubitId("logical:left"), display_name="left")
         right = LogicalQubitValue(LogicalQubitId("logical:right"), display_name="right")
+        left_result = ClassicalBitValue(
+            ClassicalBitId("classical:left-result"),
+            display_name="left_result",
+        )
         h = LogicalGateOperation(
             LogicalOperationId("logical-operation:h"),
             LogicalGateOpCode.H,
@@ -172,6 +186,7 @@ class LogicalValueTests(unittest.TestCase):
         observe = Observation(
             LogicalOperationId("logical-operation:observe-left"),
             left.id,
+            left_result.id,
             Basis("z"),
             ObservationReason.PROGRAM_OUTPUT,
         )
@@ -181,6 +196,8 @@ class LogicalValueTests(unittest.TestCase):
             "bell",
             (left, right),
             (h, cx, observe),
+            (left_result,),
+            (left_result.id, right.id),
         )
 
         self.assertEqual(program.instructions, (h, cx, observe))
@@ -190,10 +207,12 @@ class LogicalValueTests(unittest.TestCase):
         )
         self.assertFalse(hasattr(program, "qubit_count"))
         self.assertFalse(hasattr(program, "allocated_qubit_count"))
+        self.assertEqual(program.outputs, (left_result.id, right.id))
 
     def test_logical_program_rejects_invalid_references_and_instruction_shapes(self) -> None:
         left = LogicalQubitValue(LogicalQubitId("logical:left"))
         unknown = LogicalQubitId("logical:unknown")
+        result = ClassicalBitValue(ClassicalBitId("classical:left-result"))
 
         with self.assertRaisesRegex(ValueError, "undeclared logical qubit"):
             LogicalProgram(
@@ -236,11 +255,122 @@ class LogicalValueTests(unittest.TestCase):
                     Observation(
                         LogicalOperationId("logical-operation:duplicate"),
                         left.id,
+                        result.id,
                         Basis("z"),
                         ObservationReason.PROGRAM_OUTPUT,
                     ),
                 ),
+                (result,),
             )
+
+    def test_classical_values_require_declared_unique_observation_producers(self) -> None:
+        left = LogicalQubitValue(LogicalQubitId("logical:left"))
+        right = LogicalQubitValue(LogicalQubitId("logical:right"))
+        result = ClassicalBitValue(ClassicalBitId("classical:result"))
+        first = Observation(
+            LogicalOperationId("logical-operation:observe-left"),
+            left.id,
+            result.id,
+            Basis("z"),
+            ObservationReason.PROGRAM_OUTPUT,
+        )
+        duplicate = Observation(
+            LogicalOperationId("logical-operation:observe-right"),
+            right.id,
+            result.id,
+            Basis("z"),
+            ObservationReason.PROGRAM_OUTPUT,
+        )
+        with self.assertRaisesRegex(ValueError, "observation result IDs must be unique"):
+            LogicalProgram(
+                ProgramId("logical:duplicate-results"),
+                "duplicate-results",
+                (left, right),
+                (first, duplicate),
+                (result,),
+            )
+
+        unknown_result = Observation(
+            LogicalOperationId("logical-operation:unknown-result"),
+            left.id,
+            ClassicalBitId("classical:unknown"),
+            Basis("z"),
+            ObservationReason.PROGRAM_OUTPUT,
+        )
+        with self.assertRaisesRegex(ValueError, "undeclared classical bit"):
+            LogicalProgram(
+                ProgramId("logical:unknown-result"),
+                "unknown-result",
+                (left,),
+                (unknown_result,),
+                (result,),
+            )
+
+        output_order = LogicalProgram(
+            ProgramId("logical:output-order"),
+            "output-order",
+            (left, right),
+            (first,),
+            (result,),
+            (right.id, result.id),
+        )
+        self.assertEqual(output_order.outputs, (right.id, result.id))
+        self.assertEqual(len(output_order.instructions), 1)
+        self.assertEqual(
+            tuple(
+                instruction.qubit_id
+                for instruction in output_order.instructions
+                if isinstance(instruction, Observation)
+            ),
+            (left.id,),
+        )
+
+        with self.assertRaisesRegex(ValueError, "classical bit must have an observation"):
+            LogicalProgram(
+                ProgramId("logical:unproduced-output"),
+                "unproduced-output",
+                (left,),
+                (),
+                (result,),
+                (result.id,),
+            )
+
+        with self.assertRaisesRegex(ValueError, "classical bit must have an observation"):
+            LogicalProgram(
+                ProgramId("logical:discarded-unproduced"),
+                "discarded-unproduced",
+                (left,),
+                (),
+                (result,),
+            )
+
+    def test_classical_value_and_basis_namespace_contracts_are_immutable(self) -> None:
+        value = ClassicalBitValue(
+            ClassicalBitId("classical:left-result"),
+            display_name="left_result",
+        )
+        self.assertEqual(
+            value.to_dict(),
+            {
+                "id": "classical:left-result",
+                "display_name": "left_result",
+                "source": None,
+            },
+        )
+        self.assertEqual(basis.x, Basis("x"))
+        self.assertEqual(basis.y, Basis("y"))
+        self.assertEqual(basis.z, Basis("z"))
+        self.assertEqual(basis.named("custom"), Basis("custom"))
+        self.assertIs(ariadion.basis, basis)
+        self.assertFalse(hasattr(ariadion, "x"))
+        self.assertFalse(hasattr(ariadion, "y"))
+        self.assertFalse(hasattr(ariadion, "z"))
+
+    def test_logical_gate_opcodes_do_not_include_parameterless_rotations(self) -> None:
+        self.assertEqual(
+            {opcode.value for opcode in LogicalGateOpCode},
+            {"x", "h", "z", "cx"},
+        )
 
     def test_logical_values_and_effects_have_deterministic_contracts(self) -> None:
         value = LogicalQubitValue(

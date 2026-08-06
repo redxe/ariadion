@@ -12,10 +12,11 @@ CircuitIR
 
 `qubit_count` and every integer target describe an **allocated** circuit. They are
 not a source-language declaration: Daidalon derives them from logical quantum
-values. The current `AllocationPlan` preserves the logical-to-IR mapping for
-diagnostics, resource reports, trace navigation, and later hardware layout
+values. The current `LogicalSlotAllocationPlan` preserves the logical-to-IR mapping
+for diagnostics, resource reports, trace navigation, and later hardware layout
 explanations. Its first `dense-no-reuse-v1` policy maps declaration order to dense
-slots without lifetime analysis or reuse.
+slots without lifetime analysis or reuse. It maps logical values to execution slots,
+not to hardware or protected physical qubits.
 
 ## Reliability, protection, and allocation boundary
 
@@ -31,14 +32,17 @@ logical operation schedule
 
 That allocation can describe a bare execution, a mitigated or error-detected
 execution, or a fault-tolerantly protected realization. The public source-level
-`Qubit` remains unchanged in every case. A future `AllocationPlan` will relate
-`LogicalQubitId` values and any `ProtectedRealization` assumptions to allocated
-integer slots and generated IR operations, so diagnostics, traces, and resource
-reports can explain the result without exposing physical slots in source code.
+`Qubit` remains unchanged in every case. A future physical-allocation artifact
+(for example, `PhysicalAllocationPlan`) will relate `LogicalQubitId` values and any
+`ProtectedRealization` assumptions to physical resources and generated IR
+operations, so diagnostics, traces, and resource reports can explain the result
+without exposing physical slots in source code.
 
-`AllocationPlan` remains a sibling artifact rather than a field on `CircuitIR`, so
-the allocated circuit remains backend-neutral. This specification does not implement
-a protection planner, select code distances, or define an encoded-QEC layout.
+`LogicalSlotAllocationPlan` and `ReadoutPlan` remain sibling artifacts rather than
+fields on `CircuitIR`, so the allocated circuit remains backend-neutral. A future
+physical or protected allocation may map one source `Qubit` to many physical qubits
+and is a separate artifact. This specification does not implement a protection
+planner, select code distances, or define an encoded-QEC layout.
 `OperationProvenance` records both source and logical-instruction ancestry for
 lowered or generated IR operations.
 
@@ -49,6 +53,8 @@ Each `Operation` contains:
 - ordered target qubits;
 - optional control qubits;
 - optional classical key;
+- optional `ObservationMetadata` containing a logical qubit ID, declared classical
+  result ID, selected basis name, and observation reason;
 - canonical rotation radians and optional source-angle display metadata;
 - optional source metadata.
 
@@ -61,6 +67,12 @@ values. When present, metadata must agree with canonical radians within a small
 tolerance. Simulators consume canonical radians only; frontends can use the
 metadata to render the original unit without reinterpreting the operation.
 
+Only a `MEASURE` operation may carry `ObservationMetadata`. Logical observation
+lowering sets `Operation.key` to `str(result_id)` and carries the matching metadata,
+so runtime does not recover classical result identity from an IR operation ID.
+Compatibility-builder measurements may omit metadata until they are resolved into
+logical observations. Basis and reason serialize deterministically.
+
 ## Source identity and provenance
 
 `SourceRange` records an optional source file plus one-based start and end
@@ -68,8 +80,9 @@ positions. `SourceRef` pairs that range with a `ProgramId`, a neutral
 `SourceOperationId`, and an optional durable `SourceNodeId`. Its
 `snapshot_operation_id` property is compatibility data only for a source reference
 derived from the width-based builder. A semantic program does not fabricate a
-snapshot operation ID. A lowered operation exposes these source references through
-convenience properties.
+snapshot operation ID. Serialization retains both `source_operation_id` and
+`snapshot_operation_id`, using `null` for the latter when unavailable. A lowered
+operation exposes these source references through convenience properties.
 
 `CircuitIR.id` scopes all operations in one program or document. Every `Operation`
 also has an `IrOperationId`, so clients can distinguish multiple generated IR
@@ -90,8 +103,9 @@ deterministic representation for IDs and source metadata. Snapshot IDs remain
 deterministic only within their compiled snapshot; consumers persisting identity
 across edits must use a `SourceNodeId` supplied by the frontend.
 
-Future revisions will add basis descriptors, parameters, classical values, regions,
-ownership metadata, and concrete decomposition passes that populate provenance.
+Future revisions will add additional basis descriptors, parameterized logical
+instructions, regions, ownership metadata, physical-allocation artifacts, and
+concrete decomposition passes that populate provenance.
 The evidence for separating reliability analysis from allocation is recorded in
 [fault-tolerance and resource-planning research](../docs/research/fault-tolerance-and-resource-planning.md),
 which cites primary and official sources consulted on 2026-08-06.

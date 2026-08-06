@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ariadion import TraceStepViewModel
+from ariadion import ObservationExecutionKind, TraceStepViewModel
 from ariadion_visualization import render_circuit
 
 if TYPE_CHECKING:
@@ -211,20 +211,37 @@ def _render_measurement(view: TraceStepViewModel) -> list[str]:
     if measurement is None:
         return []
 
+    observation = view.operation.observation
     target_count = len(measurement.targets)
     target_text = _format_qubits(measurement.targets)
     key_text = f", key={measurement.key!r}" if measurement.key is not None else ""
     bit_order_text = f", bit order={measurement.bit_order.value}"
+    observation_lines: list[str] = []
+    if observation is not None:
+        observation_lines.append(
+            "Observation metadata: "
+            f"result ID={observation.result_id}; "
+            f"logical qubit ID={observation.logical_qubit_id}; "
+            f"basis={observation.basis_name}; reason={observation.reason}"
+        )
     if measurement.outcome is not None:
         outcome = "".join(str(bit) for bit in measurement.outcome)
-        return [
+        return observation_lines + [
             f"Measurement outcome ({target_text}{key_text}{bit_order_text}): "
             f"|{outcome}>"
         ]
 
-    lines = [
-        f"Exact measurement probabilities ({target_text}{key_text}{bit_order_text}):"
-    ]
+    if (
+        measurement.execution_kind
+        is ObservationExecutionKind.EXACT_TERMINAL_DISTRIBUTION
+    ):
+        heading = (
+            "Exact terminal observation distribution "
+            f"({target_text}{key_text}{bit_order_text}; analytical, retained state unchanged):"
+        )
+    else:
+        heading = f"Exact measurement probabilities ({target_text}{key_text}{bit_order_text}):"
+    lines = observation_lines + [heading]
     for index, probability in enumerate(measurement.probabilities):
         lines.append(f"  |{index:0{target_count}b}> p={probability:.6f}")
     return lines

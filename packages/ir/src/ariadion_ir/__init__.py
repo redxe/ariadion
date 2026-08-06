@@ -1,4 +1,5 @@
 from ariadion_core import (
+    ClassicalBitId,
     IrOperationId,
     OperationId,
     ProgramId,
@@ -10,14 +11,23 @@ from ariadion_core import (
     SourceRef,
 )
 
-from .model import AngleMetadata, CircuitIR, OpCode, Operation, OperationProvenance
+from .model import (
+    AngleMetadata,
+    CircuitIR,
+    ObservationMetadata,
+    OpCode,
+    Operation,
+    OperationProvenance,
+)
 
 __all__ = [
     "AngleMetadata",
+    "ClassicalBitId",
     "CircuitIR",
     "IrOperationId",
     "OpCode",
     "Operation",
+    "ObservationMetadata",
     "OperationId",
     "OperationProvenance",
     "ProgramId",

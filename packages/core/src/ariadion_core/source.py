@@ -202,6 +202,7 @@ class SourceRef:
         return {
             "program_id": self.program_id,
             "source_operation_id": self.source_operation_id,
+            "snapshot_operation_id": self.snapshot_operation_id,
             "source_node_id": self.source_node_id,
             "file": self.file,
             "line": self.line,

@@ -22,9 +22,9 @@ owner's data but must not silently repair, reorder, or reinterpret it.
 | Aggregate root | Mutability | Owns | Does not own |
 | --- | --- | --- | --- |
 | `Program` | Mutable while building | Source declarations, source operations, and source construction order | Compiled semantics or execution results |
-| `LogicalProgram` | Immutable | Declared logical values, ordered quantum instructions, and logical-reference invariants | Slots, circuit width, backend policy, or execution results |
-| `CircuitIR` | Immutable | Qubit layout, compiled operation order, IR provenance, and semantic operation data | UI formatting, trace continuity, or backend policy |
-| `ExecutionTrace` | Immutable | Execution metadata, initial snapshot, contiguous operation occurrences, and state history | State interpretation or navigation |
+| `LogicalProgram` | Immutable | Declared logical values, declared classical values, ordered outputs, quantum instructions, and logical-reference invariants | Slots, circuit width, backend policy, or execution results |
+| `CircuitIR` | Immutable | Qubit layout, compiled operation order, IR provenance, and validated observation metadata | UI formatting, trace continuity, or backend policy |
+| `ExecutionTrace` | Immutable | Execution metadata, initial snapshot, contiguous operation occurrences, state history, and observation execution kind | State interpretation or navigation |
 | `TraceDebuggerSession` | Immutable | Current trace-step selection and frontend-ready projection | Terminal input, source mutation, or simulation |
 | Theonoe analysis | Immutable | State reports, transitions, exact effects, and educational interpretations | Trace capture, execution policy, or rendering |
 
@@ -43,24 +43,32 @@ Python cannot make every invalid state impossible at the type level. Ariadion
 should nevertheless make invalid combinations difficult to construct by grouping
 required data into small, self-validating immutable value objects.
 
-For example, a future rotation-specific parameter object can keep canonical radians
-and optional source display metadata together:
+For example, a future logical rotation-specific value object can keep a unit-bearing
+`SemanticAngle` separate from the allocated-IR canonical radians and optional source
+display metadata. A `LogicalRotationOperation` must use that typed semantic value
+rather than an untyped parameter dictionary:
 
 ```python
 @dataclass(frozen=True, slots=True)
-class RotationParameters:
-    radians: float
-    source_angle: AngleMetadata | None
+class LogicalRotationOperation:
+    id: LogicalOperationId
+    axis: RotationAxis
+    target: LogicalQubitId
+    angle: SemanticAngle
+    source: SemanticSourceRef | None = None
 ```
 
-A constructor or factory that accepts `RotationParameters` can validate its
+A constructor or factory that accepts `LogicalRotationOperation` can validate its
 relationship once, rather than forcing every compiler, runtime, and UI consumer to
 recheck unrelated optional fields. The same technique applies to measurement
 configuration, classical conditions, basis descriptors, backend requests,
 breakpoints, and sampled versus exact result records.
 
-This is not an argument for a gate-class hierarchy. It is an argument for keeping
-concepts that must remain consistent in the same validated object.
+`ObservationMetadata` is another current example: it belongs only on `MEASURE`, its
+result ID must agree with the operation key, and its basis/reason must travel with
+the lowered operation. This is not an argument for a gate-class hierarchy. It is an
+argument for keeping concepts that must remain consistent in the same validated
+object.
 
 ## Composition over inheritance
 
@@ -93,16 +101,18 @@ validate their own invariants.
 Small immutable types make ownership explicit and prevent unqualified primitives
 from leaking across package boundaries. Existing examples include `Angle`,
 `AngleMetadata`, `ProgramId`, `SourceOperationId`, `SourceNodeId`,
-`SnapshotOperationId`, `IrOperationId`, `SourceRange`, and `SourceRef`.
+`SnapshotOperationId`, `IrOperationId`, `ClassicalBitId`, `SourceRange`, and
+`SourceRef`.
 
 Existing and future language work should use value objects where a bare integer or
 string would lose meaning, including:
 
-- public `Qubit` and `Bit`, plus compiler-only `LogicalQubitId` and
-    `LogicalQubitValue` contracts;
+- public `Qubit` and `Bit`, plus compiler-only `LogicalQubitId`, `ClassicalBitId`,
+    `LogicalQubitValue`, and `ClassicalBitValue` contracts;
 - `Basis` and basis expressions;
 - `MeasurementKey` and classical conditions;
-- `Probability`, `ShotCount`, and backend identifiers; and
+- `Probability`, `ShotCount`, `ExactClassicalDistribution`, and backend
+    identifiers; and
 - execution occurrence and breakpoint identities.
 
 At the public boundary, `Qubit()` creates a logical quantum value. It has no
@@ -132,6 +142,9 @@ Qubit
 LogicalQubitId
     Internal semantic identity for a Qubit before allocation.
 
+ClassicalBitId
+    Internal semantic identity for one declared Bit result of an observation.
+
 AllocatedQubitSlot
     Dense simulator or backend slot selected by Daidalon.
 
@@ -146,8 +159,9 @@ backend target; it is not a source construction parameter. `ProtectedRealization
 may later be described by an `EncodedQubitPlan` or `FaultTolerantRealization`, but
 the name `LogicalQubit` must not be used for that QEC object because it collides
 with source-semantic language. The current hand-built logical slice uses one dense
-slot per declared value under the explicitly limited `dense-no-reuse-v1` policy; it
-does not infer lifetimes or reuse a slot.
+execution slot per declared value under the explicitly limited `dense-no-reuse-v1`
+`LogicalSlotAllocationPlan`; it does not infer lifetimes or reuse a slot. This plan
+does not imply that one source value maps to one physical qubit.
 
 `ReliabilityGoal`, `NoiseProfile`, and `ProtectionPlan` are immutable planning
 contracts owned by the semantic layer. They describe requested bounds, assumptions,
@@ -171,21 +185,28 @@ source construct identity
 
 logical value identity
     LogicalQubitId
-    -> AllocationEntry / AllocatedQubitSlot
+    -> LogicalSlotAllocationEntry / AllocatedQubitSlot
     -> integer IR target
+
+classical result identity
+    ClassicalBitId
+    -> AllocatedObservation / ObservationMetadata
+    -> ReadoutPlan output position
+    -> ExactClassicalDistribution bit position
 ```
 
 `SourceRef.source_operation_id` is the canonical source-operation field.
 `SourceRef.snapshot_operation_id` is an optional compatibility property for a
 reference derived from the legacy builder; semantic programs must not fabricate a
-snapshot identity. `SyntaxNodeId` is required for one parsed source snapshot but
-does not promise to survive edits. `SourceNodeId` must survive source editing when
-supplied by an editor. `LogicalQubitId` distinguishes a source-level value from an
-allocated target. `LogicalOperationId` identifies every `QuantumInstruction`,
-including an `Observation`; `OperationProvenance.parent_logical_operation_ids`
-preserves its link to allocated IR. IR IDs distinguish lowered or generated output
-operations. Trace steps preserve an ordered occurrence of an IR operation during
-one execution.
+snapshot identity. Serialization preserves both fields, with `null` for unavailable
+builder compatibility data. `SyntaxNodeId` is required for one parsed source
+snapshot but does not promise to survive edits. `SourceNodeId` must survive source
+editing when supplied by an editor. `LogicalQubitId` distinguishes a source-level
+value from an allocated target. `LogicalOperationId` identifies every
+`QuantumInstruction`, including an `Observation`; each observation has a produced
+`ClassicalBitId`; `OperationProvenance.parent_logical_operation_ids` preserves its
+link to allocated IR. IR IDs distinguish lowered or generated output operations.
+Trace steps preserve an ordered occurrence of an IR operation during one execution.
 
 A future `OperationLink` value object may centralize these relationships for
 source navigation, persistent breakpoints, compiler provenance, remote result
@@ -205,6 +226,22 @@ class OperationLink:
 
 This is a future extension. It must not replace existing identifiers until it can
 represent every current relationship without information loss.
+
+## Exact observation execution boundary
+
+`ReadoutPlan` owns the ordering bridge between compiled observations and public
+classical outputs. For the current exact state-vector path, runtime calculates an
+`ExactClassicalDistribution` from the retained analytical amplitudes for all ordered
+results together. It does not manufacture independent marginal results and it does
+not mutate the analytical state to a sampled post-measurement state.
+
+`MeasurementEvent.execution_kind` makes that distinction explicit:
+`exact_terminal_distribution` is an analytic terminal projection, while a future
+`sampled` event requires shot, seed, outcome, and collapsed-state semantics. The
+exact engine rejects any non-measurement operation after the first observation.
+Mid-circuit feedback, reset behavior after a sampled readout, and post-measurement
+state histories therefore belong to future execution contracts, not the current
+trace's `retained_analytic_state`.
 
 ## Ports and substitution boundaries
 

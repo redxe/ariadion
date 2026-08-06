@@ -22,7 +22,9 @@ It is immutable: `next()`, `previous()`, and `go_to()` return a new session.
 - entanglement changes and any unobservable global-phase delta;
 - an optional structured rotation explanation with exact trace facts and a
   separately labeled educational interpretation;
-- exact measurement data when the operation measures qubits.
+- exact measurement data and its execution kind when the operation measures qubits;
+- lowered observation metadata (declared result ID, logical qubit ID, basis, and
+  reason) when available.
 
 `TraceStepViewModel` has `to_dict()` and canonical `to_json()` output for an
 individual active step. `TraceDebuggerSession` serializes a complete debugger
@@ -32,9 +34,9 @@ reconstruct the whole circuit and every inspected operation directly from that
 document instead of scraping terminal text.
 
 The session validates every inspection step against the matching trace operation:
-operation ID, opcode, targets, controls, key, source, compiler provenance, and
-measurement record must agree. This prevents a UI from combining Theonoe analysis
-with metadata from a different operation.
+operation ID, opcode, targets, controls, key, observation metadata, source,
+compiler provenance, and measurement record must agree. This prevents a UI from
+combining Theonoe analysis with metadata from a different operation.
 
 ## CLI behavior
 
@@ -61,10 +63,12 @@ its own presentation code.
 `TraceStepViewModel`. It renders a circuit with the active gate highlighted,
 visible before/after basis states, probability and relative-phase changes,
 unobservable global phase when nonzero, entanglement changes, measurement
-probabilities, source data, compiler provenance, and precomputed rotation
-explanations. Rotation rendering labels exact facts separately from educational
-interpretations. Terminal command parsing and input remain outside this rendering
-function.
+probabilities, observation metadata, source data, compiler provenance, and
+precomputed rotation explanations. An `exact_terminal_distribution` is visibly
+labeled as an analytical projection with an unchanged retained state; it is not
+rendered as a sampled collapse. Rotation rendering labels exact facts separately
+from educational interpretations. Terminal command parsing and input remain outside
+this rendering function.
 
 Measurement output carries the runtime `targets_lsb_first` convention: target
 `targets[i]` maps to outcome bit `i`. See the runtime trace contract for the

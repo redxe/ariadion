@@ -1,5 +1,7 @@
 from .model import (
     Basis,
+    BasisNamespace,
+    ClassicalBitValue,
     FunctionEffect,
     LogicalGateOpCode,
     LogicalGateOperation,
@@ -9,6 +11,7 @@ from .model import (
     ObservationReason,
     QuantumInstruction,
     SemanticSourceRef,
+    basis,
 )
 from .reliability import (
     CorrelationModel,
@@ -28,6 +31,8 @@ from .reliability import (
 
 __all__ = [
     "Basis",
+    "BasisNamespace",
+    "ClassicalBitValue",
     "CorrelationModel",
     "EvolutionModel",
     "FunctionEffect",
@@ -50,4 +55,5 @@ __all__ = [
     "ReliabilityGoal",
     "SemanticSourceRef",
     "SimulationRequest",
+    "basis",
 ]

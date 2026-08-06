@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from ariadion_core import IrOperationId, ProgramId, SourceRef, canonical_json
-from ariadion_ir import AngleMetadata, OpCode, OperationProvenance
+from ariadion_ir import AngleMetadata, ObservationMetadata, OpCode, OperationProvenance
 from theonoe import (
     DEFAULT_EPSILON,
     RotationAxis,
@@ -40,6 +40,7 @@ class TraceStepInspection:
     targets: tuple[int, ...]
     controls: tuple[int, ...]
     key: str | None
+    observation: ObservationMetadata | None
     source: SourceRef | None
     measurement: MeasurementEvent | None
     transition: StateTransition
@@ -57,6 +58,9 @@ class TraceStepInspection:
                 "targets": list(self.targets),
                 "controls": list(self.controls),
                 "key": self.key,
+                "observation": (
+                    self.observation.to_dict() if self.observation is not None else None
+                ),
                 "angle_radians": self.angle_radians,
                 "angle_metadata": (
                     self.angle_metadata.to_dict()
@@ -103,7 +107,15 @@ class TraceInspection:
 
     @property
     def final(self) -> StateReport:
+        """Retained analytic state, not a physical post-sampling measurement state."""
+
         return self.steps[-1].transition.after if self.steps else self.initial
+
+    @property
+    def retained_analytic_state(self) -> StateReport:
+        """Explicit name for the state report retained through terminal projections."""
+
+        return self.final
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -163,6 +175,7 @@ def inspect_execution_trace(
                 targets=step.operation.targets,
                 controls=step.operation.controls,
                 key=step.operation.key,
+                observation=step.operation.observation,
                 source=step.source,
                 provenance=step.provenance,
                 angle_radians=step.operation.angle_radians,

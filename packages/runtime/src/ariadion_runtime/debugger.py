@@ -237,6 +237,7 @@ def _inspection_metadata_matches_trace(
         and inspection_step.targets == operation.targets
         and inspection_step.controls == operation.controls
         and inspection_step.key == operation.key
+        and inspection_step.observation == operation.observation
         and inspection_step.source == operation.source
         and inspection_step.provenance == operation.provenance
         and inspection_step.angle_radians == operation.angle_radians

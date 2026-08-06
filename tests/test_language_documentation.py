@@ -47,7 +47,7 @@ class LanguageDocumentationTests(unittest.TestCase):
         self.assertIsNotNone(prepare_plus)
         ast.parse(bell or "", filename="specs/language.md:bell")
         ast.parse(prepare_plus or "", filename="specs/language.md:prepare_plus")
-        self.assertIn("from ariadion import Bit, Qubit, cx, h, quantum, z", bell or "")
+        self.assertIn("from ariadion import Bit, Qubit, basis, cx, h, quantum", bell or "")
 
     def test_contract_documents_do_not_show_lowercase_qubit_public_api(self) -> None:
         for document in _PUBLIC_LANGUAGE_MATERIAL:

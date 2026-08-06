@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Final
 
 from ariadion_core import (
+    ClassicalBitId,
     IrOperationId,
     LogicalOperationId,
     LogicalQubitId,
@@ -21,16 +22,19 @@ from ariadion_core import (
 from ariadion_ir import (
     AngleMetadata,
     CircuitIR,
+    ObservationMetadata,
     OpCode,
     Operation,
     OperationProvenance,
 )
 from ariadion_language import Angle, Program, SourceOperation
 from ariadion_semantics import (
+    Basis,
     LogicalGateOpCode,
     LogicalGateOperation,
     LogicalProgram,
     Observation,
+    ObservationReason,
 )
 
 
@@ -96,69 +100,88 @@ _Z_BASIS_NAME: Final = "z"
 
 
 @dataclass(frozen=True, slots=True)
-class AllocationEntry:
-    """The allocated slot selected for one logical quantum value."""
+class LogicalSlotAllocationEntry:
+    """The execution slot selected for one logical value before hardware mapping."""
 
     logical_qubit_id: LogicalQubitId
+    display_name: str | None
     slot: int
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(
             self.logical_qubit_id,
-            label="allocation logical qubit ID",
+            label="logical slot allocation qubit ID",
         )
-        _require_nonnegative_int(self.slot, label="allocation slot")
+        if self.display_name is not None:
+            require_nonempty_identifier(
+                self.display_name,
+                label="logical slot allocation display name",
+            )
+        _require_nonnegative_int(self.slot, label="logical slot allocation slot")
 
     def to_dict(self) -> dict[str, object]:
-        return {"logical_qubit_id": self.logical_qubit_id, "slot": self.slot}
+        return {
+            "logical_qubit_id": self.logical_qubit_id,
+            "display_name": self.display_name,
+            "slot": self.slot,
+        }
 
     def to_json(self) -> str:
         return canonical_json(self.to_dict())
 
 
 @dataclass(frozen=True, slots=True)
-class AllocationPlan:
-    """A deterministic allocation artifact kept separate from allocated IR."""
+class LogicalSlotAllocationPlan:
+    """Managed logical values mapped to dense execution slots, not hardware qubits."""
 
     policy_name: str
-    entries: tuple[AllocationEntry, ...]
+    entries: tuple[LogicalSlotAllocationEntry, ...]
     peak_live_qubits: int
     allocated_qubit_count: int
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.policy_name, label="allocation policy name")
         if not isinstance(self.entries, tuple):
-            raise ValueError("allocation plan entries must be a tuple")
-        if not all(isinstance(entry, AllocationEntry) for entry in self.entries):
-            raise ValueError("allocation plan entries must contain AllocationEntry values")
+            raise ValueError("logical slot allocation entries must be a tuple")
+        if not all(isinstance(entry, LogicalSlotAllocationEntry) for entry in self.entries):
+            raise ValueError(
+                "logical slot allocation entries must contain LogicalSlotAllocationEntry values"
+            )
         logical_ids = tuple(entry.logical_qubit_id for entry in self.entries)
         if len(logical_ids) != len(set(logical_ids)):
-            raise ValueError("allocation plan logical qubit IDs must be unique")
+            raise ValueError("logical slot allocation qubit IDs must be unique")
         _require_nonnegative_int(
             self.peak_live_qubits,
-            label="allocation peak_live_qubits",
+            label="logical slot allocation peak_live_qubits",
         )
         _require_nonnegative_int(
             self.allocated_qubit_count,
-            label="allocation allocated_qubit_count",
+            label="logical slot allocation allocated_qubit_count",
         )
         if self.peak_live_qubits > self.allocated_qubit_count:
-            raise ValueError("allocation peak_live_qubits cannot exceed allocated_qubit_count")
+            raise ValueError(
+                "logical slot allocation peak_live_qubits cannot exceed allocated_qubit_count"
+            )
         if any(entry.slot >= self.allocated_qubit_count for entry in self.entries):
-            raise ValueError("allocation entry slot must fit allocated_qubit_count")
+            raise ValueError(
+                "logical slot allocation entry slot must fit allocated_qubit_count"
+            )
         if self.policy_name == LOGICAL_ALLOCATION_POLICY_NAME:
             expected_slots = tuple(range(len(self.entries)))
             if tuple(entry.slot for entry in self.entries) != expected_slots:
                 raise ValueError(
-                    "dense-no-reuse allocation entries must use declaration-order dense slots"
+                    "dense-no-reuse logical slot allocation entries must use declaration-order "
+                    "dense slots"
                 )
             if self.peak_live_qubits != len(self.entries):
                 raise ValueError(
-                    "dense-no-reuse allocation peak_live_qubits must equal entry count"
+                    "dense-no-reuse logical slot allocation peak_live_qubits must equal entry "
+                    "count"
                 )
             if self.allocated_qubit_count != len(self.entries):
                 raise ValueError(
-                    "dense-no-reuse allocation allocated_qubit_count must equal entry count"
+                    "dense-no-reuse logical slot allocation allocated_qubit_count must equal "
+                    "entry count"
                 )
 
     def to_dict(self) -> dict[str, object]:
@@ -173,25 +196,163 @@ class AllocationPlan:
         return canonical_json(self.to_dict())
 
 
+AllocationEntry = LogicalSlotAllocationEntry
+AllocationPlan = LogicalSlotAllocationPlan
+
+
+@dataclass(frozen=True, slots=True)
+class AllocatedObservation:
+    """One logical observation bound to its result and allocated execution slot."""
+
+    result_id: ClassicalBitId
+    logical_qubit_id: LogicalQubitId
+    allocated_slot: int
+    basis: Basis
+    reason: ObservationReason
+    logical_operation_id: LogicalOperationId
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.result_id, label="allocated observation result ID")
+        require_nonempty_identifier(
+            self.logical_qubit_id,
+            label="allocated observation logical qubit ID",
+        )
+        _require_nonnegative_int(
+            self.allocated_slot,
+            label="allocated observation slot",
+        )
+        if not isinstance(self.basis, Basis):
+            raise ValueError("allocated observation basis must be Basis")
+        if not isinstance(self.reason, ObservationReason):
+            raise ValueError("allocated observation reason must be ObservationReason")
+        require_nonempty_identifier(
+            self.logical_operation_id,
+            label="allocated observation logical operation ID",
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "result_id": self.result_id,
+            "logical_qubit_id": self.logical_qubit_id,
+            "allocated_slot": self.allocated_slot,
+            "basis": self.basis.to_dict(),
+            "reason": self.reason.value,
+            "logical_operation_id": self.logical_operation_id,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class ReadoutPlan:
+    """Ordered logical observations and outputs for exact or sampled execution."""
+
+    observations: tuple[AllocatedObservation, ...]
+    output_order: tuple[ClassicalBitId | LogicalQubitId, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.observations, tuple):
+            raise ValueError("readout plan observations must be a tuple")
+        if not all(isinstance(item, AllocatedObservation) for item in self.observations):
+            raise ValueError("readout plan observations must contain AllocatedObservation values")
+        result_ids = tuple(item.result_id for item in self.observations)
+        if len(result_ids) != len(set(result_ids)):
+            raise ValueError("readout plan observation result IDs must be unique")
+        operation_ids = tuple(item.logical_operation_id for item in self.observations)
+        if len(operation_ids) != len(set(operation_ids)):
+            raise ValueError("readout plan logical operation IDs must be unique")
+        if not isinstance(self.output_order, tuple):
+            raise ValueError("readout plan output_order must be a tuple")
+        for output in self.output_order:
+            require_nonempty_identifier(output, label="readout plan output ID")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "observations": [item.to_dict() for item in self.observations],
+            "output_order": list(self.output_order),
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
 @dataclass(frozen=True, slots=True)
 class LogicalCompilationResult:
-    """Allocated IR and the logical-value allocation that produced it."""
+    """Allocated IR, logical slots, and ordered readout for one logical program."""
 
     ir: CircuitIR
-    allocation: AllocationPlan
+    logical_allocation: LogicalSlotAllocationPlan
+    readout: ReadoutPlan
 
     def __post_init__(self) -> None:
         if not isinstance(self.ir, CircuitIR):
             raise ValueError("logical compilation result ir must be CircuitIR")
-        if not isinstance(self.allocation, AllocationPlan):
-            raise ValueError("logical compilation result allocation must be AllocationPlan")
-        if self.ir.qubit_count != self.allocation.allocated_qubit_count:
+        if not isinstance(self.logical_allocation, LogicalSlotAllocationPlan):
+            raise ValueError(
+                "logical compilation result logical_allocation must be "
+                "LogicalSlotAllocationPlan"
+            )
+        if not isinstance(self.readout, ReadoutPlan):
+            raise ValueError("logical compilation result readout must be ReadoutPlan")
+        if self.ir.qubit_count != self.logical_allocation.allocated_qubit_count:
             raise ValueError(
                 "logical compilation result IR qubit_count must match allocated_qubit_count"
             )
+        slots = {
+            entry.logical_qubit_id: entry.slot
+            for entry in self.logical_allocation.entries
+        }
+        for observation in self.readout.observations:
+            if slots.get(observation.logical_qubit_id) != observation.allocated_slot:
+                raise ValueError(
+                    "readout observation slot must match the logical slot allocation"
+                )
+            matching_operations = tuple(
+                operation
+                for operation in self.ir.operations
+                if operation.observation is not None
+                and operation.observation.result_id == observation.result_id
+            )
+            if len(matching_operations) != 1:
+                raise ValueError(
+                    "readout observation must match exactly one IR observation measurement"
+                )
+            operation = matching_operations[0]
+            metadata = operation.observation
+            assert metadata is not None
+            if (
+                operation.opcode is not OpCode.MEASURE
+                or operation.targets != (observation.allocated_slot,)
+                or operation.key != str(observation.result_id)
+                or metadata.logical_qubit_id != observation.logical_qubit_id
+                or metadata.basis_name != observation.basis.name
+                or metadata.reason != observation.reason.value
+                or operation.provenance is None
+                or (
+                    operation.provenance.parent_logical_operation_ids
+                    != (observation.logical_operation_id,)
+                )
+            ):
+                raise ValueError("readout observation must match its IR measurement metadata")
+        known_output_ids = set(slots) | {
+            observation.result_id for observation in self.readout.observations
+        }
+        if any(output not in known_output_ids for output in self.readout.output_order):
+            raise ValueError("readout output_order must reference allocated logical values")
+
+    @property
+    def allocation(self) -> LogicalSlotAllocationPlan:
+        """Compatibility alias for the pre-readout logical slot allocation field."""
+
+        return self.logical_allocation
 
     def to_dict(self) -> dict[str, object]:
-        return {"ir": self.ir.to_dict(), "allocation": self.allocation.to_dict()}
+        return {
+            "ir": self.ir.to_dict(),
+            "logical_allocation": self.logical_allocation.to_dict(),
+            "readout": self.readout.to_dict(),
+        }
 
     def to_json(self) -> str:
         return canonical_json(self.to_dict())
@@ -235,8 +396,11 @@ def compile_logical_program(program: LogicalProgram) -> LogicalCompilationResult
     if diagnostics:
         raise CompileError(tuple(diagnostics))
 
-    allocation = _allocate_logical_program(program)
-    slots = {entry.logical_qubit_id: entry.slot for entry in allocation.entries}
+    logical_allocation = _allocate_logical_program(program)
+    slots = {
+        entry.logical_qubit_id: entry.slot
+        for entry in logical_allocation.entries
+    }
     operations = tuple(
         _lower_logical_instruction(instruction, slots)
         for instruction in program.instructions
@@ -245,10 +409,11 @@ def compile_logical_program(program: LogicalProgram) -> LogicalCompilationResult
         ir=CircuitIR(
             program.id,
             program.name,
-            allocation.allocated_qubit_count,
+            logical_allocation.allocated_qubit_count,
             operations,
         ),
-        allocation=allocation,
+        logical_allocation=logical_allocation,
+        readout=_build_readout_plan(program, slots),
     )
 
 
@@ -319,8 +484,18 @@ def _validate(program: Program) -> list[Diagnostic]:
 
 def _validate_logical_lowering(program: LogicalProgram) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
+    has_observation = False
     for index, instruction in enumerate(program.instructions):
         if isinstance(instruction, LogicalGateOperation):
+            if has_observation:
+                diagnostics.append(
+                    _logical_instruction_diagnostic(
+                        index,
+                        instruction,
+                        "A202",
+                        "exact state-vector execution supports terminal observations only",
+                    )
+                )
             if instruction.opcode not in _LOGICAL_GATE_OPCODE_MAP:
                 diagnostics.append(
                     _logical_instruction_diagnostic(
@@ -330,16 +505,18 @@ def _validate_logical_lowering(program: LogicalProgram) -> list[Diagnostic]:
                         f"logical gate {instruction.opcode.value!r} has no supported lowering",
                     )
                 )
-        elif instruction.basis.name != _Z_BASIS_NAME:
-            diagnostics.append(
-                _logical_instruction_diagnostic(
-                    index,
-                    instruction,
-                    "A201",
-                    "only z-basis observations are supported by logical allocation lowering; "
-                    f"received {instruction.basis.name!r}",
+        else:
+            has_observation = True
+            if instruction.basis.name != _Z_BASIS_NAME:
+                diagnostics.append(
+                    _logical_instruction_diagnostic(
+                        index,
+                        instruction,
+                        "A201",
+                        "only z-basis observations are supported by logical allocation lowering; "
+                        f"received {instruction.basis.name!r}",
+                    )
                 )
-            )
     return diagnostics
 
 
@@ -365,14 +542,36 @@ def _lower(program: Program, operation: SourceOperation) -> Operation:
     )
 
 
-def _allocate_logical_program(program: LogicalProgram) -> AllocationPlan:
-    entries = tuple(AllocationEntry(qubit.id, slot) for slot, qubit in enumerate(program.qubits))
-    return AllocationPlan(
+def _allocate_logical_program(program: LogicalProgram) -> LogicalSlotAllocationPlan:
+    entries = tuple(
+        LogicalSlotAllocationEntry(qubit.id, qubit.display_name, slot)
+        for slot, qubit in enumerate(program.qubits)
+    )
+    return LogicalSlotAllocationPlan(
         policy_name=LOGICAL_ALLOCATION_POLICY_NAME,
         entries=entries,
         peak_live_qubits=len(entries),
         allocated_qubit_count=len(entries),
     )
+
+
+def _build_readout_plan(
+    program: LogicalProgram,
+    slots: dict[LogicalQubitId, int],
+) -> ReadoutPlan:
+    observations = tuple(
+        AllocatedObservation(
+            result_id=instruction.result_id,
+            logical_qubit_id=instruction.qubit_id,
+            allocated_slot=slots[instruction.qubit_id],
+            basis=instruction.basis,
+            reason=instruction.reason,
+            logical_operation_id=instruction.id,
+        )
+        for instruction in program.instructions
+        if isinstance(instruction, Observation)
+    )
+    return ReadoutPlan(observations=observations, output_order=program.outputs)
 
 
 def _lower_logical_instruction(
@@ -383,10 +582,19 @@ def _lower_logical_instruction(
         opcode = _LOGICAL_GATE_OPCODE_MAP[instruction.opcode]
         targets = tuple(slots[qubit_id] for qubit_id in instruction.targets)
         controls = tuple(slots[qubit_id] for qubit_id in instruction.controls)
+        key = None
+        observation = None
     else:
         opcode = OpCode.MEASURE
         targets = (slots[instruction.qubit_id],)
         controls = ()
+        key = str(instruction.result_id)
+        observation = ObservationMetadata(
+            logical_qubit_id=instruction.qubit_id,
+            result_id=instruction.result_id,
+            basis_name=instruction.basis.name,
+            reason=instruction.reason.value,
+        )
     source = instruction.source
     parent_source_ids = (source.source_operation_id,) if source is not None else ()
     return Operation(
@@ -398,12 +606,14 @@ def _lower_logical_instruction(
             0,
         ),
         controls=controls,
+        key=key,
         source=source,
         provenance=OperationProvenance(
             parent_source_ids=parent_source_ids,
             transformation=_LOGICAL_LOWERING_TRANSFORMATION,
             parent_logical_operation_ids=(instruction.id,),
         ),
+        observation=observation,
     )
 
 

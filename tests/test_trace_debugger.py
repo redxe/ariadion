@@ -126,8 +126,8 @@ class TraceDebuggerTests(unittest.TestCase):
         measurement = render_trace_step(session.view_at(2))
         self.assertIn("Global phase: +3.141593 rad (unobservable)", global_phase)
         self.assertIn(
-            "Exact measurement probabilities (q0, key='result', "
-            "bit order=targets_lsb_first):",
+            "Exact terminal observation distribution (q0, key='result', "
+            "bit order=targets_lsb_first; analytical, retained state unchanged):",
             measurement,
         )
         self.assertIn("|1> p=1.000000", measurement)
