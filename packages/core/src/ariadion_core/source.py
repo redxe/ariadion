@@ -14,7 +14,7 @@ from .identity import (
 
 
 def canonical_json(value: Mapping[str, object]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import unittest
 
 from ariadion import Program, ProgramId, SourceNodeId
+from ariadion_core import IrOperationId, canonical_json
+from ariadion_ir import OpCode, Operation
 from ariadion_runtime import (
     EXECUTION_TRACE_SCHEMA_VERSION,
     ExecutionMetadata,
@@ -60,6 +63,18 @@ class TraceContractTests(unittest.TestCase):
         with self.assertRaises(AttributeError):
             snapshot.amplitudes = (0j, 1 + 0j)  # type: ignore[misc]
 
+    def test_snapshots_reject_non_finite_amplitudes(self) -> None:
+        circuit = compile_program(Program(1, program_id=ProgramId("examples/non-finite.py")))
+
+        for amplitude in (complex(math.nan, 0), complex(0, math.inf)):
+            with self.subTest(amplitude=amplitude):
+                with self.assertRaisesRegex(ValueError, "snapshot amplitudes must be finite"):
+                    StateSnapshot(circuit.id, circuit.qubit_count, (amplitude, 0j))
+
+    def test_canonical_json_rejects_non_finite_values(self) -> None:
+        with self.assertRaises(ValueError):
+            canonical_json({"value": math.nan})
+
     def test_trace_steps_must_be_contiguous_and_state_linked(self) -> None:
         program = Program(1, program_id=ProgramId("examples/linked.py"))
         program.h(0)
@@ -108,6 +123,125 @@ class TraceContractTests(unittest.TestCase):
         )
         self.assertEqual(sampled_trace.metadata.seed, 42)
         self.assertEqual(exact_step.measurement, exact)
+
+    def test_measurement_events_must_match_their_operations(self) -> None:
+        program = Program(1, program_id=ProgramId("examples/measurement-binding.py"))
+        program.h(0)
+        program.measure(0, key="result")
+        circuit = compile_program(program)
+        snapshot = StateSnapshot(circuit.id, circuit.qubit_count, (1 + 0j, 0j))
+        h_operation, measurement_operation = circuit.operations
+
+        non_measurement_event = MeasurementEvent(
+            h_operation.id,
+            (0,),
+            MeasurementRecordKind.EXACT_PROBABILITIES,
+            probabilities=(1.0, 0.0),
+        )
+        with self.assertRaisesRegex(ValueError, "require a MEASURE operation"):
+            TraceStep(0, h_operation, snapshot, snapshot, measurement=non_measurement_event)
+
+        wrong_operation_id = MeasurementEvent(
+            IrOperationId("examples/measurement-binding.py:other"),
+            (0,),
+            MeasurementRecordKind.EXACT_PROBABILITIES,
+            key="result",
+            probabilities=(1.0, 0.0),
+        )
+        with self.assertRaisesRegex(ValueError, "operation ID must match"):
+            TraceStep(
+                1,
+                measurement_operation,
+                snapshot,
+                snapshot,
+                measurement=wrong_operation_id,
+            )
+
+        wrong_targets = MeasurementEvent(
+            measurement_operation.id,
+            (1,),
+            MeasurementRecordKind.EXACT_PROBABILITIES,
+            key="result",
+            probabilities=(1.0, 0.0),
+        )
+        with self.assertRaisesRegex(ValueError, "targets must match"):
+            TraceStep(1, measurement_operation, snapshot, snapshot, measurement=wrong_targets)
+
+        wrong_key = MeasurementEvent(
+            measurement_operation.id,
+            (0,),
+            MeasurementRecordKind.EXACT_PROBABILITIES,
+            key="other",
+            probabilities=(1.0, 0.0),
+        )
+        with self.assertRaisesRegex(ValueError, "key must match"):
+            TraceStep(1, measurement_operation, snapshot, snapshot, measurement=wrong_key)
+
+    def test_exact_measurement_events_validate_probability_distributions(self) -> None:
+        operation = Operation(
+            OpCode.MEASURE,
+            (0,),
+            IrOperationId("examples/probabilities.py:measure"),
+            key="result",
+        )
+
+        with self.assertRaisesRegex(ValueError, "probability count"):
+            MeasurementEvent(
+                operation.id,
+                (0,),
+                MeasurementRecordKind.EXACT_PROBABILITIES,
+                key="result",
+                probabilities=(1.0,),
+            )
+        with self.assertRaisesRegex(ValueError, "probabilities must sum to one"):
+            MeasurementEvent(
+                operation.id,
+                (0,),
+                MeasurementRecordKind.EXACT_PROBABILITIES,
+                key="result",
+                probabilities=(0.25, 0.25),
+            )
+        with self.assertRaisesRegex(ValueError, "targets must be unique"):
+            MeasurementEvent(
+                operation.id,
+                (0, 0),
+                MeasurementRecordKind.EXACT_PROBABILITIES,
+                key="result",
+                probabilities=(0.25, 0.25, 0.25, 0.25),
+            )
+
+    def test_measurement_targets_must_fit_the_snapshot_width(self) -> None:
+        circuit_id = ProgramId("examples/out-of-range.py")
+        snapshot = StateSnapshot(circuit_id, 1, (1 + 0j, 0j))
+        operation = Operation(
+            OpCode.MEASURE,
+            (1,),
+            IrOperationId("examples/out-of-range.py:measure"),
+            key="result",
+        )
+        event = MeasurementEvent(
+            operation.id,
+            (1,),
+            MeasurementRecordKind.EXACT_PROBABILITIES,
+            key="result",
+            probabilities=(1.0, 0.0),
+        )
+
+        with self.assertRaisesRegex(ValueError, "within the snapshot width"):
+            TraceStep(0, operation, snapshot, snapshot, measurement=event)
+
+    def test_traces_reject_duplicate_ir_operation_ids(self) -> None:
+        program = Program(1, program_id=ProgramId("examples/duplicate-operation.py"))
+        program.h(0)
+        circuit = compile_program(program)
+        initial = StateSnapshot(circuit.id, circuit.qubit_count, (1 + 0j, 0j))
+        after = StateSnapshot(circuit.id, circuit.qubit_count, (0j, 1 + 0j))
+        operation = circuit.operations[0]
+        first = TraceStep(0, operation, initial, after)
+        duplicate = TraceStep(1, operation, after, after)
+
+        with self.assertRaisesRegex(ValueError, "IR operation IDs must be unique"):
+            ExecutionTrace(circuit.id, initial, (first, duplicate))
 
     def test_contract_serialization_is_versioned_and_deterministic(self) -> None:
         circuit = compile_program(Program(1, program_id=ProgramId("examples/serial.py")))

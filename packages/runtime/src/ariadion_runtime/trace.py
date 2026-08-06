@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from math import isfinite
+from math import isclose, isfinite
 from typing import Final
 
 from ariadion_core import (
@@ -15,10 +15,11 @@ from ariadion_core import (
     canonical_json,
     require_nonempty_identifier,
 )
-from ariadion_ir import Operation, OperationProvenance
+from ariadion_ir import OpCode, Operation, OperationProvenance
 
 
 EXECUTION_TRACE_SCHEMA_VERSION: Final = 1
+_EXACT_MEASUREMENT_PROBABILITY_ABS_TOLERANCE: Final = 1e-12
 
 
 class StateRepresentation(str, Enum):
@@ -130,6 +131,11 @@ class StateSnapshot:
             raise ValueError("snapshot amplitude count must equal 2**qubit_count")
         if not all(isinstance(amplitude, complex) for amplitude in self.amplitudes):
             raise ValueError("snapshot amplitudes must be complex values")
+        if any(
+            not isfinite(amplitude.real) or not isfinite(amplitude.imag)
+            for amplitude in self.amplitudes
+        ):
+            raise ValueError("snapshot amplitudes must be finite")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -166,11 +172,16 @@ class MeasurementEvent:
             for target in self.targets
         ):
             raise ValueError("measurement targets must be non-negative integers")
+        if len(set(self.targets)) != len(self.targets):
+            raise ValueError("measurement targets must be unique")
         _require_tuple(self.probabilities, label="measurement probabilities")
 
         if self.kind is MeasurementRecordKind.EXACT_PROBABILITIES:
-            if not self.probabilities:
-                raise ValueError("exact measurement records require probabilities")
+            expected_probability_count = 1 << len(self.targets)
+            if len(self.probabilities) != expected_probability_count:
+                raise ValueError(
+                    "measurement probability count must equal 2**target_count"
+                )
             if self.outcome is not None:
                 raise ValueError("exact measurement records cannot contain a sampled outcome")
             if any(
@@ -181,6 +192,13 @@ class MeasurementEvent:
                 for value in self.probabilities
             ):
                 raise ValueError("measurement probabilities must be finite non-negative values")
+            if not isclose(
+                sum(self.probabilities),
+                1.0,
+                rel_tol=0.0,
+                abs_tol=_EXACT_MEASUREMENT_PROBABILITY_ABS_TOLERANCE,
+            ):
+                raise ValueError("measurement probabilities must sum to one")
         elif self.kind is MeasurementRecordKind.SAMPLED_OUTCOME:
             if self.probabilities:
                 raise ValueError("sampled measurement records cannot contain exact probabilities")
@@ -233,8 +251,17 @@ class TraceStep:
             raise ValueError("trace step snapshots must have matching qubit counts")
         if self.measurement is not None and not isinstance(self.measurement, MeasurementEvent):
             raise ValueError("trace step measurement must be a MeasurementEvent")
-        if self.measurement is not None and self.measurement.operation_id != self.operation.id:
-            raise ValueError("measurement event operation ID must match its trace operation")
+        if self.measurement is not None:
+            if self.measurement.operation_id != self.operation.id:
+                raise ValueError("measurement event operation ID must match its trace operation")
+            if self.operation.opcode is not OpCode.MEASURE:
+                raise ValueError("measurement events require a MEASURE operation")
+            if self.measurement.targets != self.operation.targets:
+                raise ValueError("measurement targets must match the trace operation")
+            if self.measurement.key != self.operation.key:
+                raise ValueError("measurement key must match the trace operation")
+            if any(target >= self.before.qubit_count for target in self.measurement.targets):
+                raise ValueError("measurement targets must be within the snapshot width")
         if self.metadata is not None and not isinstance(self.metadata, ExecutionMetadata):
             raise ValueError("trace step metadata must be ExecutionMetadata")
 
@@ -301,6 +328,9 @@ class ExecutionTrace:
             raise ValueError("execution trace schema_version must be an integer")
         if self.schema_version < 1:
             raise ValueError("execution trace schema_version must be positive")
+        operation_ids = tuple(step.ir_operation_id for step in self.steps)
+        if len(operation_ids) != len(set(operation_ids)):
+            raise ValueError("trace IR operation IDs must be unique")
 
         previous = self.initial_state
         for expected_index, step in enumerate(self.steps):

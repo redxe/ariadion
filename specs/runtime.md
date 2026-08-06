@@ -18,7 +18,9 @@ An `ExecutionTrace` is scoped by `circuit_id`, which equals `CircuitIR.id`. Each
 `TraceStep` owns an immutable IR `Operation`, exposing its `IrOperationId`, source
 reference, and compiler provenance. Consumers should key a step by the pair
 `(circuit_id, ir_operation_id)` and use its `SourceNodeId` only for persisted
-editor identity.
+editor identity. `IrOperationId` values are unique within a trace. Future control
+flow that executes one semantic IR operation more than once must introduce a
+separate execution-occurrence identity.
 
 `initial_state` represents the state before any operation. `TraceStep.index` is
 zero-based and identifies the corresponding executed operation. A trace with an
@@ -31,12 +33,17 @@ the next step must begin with the preceding step's `after` snapshot.
 `StateSnapshot` currently supports the explicit `state_vector` representation.
 Its amplitudes are exact simulation data, not sampled counts. The representation
 field reserves room for future density-matrix and reduced-state contracts.
+Every amplitude component must be finite; `NaN` and infinities are invalid.
 
 `ExecutionMetadata.mode` labels a complete trace as `exact` or `sampled`.
 `MeasurementEvent` makes exact probabilities and sampled outcomes mutually
 exclusive: an `exact_probabilities` record contains probability data, while a
 `sampled_outcome` record contains one bit per measured target. Exact traces reject
-sampled outcomes by invariant.
+sampled outcomes by invariant. A measurement event can attach only to a `MEASURE`
+operation with the same operation ID, targets, and key. Targets must be unique and
+fit the snapshot width. Exact records have exactly $2^n$ finite, non-negative
+probabilities for $n$ targets, and those probabilities must sum to one within an
+absolute tolerance of $10^{-12}$.
 
 ## Immutability and metadata
 
@@ -52,4 +59,4 @@ without requiring a specific simulator or provider implementation.
 `to_dict()` and canonical `to_json()` output. Consumers must reject unsupported
 future schema versions rather than guessing their meaning. Additive optional fields
 are preferred for compatible evolution; semantic changes require a new schema
-version.
+version. Canonical JSON is strict: it never emits `NaN` or infinity values.
