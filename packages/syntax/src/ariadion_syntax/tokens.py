@@ -32,7 +32,7 @@ class TokenKind(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class Token:
-    """One source token with its original spelling and location."""
+    """One source token; the lexer owns keyword classification and spelling rules."""
 
     kind: TokenKind
     spelling: str

@@ -3,13 +3,18 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from math import isfinite
 from typing import Final, TypeAlias
 
-from ariadion_core import SourceNodeId, SourceRange, canonical_json, require_nonempty_identifier
+from ariadion_core import (
+    SourceNodeId,
+    SourceRange,
+    SyntaxNodeId,
+    canonical_json,
+    require_nonempty_identifier,
+)
 
 
-SYNTAX_AST_SCHEMA_VERSION: Final = 1
+SYNTAX_AST_SCHEMA_VERSION: Final = 2
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _INTEGER_PATTERN = re.compile(r"[0-9]+\Z")
 _ANGLE_NUMBER_PATTERN = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?\Z")
@@ -17,19 +22,26 @@ _ANGLE_NUMBER_PATTERN = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?\Z")
 
 @dataclass(frozen=True, slots=True)
 class SyntaxLocation:
-    """A complete source span paired with a durable frontend node identity."""
+    """A complete source span with snapshot and optional durable identities."""
 
     source_range: SourceRange
-    source_node_id: SourceNodeId
+    syntax_node_id: SyntaxNodeId
+    durable_source_node_id: SourceNodeId | None = None
 
     def __post_init__(self) -> None:
         _validate_source_range(self.source_range, label="syntax location")
-        require_nonempty_identifier(self.source_node_id, label="syntax source node ID")
+        require_nonempty_identifier(self.syntax_node_id, label="syntax node ID")
+        if self.durable_source_node_id is not None:
+            require_nonempty_identifier(
+                self.durable_source_node_id,
+                label="durable source node ID",
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "source_range": self.source_range.to_dict(),
-            "source_node_id": self.source_node_id,
+            "syntax_node_id": self.syntax_node_id,
+            "durable_source_node_id": self.durable_source_node_id,
         }
 
     def to_json(self) -> str:
@@ -101,7 +113,7 @@ class AngleLiteralUnit(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class AngleLiteral:
-    """An author-written finite angle literal such as ``90deg`` or ``0.5turns``."""
+    """An author-written angle literal such as ``90deg`` or ``0.5turns``."""
 
     spelling: str
     unit: AngleLiteralUnit
@@ -115,23 +127,17 @@ class AngleLiteral:
         numeric_text = self.spelling.removesuffix(self.unit.value)
         if not _ANGLE_NUMBER_PATTERN.fullmatch(numeric_text):
             raise ValueError("angle literal spelling must contain a decimal number and unit")
-        if not isfinite(float(numeric_text)):
-            raise ValueError("angle literal value must be finite")
         _validate_location(self.location, label="angle literal")
 
     @property
     def numeric_text(self) -> str:
         return self.spelling.removesuffix(self.unit.value)
 
-    @property
-    def value(self) -> float:
-        return float(self.numeric_text)
-
     def to_dict(self) -> dict[str, object]:
         return {
             "kind": "angle_literal",
             "spelling": self.spelling,
-            "value": self.value,
+            "numeric_text": self.numeric_text,
             "unit": self.unit.value,
             "location": self.location.to_dict(),
         }
@@ -304,9 +310,9 @@ class MeasurementStatement:
         return canonical_json(self.to_dict())
 
 
-ProgramItem: TypeAlias = (
-    QubitDeclaration | GateStatement | RotationStatement | MeasurementStatement
-)
+Declaration: TypeAlias = QubitDeclaration
+Statement: TypeAlias = GateStatement | RotationStatement | MeasurementStatement
+ProgramItem: TypeAlias = Declaration | Statement
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,20 +320,25 @@ class ProgramSyntax:
     """Immutable source AST root for one native Ariadion program."""
 
     name: Identifier
-    items: tuple[ProgramItem, ...]
+    declarations: tuple[Declaration, ...]
+    statements: tuple[Statement, ...]
     location: SyntaxLocation
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, Identifier):
             raise ValueError("program syntax name must be Identifier")
-        if not isinstance(self.items, tuple) or not all(
-            isinstance(
-                item,
-                (QubitDeclaration, GateStatement, RotationStatement, MeasurementStatement),
-            )
-            for item in self.items
+        if not isinstance(self.declarations, tuple) or not all(
+            isinstance(declaration, QubitDeclaration)
+            for declaration in self.declarations
         ):
-            raise ValueError("program syntax items must be AST items in a tuple")
+            raise ValueError("program syntax declarations must be Declaration values in a tuple")
+        if len(self.declarations) != 1:
+            raise ValueError("program syntax requires exactly one qubit declaration")
+        if not isinstance(self.statements, tuple) or not all(
+            isinstance(statement, (GateStatement, RotationStatement, MeasurementStatement))
+            for statement in self.statements
+        ):
+            raise ValueError("program syntax statements must be Statement values in a tuple")
         _validate_location(self.location, label="program syntax")
         _validate_unique_node_ids(self)
 
@@ -336,7 +347,8 @@ class ProgramSyntax:
             "schema_version": SYNTAX_AST_SCHEMA_VERSION,
             "kind": "program",
             "name": self.name.to_dict(),
-            "items": [item.to_dict() for item in self.items],
+            "declarations": [declaration.to_dict() for declaration in self.declarations],
+            "statements": [statement.to_dict() for statement in self.statements],
             "location": self.location.to_dict(),
         }
 
@@ -399,40 +411,50 @@ def _validate_source_range(value: SourceRange, *, label: str) -> None:
 
 
 def _validate_unique_node_ids(program: ProgramSyntax) -> None:
-    seen: set[SourceNodeId] = set()
+    syntax_node_ids: set[SyntaxNodeId] = set()
+    durable_source_node_ids: set[SourceNodeId] = set()
     for location in _iter_locations(program):
-        if location.source_node_id in seen:
-            raise ValueError("syntax source node IDs must be unique within a program")
-        seen.add(location.source_node_id)
+        if location.syntax_node_id in syntax_node_ids:
+            raise ValueError("syntax node IDs must be unique within a program")
+        syntax_node_ids.add(location.syntax_node_id)
+        durable_source_node_id = location.durable_source_node_id
+        if durable_source_node_id is not None:
+            if durable_source_node_id in durable_source_node_ids:
+                raise ValueError(
+                    "durable source node IDs must be unique when provided"
+                )
+            durable_source_node_ids.add(durable_source_node_id)
 
 
 def _iter_locations(program: ProgramSyntax) -> tuple[SyntaxLocation, ...]:
     locations: list[SyntaxLocation] = [program.location, program.name.location]
-    for item in program.items:
-        locations.append(item.location)
-        if isinstance(item, QubitDeclaration):
-            locations.append(item.count.location)
-        elif isinstance(item, GateStatement):
-            for operand in item.operands:
-                locations.extend(
-                    (operand.location, operand.register.location, operand.index.location)
-                )
-        elif isinstance(item, RotationStatement):
-            locations.extend(
-                (
-                    item.target.location,
-                    item.target.register.location,
-                    item.target.index.location,
-                    item.angle.location,
-                )
-            )
-        else:
-            locations.extend(
-                (
-                    item.target.location,
-                    item.target.register.location,
-                    item.target.index.location,
-                    item.result_key.location,
-                )
-            )
+    for declaration in program.declarations:
+        locations.extend((declaration.location, declaration.count.location))
+    for statement in program.statements:
+        locations.extend(_statement_locations(statement))
     return tuple(locations)
+
+
+def _statement_locations(statement: Statement) -> tuple[SyntaxLocation, ...]:
+    if isinstance(statement, GateStatement):
+        locations: list[SyntaxLocation] = [statement.location]
+        for operand in statement.operands:
+            locations.extend(
+                (operand.location, operand.register.location, operand.index.location)
+            )
+        return tuple(locations)
+    if isinstance(statement, RotationStatement):
+        return (
+            statement.location,
+            statement.target.location,
+            statement.target.register.location,
+            statement.target.index.location,
+            statement.angle.location,
+        )
+    return (
+        statement.location,
+        statement.target.location,
+        statement.target.register.location,
+        statement.target.index.location,
+        statement.result_key.location,
+    )

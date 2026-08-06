@@ -5,6 +5,7 @@ from .identity import (
     SnapshotOperationId,
     SourceIdentity,
     SourceNodeId,
+    SyntaxNodeId,
     require_nonempty_identifier,
 )
 from .source import SourceRange, SourceRef, canonical_json
@@ -16,6 +17,7 @@ __all__ = [
     "SnapshotOperationId",
     "SourceIdentity",
     "SourceNodeId",
+    "SyntaxNodeId",
     "SourceRange",
     "SourceRef",
     "canonical_json",

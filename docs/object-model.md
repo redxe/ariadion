@@ -119,22 +119,28 @@ one when the name carries a domain invariant or prevents an ambiguous boundary.
 
 ## Identity across layers
 
-Layers link through durable identifiers, never Python object identity. The current
-identity chain is scoped by `ProgramId` and can be viewed as:
+Layers link through stable identifiers, never Python object identity. Native source
+syntax uses a required snapshot identity and optional durable editor identity; the
+current compiled/execution chain can be viewed as:
 
 ```text
-SourceNodeId (optional durable editor identity)
-    -> SnapshotOperationId (one compiled source snapshot)
+Native source AST:
+    SyntaxNodeId (one parsed source snapshot)
+    SourceNodeId (optional durable editor identity)
+
+Compiled and execution artifacts:
+    SnapshotOperationId (one compiled source snapshot)
     -> IrOperationId (one semantic operation)
     -> trace step index (one execution occurrence today)
     -> TraceStepInspection
     -> TraceStepViewModel
 ```
 
-`SourceNodeId` must survive source editing when supplied by an editor. Snapshot
-operation IDs are deterministic only inside a compiled snapshot. IR operation IDs
-distinguish lowered or generated semantic operations. Trace steps preserve an
-ordered occurrence of an IR operation during one execution.
+`SyntaxNodeId` is required for a parsed source snapshot but does not promise to
+survive edits. `SourceNodeId` must survive source editing when supplied by an
+editor. Snapshot operation IDs are deterministic only inside a compiled snapshot.
+IR operation IDs distinguish lowered or generated semantic operations. Trace steps
+preserve an ordered occurrence of an IR operation during one execution.
 
 A future `OperationLink` value object may centralize these relationships for
 source navigation, persistent breakpoints, compiler provenance, remote result
@@ -144,6 +150,7 @@ reconciliation, tutorial checkpoints, and Studio synchronization:
 @dataclass(frozen=True, slots=True)
 class OperationLink:
     program_id: ProgramId
+    syntax_node_id: SyntaxNodeId | None
     source_node_id: SourceNodeId | None
     snapshot_operation_id: SnapshotOperationId | None
     ir_operation_id: IrOperationId

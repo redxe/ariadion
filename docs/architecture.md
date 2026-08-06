@@ -40,9 +40,10 @@ does not simulate or optimize.
 ### `ariadion-syntax`
 
 Immutable token and source-AST contracts for native `.ari` programs. It preserves
-written identifiers, qubit references, angle suffixes, source ranges, and durable
-node IDs without parsing, resolving names, calculating canonical values, or
-depending on compiled IR. See [the native syntax specification](../specs/syntax.md).
+written identifiers, qubit references, angle suffixes, complete source ranges, and
+snapshot syntax-node IDs with optional durable editor IDs. It does not parse,
+resolve names, calculate canonical values, or depend on compiled IR. See [the
+native syntax specification](../specs/syntax.md).
 
 ### `ariadion-core`
 

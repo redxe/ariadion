@@ -5,6 +5,8 @@ from typing import NewType, TypeAlias
 
 ProgramId = NewType("ProgramId", str)
 SnapshotOperationId = NewType("SnapshotOperationId", str)
+# Snapshot-scoped identity assigned to a native source AST node by a parser.
+SyntaxNodeId = NewType("SyntaxNodeId", str)
 SourceNodeId = NewType("SourceNodeId", str)
 IrOperationId = NewType("IrOperationId", str)
 
