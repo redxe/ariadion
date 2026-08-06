@@ -29,6 +29,7 @@ def render_trace_step(
         f"Operation: {operation.opcode.value} {_render_operation_qubits(view)}",
         f"IR operation ID: {view.ir_operation_id}",
     ]
+    lines.extend(_render_angle(view))
     lines.extend(_render_source_and_provenance(view))
     lines.extend(
         [
@@ -60,6 +61,33 @@ def _render_operation_qubits(view: TraceStepViewModel) -> str:
     if view.operation.key is not None:
         parts.append(f"key={view.operation.key!r}")
     return "; ".join(parts)
+
+
+def _render_angle(view: TraceStepViewModel) -> list[str]:
+    operation = view.operation
+    if operation.angle_radians is None:
+        return []
+    normalized = _format_angle_value(operation.angle_radians) + " rad"
+    metadata = operation.angle_metadata
+    if metadata is None:
+        return [f"Angle: normalized {normalized}"]
+    source = _format_source_angle(metadata.source_value, metadata.source_unit)
+    return [f"Angle: {source} (normalized: {normalized})"]
+
+
+def _format_source_angle(value: float, unit: str) -> str:
+    formatted_value = _format_angle_value(value)
+    if unit == "degrees":
+        return formatted_value + "°"
+    if unit == "radians":
+        return formatted_value + " rad"
+    if unit == "turns":
+        return formatted_value + " turns"
+    return f"{formatted_value} {unit}"
+
+
+def _format_angle_value(value: float) -> str:
+    return f"{value:.12g}"
 
 
 def _render_source_and_provenance(view: TraceStepViewModel) -> list[str]:

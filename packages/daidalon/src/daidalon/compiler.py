@@ -13,8 +13,8 @@ from ariadion_core import (
     SourceRef,
     require_nonempty_identifier,
 )
-from ariadion_ir import CircuitIR, OpCode, Operation
-from ariadion_language import Program, SourceOperation
+from ariadion_ir import AngleMetadata, CircuitIR, OpCode, Operation
+from ariadion_language import Angle, Program, SourceOperation
 
 
 class DiagnosticSeverity(str, Enum):
@@ -71,9 +71,14 @@ _OPCODE_MAP = {
     "x": OpCode.X,
     "h": OpCode.H,
     "z": OpCode.Z,
+    "rx": OpCode.RX,
+    "ry": OpCode.RY,
+    "rz": OpCode.RZ,
     "cx": OpCode.CX,
     "measure": OpCode.MEASURE,
 }
+
+_ROTATION_NAMES = frozenset({"rx", "ry", "rz"})
 
 
 def compile_program(program: Program) -> CircuitIR:
@@ -133,11 +138,33 @@ def _validate(program: Program) -> list[Diagnostic]:
                     f"unsupported operation {operation.name!r}",
                 )
             )
+        elif operation.name in _ROTATION_NAMES and not isinstance(
+            operation.angle,
+            Angle,
+        ):
+            diagnostics.append(
+                _operation_diagnostic(
+                    program,
+                    index,
+                    operation,
+                    "A105",
+                    f"{operation.name.upper()} expects an angle. "
+                    "Use rad(2) or deg(2).",
+                )
+            )
     return diagnostics
 
 
 def _lower(program: Program, operation: SourceOperation) -> Operation:
     source = _source_ref(program, operation)
+    angle_radians = None
+    angle_metadata = None
+    if operation.name in _ROTATION_NAMES:
+        angle = operation.angle
+        if not isinstance(angle, Angle):  # pragma: no cover - validated before lowering
+            raise RuntimeError("rotation lowering requires an explicit Angle")
+        angle_radians = angle.radians
+        angle_metadata = AngleMetadata(angle.source_value, angle.source_unit.value)
     return Operation(
         opcode=_OPCODE_MAP[operation.name],
         targets=operation.targets,
@@ -145,6 +172,8 @@ def _lower(program: Program, operation: SourceOperation) -> Operation:
         controls=operation.controls,
         key=operation.key,
         source=source,
+        angle_radians=angle_radians,
+        angle_metadata=angle_metadata,
     )
 
 

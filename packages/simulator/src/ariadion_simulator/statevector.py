@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isclose, sqrt
+from math import cos, isclose, sin, sqrt
 from typing import Final, Generic, Protocol, TypeVar, overload
 
 from ariadion_ir import CircuitIR, IrOperationId, OpCode, Operation
@@ -177,6 +177,12 @@ def apply_operation(state: list[complex], operation: Operation) -> list[complex]
         _apply_single(state, operation.targets[0], scale, scale, scale, -scale)
     elif operation.opcode is OpCode.Z:
         _apply_single(state, operation.targets[0], 1 + 0j, 0j, 0j, -1 + 0j)
+    elif operation.opcode is OpCode.RX:
+        _apply_rotation(state, operation.targets[0], operation.angle_radians, axis="x")
+    elif operation.opcode is OpCode.RY:
+        _apply_rotation(state, operation.targets[0], operation.angle_radians, axis="y")
+    elif operation.opcode is OpCode.RZ:
+        _apply_rotation(state, operation.targets[0], operation.angle_radians, axis="z")
     elif operation.opcode is OpCode.CX:
         _apply_cx(state, operation.controls[0], operation.targets[0])
     elif operation.opcode is OpCode.MEASURE:
@@ -224,6 +230,35 @@ def _measurement_probabilities(
                 outcome |= 1 << outcome_bit
         probabilities[outcome] += abs(amplitude) ** 2
     return tuple(probabilities)
+
+
+def _apply_rotation(
+    state: list[complex],
+    target: int,
+    angle_radians: float | None,
+    *,
+    axis: str,
+) -> None:
+    if angle_radians is None:  # pragma: no cover - protected by IR validation
+        raise ValueError("rotation operations require angle_radians")
+    half_angle = angle_radians / 2
+    cosine = cos(half_angle)
+    sine = sin(half_angle)
+    if axis == "x":
+        _apply_single(state, target, cosine, -1j * sine, -1j * sine, cosine)
+    elif axis == "y":
+        _apply_single(state, target, cosine, -sine, sine, cosine)
+    elif axis == "z":
+        _apply_single(
+            state,
+            target,
+            cosine - 1j * sine,
+            0j,
+            0j,
+            cosine + 1j * sine,
+        )
+    else:  # pragma: no cover - only fixed axes are passed above
+        raise ValueError(f"unsupported rotation axis: {axis}")
 
 
 def _apply_single(

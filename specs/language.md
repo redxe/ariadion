@@ -13,8 +13,28 @@ program.cx(0, 1)
 - `x(target)`
 - `h(target)`
 - `z(target)`
+- `rx(target, angle)`
+- `ry(target, angle)`
+- `rz(target, angle)`
 - `cx(control, target)`
 - `measure(target, key=None)`
+
+## Angles and rotations
+
+Rotations require an explicit `Angle`, created with `deg()`, `rad()`, or
+`turns()`:
+
+```python
+program.rx(0, deg(190))
+program.ry(1, rad(2))
+program.rz(2, turns(0.25))
+```
+
+An `Angle` preserves its `source_value` and `source_unit` while carrying a
+canonical `radians` value. The builder retains a bare numeric rotation argument
+long enough for Daidalon to produce a source-linked diagnostic; it never guesses
+whether `program.rx(0, 2)` means degrees, radians, or turns. The diagnostic asks
+the author to write `rad(2)` or `deg(2)` explicitly.
 
 ## Source identity and locations
 

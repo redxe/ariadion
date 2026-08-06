@@ -15,6 +15,7 @@ It is immutable: `next()`, `previous()`, and `go_to()` return a new session.
 
 - the source operation, IR operation ID, source reference, and compiler
   provenance;
+- the canonical rotation angle and preserved source-unit metadata when applicable;
 - the circuit and zero-based active operation index for synchronized rendering;
 - before and after Theonoe state reports;
 - basis-state probability and relative-phase changes;

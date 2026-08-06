@@ -21,6 +21,18 @@ class CliDebuggerTests(unittest.TestCase):
         )
         return temporary_directory, path
 
+    def _rotation_program_file(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        temporary_directory = tempfile.TemporaryDirectory[str]()
+        path = Path(temporary_directory.name) / "rotation_program.py"
+        path.write_text(
+            "from ariadion import Program, deg\n"
+            "\n"
+            "program = Program(1, name='rotation')\n"
+            "program.rx(0, deg(190))\n",
+            encoding="utf-8",
+        )
+        return temporary_directory, path
+
     def test_run_step_renders_the_requested_one_based_trace_step(self) -> None:
         temporary_directory, path = self._program_file()
         self.addCleanup(temporary_directory.cleanup)
@@ -70,6 +82,25 @@ class CliDebuggerTests(unittest.TestCase):
         )
         self.assertGreaterEqual(rendered_debug.count("Step 1/2"), 2)
         self.assertGreaterEqual(rendered_debug.count("Step 2/2"), 2)
+
+    def test_run_step_displays_source_and_normalized_rotation_angles(self) -> None:
+        temporary_directory, path = self._rotation_program_file()
+        self.addCleanup(temporary_directory.cleanup)
+        output: list[str] = []
+
+        exit_code = main(
+            ["run", str(path), "--step", "1"],
+            output=output.append,
+        )
+
+        self.assertEqual(exit_code, 0)
+        rendered = "\n".join(output)
+        self.assertIn("Operation: RX targets q0", rendered)
+        self.assertIn(
+            "Angle: 190° (normalized: 3.31612557879 rad)",
+            rendered,
+        )
+        self.assertIn("═[RX]═", rendered)
 
     def test_run_step_rejects_zero_and_files_without_programs(self) -> None:
         temporary_directory, path = self._program_file()

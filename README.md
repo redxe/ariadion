@@ -39,6 +39,21 @@ ariadion debug examples/bell.py
 The interactive debugger accepts `n` (next), `p` (previous), `g N` (go to a
 one-based step), and `q` (quit).
 
+Rotations use explicit source-unit angles and retain canonical radians through
+execution and trace rendering:
+
+```python
+from ariadion import Program, deg, rad, turns
+
+program = Program(3, name="rotations")
+program.rx(0, deg(190))
+program.ry(1, rad(2))
+program.rz(2, turns(0.25))
+```
+
+Bare numeric rotation values are rejected by the compiler so Ariadion never has
+to guess their unit.
+
 Or use the modules directly:
 
 ```python

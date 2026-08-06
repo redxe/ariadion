@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from ariadion_core import IrOperationId, ProgramId, SourceRef, canonical_json
-from ariadion_ir import OpCode, OperationProvenance
+from ariadion_ir import AngleMetadata, OpCode, OperationProvenance
 from theonoe import (
     DEFAULT_EPSILON,
     SEPARABILITY_ABS_TOLERANCE,
@@ -32,9 +32,11 @@ class TraceStepInspection:
     controls: tuple[int, ...]
     key: str | None
     source: SourceRef | None
-    provenance: OperationProvenance | None
     measurement: MeasurementEvent | None
     transition: StateTransition
+    provenance: OperationProvenance | None = None
+    angle_radians: float | None = None
+    angle_metadata: AngleMetadata | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -45,6 +47,12 @@ class TraceStepInspection:
                 "targets": list(self.targets),
                 "controls": list(self.controls),
                 "key": self.key,
+                "angle_radians": self.angle_radians,
+                "angle_metadata": (
+                    self.angle_metadata.to_dict()
+                    if self.angle_metadata is not None
+                    else None
+                ),
                 "source": self.source.to_dict() if self.source is not None else None,
                 "provenance": (
                     self.provenance.to_dict() if self.provenance is not None else None
@@ -132,6 +140,8 @@ def inspect_execution_trace(
                 key=step.operation.key,
                 source=step.source,
                 provenance=step.provenance,
+                angle_radians=step.operation.angle_radians,
+                angle_metadata=step.operation.angle_metadata,
                 measurement=step.measurement,
                 transition=inspect_state_transition(
                     step.before.amplitudes,

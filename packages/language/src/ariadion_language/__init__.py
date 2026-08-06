@@ -6,9 +6,12 @@ from ariadion_core import (
     SourceRange,
 )
 
+from .angle import Angle, AngleUnit, deg, rad, turns
 from .program import Program, SourceOperation
 
 __all__ = [
+    "Angle",
+    "AngleUnit",
     "OperationId",
     "Program",
     "ProgramId",
@@ -16,4 +19,7 @@ __all__ = [
     "SourceNodeId",
     "SourceOperation",
     "SourceRange",
+    "deg",
+    "rad",
+    "turns",
 ]

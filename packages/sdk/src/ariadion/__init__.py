@@ -1,4 +1,14 @@
-from ariadion_language import Program, ProgramId, SourceNodeId, SourceRange
+from ariadion_language import (
+    Angle,
+    AngleUnit,
+    Program,
+    ProgramId,
+    SourceNodeId,
+    SourceRange,
+    deg,
+    rad,
+    turns,
+)
 from ariadion_runtime import (
     ExecutionTrace,
     INSPECTION_SCHEMA_VERSION,
@@ -27,6 +37,8 @@ def run(
 
 
 __all__ = [
+    "Angle",
+    "AngleUnit",
     "ExecutionTrace",
     "INSPECTION_SCHEMA_VERSION",
     "MeasurementBitOrder",
@@ -43,5 +55,8 @@ __all__ = [
     "TraceCaptureOptions",
     "TraceStepViewModel",
     "inspect_execution_trace",
+    "deg",
+    "rad",
     "run",
+    "turns",
 ]

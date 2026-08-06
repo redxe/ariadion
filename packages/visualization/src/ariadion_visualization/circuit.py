@@ -3,6 +3,11 @@ from __future__ import annotations
 from ariadion_ir import CircuitIR, OpCode
 
 
+_SINGLE_QUBIT_OPCODES = frozenset(
+    {OpCode.X, OpCode.H, OpCode.Z, OpCode.RX, OpCode.RY, OpCode.RZ}
+)
+
+
 def render_circuit(
     circuit: CircuitIR,
     *,
@@ -20,22 +25,40 @@ def render_circuit(
     lanes = [[f"q{qubit}: "] for qubit in range(circuit.qubit_count)]
 
     for index, operation in enumerate(circuit.operations):
-        cells = ["─────" for _ in range(circuit.qubit_count)]
         is_active = index == active_operation_index
         horizontal = "═" if is_active else "─"
-        if operation.opcode in {OpCode.X, OpCode.H, OpCode.Z}:
-            cells[operation.targets[0]] = f"{horizontal}[{operation.opcode.value}]{horizontal}"
+        cell_width = _operation_cell_width(operation.opcode)
+        cells = [horizontal * cell_width for _ in range(circuit.qubit_count)]
+        if operation.opcode in _SINGLE_QUBIT_OPCODES:
+            cells[operation.targets[0]] = _symbol_cell(
+                f"[{operation.opcode.value}]",
+                cell_width,
+                horizontal,
+            )
         elif operation.opcode is OpCode.MEASURE:
-            cells[operation.targets[0]] = f"{horizontal}[M]{horizontal}"
+            cells[operation.targets[0]] = _symbol_cell("[M]", cell_width, horizontal)
         elif operation.opcode is OpCode.CX:
             control = operation.controls[0]
             target = operation.targets[0]
-            cells[control] = f"{horizontal}{horizontal}●{horizontal}{horizontal}"
-            cells[target] = f"{horizontal}[X]{horizontal}"
+            cells[control] = _symbol_cell("●", cell_width, horizontal)
+            cells[target] = _symbol_cell("[X]", cell_width, horizontal)
             low, high = sorted((control, target))
             for qubit in range(low + 1, high):
-                cells[qubit] = f"{horizontal}{horizontal}│{horizontal}{horizontal}"
+                cells[qubit] = _symbol_cell("│", cell_width, horizontal)
         for qubit, cell in enumerate(cells):
             lanes[qubit].append(cell)
 
     return "\n".join("".join(parts) for parts in lanes)
+
+
+def _operation_cell_width(opcode: OpCode) -> int:
+    if opcode in _SINGLE_QUBIT_OPCODES:
+        return max(5, len(opcode.value) + 4)
+    return 5
+
+
+def _symbol_cell(symbol: str, width: int, horizontal: str) -> str:
+    padding = width - len(symbol)
+    left = padding // 2
+    right = padding - left
+    return horizontal * left + symbol + horizontal * right

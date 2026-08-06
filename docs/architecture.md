@@ -21,7 +21,9 @@ The compiler produces immutable semantic IR. Runtime backends consume IR. Debugg
 
 ### `ariadion-language`
 
-A small Python-first builder. It records user intent and source-level operations. It deliberately does not simulate or optimize.
+A small Python-first builder. It records user intent and source-level operations,
+including explicit degree, radian, and turn-based rotation angles. It deliberately
+does not simulate or optimize.
 
 ### `ariadion-core`
 
@@ -30,8 +32,9 @@ contracts. It has no dependency on language syntax, IR, compilers, or backends.
 
 ### `ariadion-ir`
 
-Stable dataclasses for qubits, operations, circuits, and IR provenance. Provider
-adapters should target this layer rather than source objects.
+Stable dataclasses for qubits, operations, circuits, IR provenance, and canonical
+rotation radians with optional source-display metadata. Provider adapters should
+target this layer rather than source objects.
 
 ### `daidalon`
 
@@ -39,7 +42,10 @@ Validates source programs and lowers them to semantic IR. Future compiler passes
 
 ### `ariadion-simulator`
 
-A dependency-free state-vector reference backend. It favors clarity and correctness over performance. When explicitly enabled, it retains raw immutable amplitude transitions, but it does not depend on runtime trace contracts or interpret those states.
+A dependency-free state-vector reference backend. It favors clarity and correctness
+over performance, including standard `RX`, `RY`, and `RZ` matrices over canonical
+radians. When explicitly enabled, it retains raw immutable amplitude transitions,
+but it does not depend on runtime trace contracts or interpret those states.
 
 ### `theonoe`
 

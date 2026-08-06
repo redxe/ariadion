@@ -12,6 +12,8 @@ from ariadion_core import (
     require_nonempty_identifier,
 )
 
+from .angle import Angle
+
 
 _PROGRAM_COUNTER = count()
 
@@ -22,6 +24,7 @@ class SourceOperation:
     targets: tuple[int, ...]
     controls: tuple[int, ...] = ()
     key: str | None = None
+    angle: Angle | int | float | None = None
     id: SnapshotOperationId = field(kw_only=True)
     source_node_id: SourceNodeId | None = None
     source_range: SourceRange | None = None
@@ -115,6 +118,60 @@ class Program:
             source_range=source_range or _capture_callsite(),
         )
 
+    def rx(
+        self,
+        target: int,
+        angle: Angle | int | float,
+        *,
+        source_node_id: SourceNodeId | None = None,
+        source_id: SourceNodeId | None = None,
+        source_range: SourceRange | None = None,
+    ) -> Program:
+        return self._append(
+            "rx",
+            (target,),
+            angle=angle,
+            source_node_id=source_node_id,
+            source_id=source_id,
+            source_range=source_range or _capture_callsite(),
+        )
+
+    def ry(
+        self,
+        target: int,
+        angle: Angle | int | float,
+        *,
+        source_node_id: SourceNodeId | None = None,
+        source_id: SourceNodeId | None = None,
+        source_range: SourceRange | None = None,
+    ) -> Program:
+        return self._append(
+            "ry",
+            (target,),
+            angle=angle,
+            source_node_id=source_node_id,
+            source_id=source_id,
+            source_range=source_range or _capture_callsite(),
+        )
+
+    def rz(
+        self,
+        target: int,
+        angle: Angle | int | float,
+        *,
+        source_node_id: SourceNodeId | None = None,
+        source_id: SourceNodeId | None = None,
+        source_range: SourceRange | None = None,
+    ) -> Program:
+        return self._append(
+            "rz",
+            (target,),
+            angle=angle,
+            source_node_id=source_node_id,
+            source_id=source_id,
+            source_range=source_range or _capture_callsite(),
+        )
+
     def cx(
         self,
         control: int,
@@ -158,6 +215,7 @@ class Program:
         *,
         controls: tuple[int, ...] = (),
         key: str | None = None,
+        angle: Angle | int | float | None = None,
         source_node_id: SourceNodeId | None = None,
         source_id: SourceNodeId | None = None,
         source_range: SourceRange | None = None,
@@ -168,6 +226,7 @@ class Program:
             targets,
             controls,
             key,
+            angle,
             id=SnapshotOperationId(f"{self.id}:operation:{len(self._operations)}"),
             source_node_id=durable_node_id,
             source_range=source_range,

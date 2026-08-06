@@ -9,9 +9,10 @@ from ariadion_core import (
     SourceRef,
 )
 
-from .model import CircuitIR, OpCode, Operation, OperationProvenance
+from .model import AngleMetadata, CircuitIR, OpCode, Operation, OperationProvenance
 
 __all__ = [
+    "AngleMetadata",
     "CircuitIR",
     "IrOperationId",
     "OpCode",
