@@ -3,7 +3,7 @@ name = "ariadion-cli"
 version = "0.1.0"
 description = "Command line interface for Ariadion"
 requires-python = ">=3.11"
-dependencies = ["ariadion"]
+dependencies = ["ariadion", "ariadion-visualization"]
 
 [project.scripts]
 ariadion = "ariadion_cli:main"

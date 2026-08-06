@@ -10,6 +10,19 @@
 - ASCII circuit visualization
 - CLI and examples
 
+## Next sequence
+
+1. structured trace view models and CLI step navigation;
+2. typed angles with `RX`, `RY`, and `RZ` rotation gates;
+3. explanations for arbitrary rotations;
+4. an interactive tutorial and Studio trace panel.
+
+Typed angles will be implemented with the first rotation gates rather than as an
+isolated numeric feature. The language will accept explicit `deg()`, `rad()`, and
+possibly `turns()` values; compiler and IR will preserve source-unit display
+metadata while normalizing canonical radians for simulation. Bare numeric rotation
+arguments should produce a diagnostic instead of guessing a unit.
+
 ## Milestone 1 — language semantics
 
 - named quantum registers

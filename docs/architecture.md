@@ -59,7 +59,15 @@ Coordinates compilation, execution, inspection, and rendering. It is the first v
 It also owns the versioned execution-trace contract consumed by debugger and Studio
 clients. It adapts simulator raw capture into that contract and projects it through
 Theonoe only when a consumer explicitly requests inspection, so capture and
-interpretation remain independently selectable.
+interpretation remain independently selectable. Its frontend-neutral
+`TraceDebuggerSession` and `TraceStepViewModel` compose IR, trace, and inspection
+data without managing terminal interaction.
+
+### `ariadion-cli`
+
+Loads a Python file's top-level program builder and provides trace rendering plus
+interactive step navigation. Its terminal renderer consumes runtime view models;
+Studio can reuse those models without scraping CLI text.
 
 ## Near-term vertical slice
 

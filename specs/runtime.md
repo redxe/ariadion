@@ -57,7 +57,8 @@ identity and source reference to Theonoe's before/after state reports, basis-sta
 changes, reduced density matrices, purity, and entanglement transition. This is a
 read-only derived artifact: it never mutates the trace or simulator state. See
 [Theonoe trace inspection](inspection.md) for the inspection data and separability
-semantics.
+semantics. See the [trace debugger contract](debugger.md) for the structured
+frontend projection and CLI navigation rules.
 
 ## Immutability and metadata
 

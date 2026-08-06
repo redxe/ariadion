@@ -4,8 +4,11 @@ from ariadion_runtime import (
     INSPECTION_SCHEMA_VERSION,
     RunResult,
     StateSnapshot,
+    TraceDebuggerError,
+    TraceDebuggerSession,
     TraceInspection,
     TraceCaptureOptions,
+    TraceStepViewModel,
     inspect_execution_trace,
     run_program,
 )
@@ -30,8 +33,11 @@ __all__ = [
     "SourceNodeId",
     "SourceRange",
     "StateSnapshot",
+    "TraceDebuggerError",
+    "TraceDebuggerSession",
     "TraceInspection",
     "TraceCaptureOptions",
+    "TraceStepViewModel",
     "inspect_execution_trace",
     "run",
 ]

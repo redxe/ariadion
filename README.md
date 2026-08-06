@@ -27,6 +27,18 @@ python tools/run_example.py examples/bell.py
 python tools/test.py
 ```
 
+Trace navigation is available through the CLI for files exposing a top-level
+`program` builder:
+
+```bash
+ariadion run examples/bell.py --trace
+ariadion run examples/bell.py --step 1
+ariadion debug examples/bell.py
+```
+
+The interactive debugger accepts `n` (next), `p` (previous), `g N` (go to a
+one-based step), and `q` (quit).
+
 Or use the modules directly:
 
 ```python
@@ -84,4 +96,4 @@ tests/               vertical-slice tests
 - **Provider-neutral:** semantic IR sits between source code and simulator or hardware backends.
 - **Teach through execution:** tutorials and diagnostics should use the same runtime as real projects.
 
-See [`docs/architecture.md`](docs/architecture.md), [`specs/language.md`](specs/language.md), [`specs/runtime.md`](specs/runtime.md), and [`specs/inspection.md`](specs/inspection.md).
+See [`docs/architecture.md`](docs/architecture.md), [`specs/language.md`](specs/language.md), [`specs/runtime.md`](specs/runtime.md), [`specs/inspection.md`](specs/inspection.md), and [`specs/debugger.md`](specs/debugger.md).

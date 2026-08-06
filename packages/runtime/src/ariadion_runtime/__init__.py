@@ -1,4 +1,5 @@
 from .runtime import RunResult, run_program
+from .debugger import TraceDebuggerError, TraceDebuggerSession, TraceStepViewModel
 from .inspection import (
 	INSPECTION_SCHEMA_VERSION,
 	TraceInspection,
@@ -33,8 +34,11 @@ __all__ = [
 	"TraceStepInspection",
 	"StateRepresentation",
 	"StateSnapshot",
+	"TraceDebuggerError",
+	"TraceDebuggerSession",
 	"TraceCaptureOptions",
 	"TraceStep",
+	"TraceStepViewModel",
 	"inspect_execution_trace",
 	"run_program",
 ]
