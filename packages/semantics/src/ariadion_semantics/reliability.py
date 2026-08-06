@@ -14,15 +14,31 @@ from math import isfinite
 from ariadion_core import canonical_json, require_nonempty_identifier
 
 
-class SimulationFidelity(str, Enum):
-    """The intended modeling depth for a future simulation request."""
+class EvolutionModel(str, Enum):
+    """The numerical evolution representation requested of a future simulator."""
 
-    IDEAL = "ideal"
-    STOCHASTIC = "stochastic"
-    DECOHERENCE = "decoherence"
+    STATE_VECTOR = "state_vector"
+    DENSITY_MATRIX = "density_matrix"
+    STOCHASTIC_TRAJECTORIES = "stochastic_trajectories"
+    STABILIZER = "stabilizer"
+
+
+class NoiseModelOrigin(str, Enum):
+    """Where a future request expects its noise assumptions to originate."""
+
+    NONE = "none"
+    DECLARED = "declared"
     DEVICE_PROFILE = "device_profile"
-    CORRELATED = "correlated"
-    PROTECTED = "protected"
+
+
+class NoiseFeature(str, Enum):
+    """An independently selected feature of a future noise model."""
+
+    GATE_CHANNELS = "gate_channels"
+    IDLE_DECOHERENCE = "idle_decoherence"
+    READOUT_ERRORS = "readout_errors"
+    LEAKAGE = "leakage"
+    CORRELATIONS = "correlations"
 
 
 class ProtectionStrategy(str, Enum):
@@ -284,6 +300,20 @@ class ProtectionPlan:
             or self.code_distance < 1
         ):
             raise ValueError("protection plan code_distance must be a positive integer")
+        if self.strategy is ProtectionStrategy.BARE and (
+            self.code_name is not None or self.code_distance is not None
+        ):
+            raise ValueError("bare protection plans cannot specify a code name or code distance")
+        if self.strategy is ProtectionStrategy.MITIGATED and self.code_distance is not None:
+            raise ValueError("mitigated protection plans cannot specify a code distance")
+        if (
+            self.strategy
+            in {ProtectionStrategy.ERROR_DETECTED, ProtectionStrategy.FAULT_TOLERANT}
+            and self.code_name is None
+        ):
+            raise ValueError(
+                "error-detected and fault-tolerant protection plans require a code name"
+            )
         object.__setattr__(
             self,
             "estimated_failure_probability",
@@ -310,6 +340,54 @@ class ProtectionPlan:
             "estimated_failure_probability": self.estimated_failure_probability,
             "physical_qubit_count": self.physical_qubit_count,
             "assumptions": list(self.assumptions),
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class SimulationRequest:
+    """Composable intent for a future simulator without selecting an executor.
+
+    Numerical evolution, noise provenance, noise features, and a protected
+    realization are independent dimensions. This request does not run simulation
+    or imply that an engine for every combination exists.
+    """
+
+    evolution_model: EvolutionModel
+    noise_model_origin: NoiseModelOrigin
+    noise_features: tuple[NoiseFeature, ...] = ()
+    protection_plan: ProtectionPlan | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.evolution_model, EvolutionModel):
+            raise ValueError("simulation request evolution_model must be an EvolutionModel")
+        if not isinstance(self.noise_model_origin, NoiseModelOrigin):
+            raise ValueError(
+                "simulation request noise_model_origin must be a NoiseModelOrigin"
+            )
+        _require_tuple(self.noise_features, label="simulation request noise_features")
+        if not all(isinstance(feature, NoiseFeature) for feature in self.noise_features):
+            raise ValueError("simulation request noise_features must contain NoiseFeature values")
+        if len(self.noise_features) != len(set(self.noise_features)):
+            raise ValueError("simulation request noise_features must be unique")
+        if self.noise_model_origin is NoiseModelOrigin.NONE and self.noise_features:
+            raise ValueError("noise model origin NONE cannot select noise features")
+        if self.protection_plan is not None and not isinstance(
+            self.protection_plan,
+            ProtectionPlan,
+        ):
+            raise ValueError("simulation request protection_plan must be ProtectionPlan")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "evolution_model": self.evolution_model.value,
+            "noise_model_origin": self.noise_model_origin.value,
+            "noise_features": [feature.value for feature in self.noise_features],
+            "protection_plan": (
+                self.protection_plan.to_dict() if self.protection_plan is not None else None
+            ),
         }
 
     def to_json(self) -> str:
@@ -363,13 +441,16 @@ def _require_optional_type(value: object, expected_type: type[object], *, label:
 
 __all__ = [
     "CorrelationModel",
+    "EvolutionModel",
     "GateNoise",
     "IdleNoise",
     "LeakageModel",
+    "NoiseFeature",
+    "NoiseModelOrigin",
     "NoiseProfile",
     "ProtectionPlan",
     "ProtectionStrategy",
     "ReadoutNoise",
     "ReliabilityGoal",
-    "SimulationFidelity",
+    "SimulationRequest",
 ]

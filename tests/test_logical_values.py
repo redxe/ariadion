@@ -13,6 +13,7 @@ from ariadion_core import (
     IrOperationId,
     LogicalOperationId,
     LogicalQubitId,
+    ProgramId,
     SnapshotOperationId,
     SourceNodeId,
     SyntaxNodeId,
@@ -20,8 +21,9 @@ from ariadion_core import (
 from ariadion_semantics import (
     Basis,
     FunctionEffect,
-    LogicalOpCode,
-    LogicalOperation,
+    LogicalGateOpCode,
+    LogicalGateOperation,
+    LogicalProgram,
     LogicalQubitValue,
     Observation,
     ObservationReason,
@@ -104,9 +106,9 @@ class LogicalValueTests(unittest.TestCase):
     def test_logical_operations_reference_logical_ids_not_integer_targets(self) -> None:
         control_id = LogicalQubitId("logical:control")
         target_id = LogicalQubitId("logical:target")
-        operation = LogicalOperation(
+        operation = LogicalGateOperation(
             LogicalOperationId("logical-operation:cx"),
-            LogicalOpCode.CX,
+            LogicalGateOpCode.CX,
             (target_id,),
             controls=(control_id,),
         )
@@ -117,22 +119,23 @@ class LogicalValueTests(unittest.TestCase):
         self.assertFalse(any(isinstance(value, int) for value in operation.controls))
         self.assertEqual(json.loads(operation.to_json()), operation.to_dict())
 
-        single_qubit_operation = LogicalOperation(
+        single_qubit_operation = LogicalGateOperation(
             LogicalOperationId("logical-operation:h"),
-            LogicalOpCode.H,
+            LogicalGateOpCode.H,
             (target_id,),
         )
         self.assertEqual(single_qubit_operation.controls, ())
 
         with self.assertRaisesRegex(ValueError, "logical operation targets"):
-            LogicalOperation(
+            LogicalGateOperation(
                 LogicalOperationId("logical-operation:invalid"),
-                LogicalOpCode.H,
+                LogicalGateOpCode.H,
                 (0,),  # type: ignore[arg-type]
             )
 
     def test_observation_preserves_basis_and_reason(self) -> None:
         observation = Observation(
+            LogicalOperationId("logical-operation:observe-left"),
             LogicalQubitId("logical:left"),
             Basis("z"),
             ObservationReason.CLASSICAL_RETURN,
@@ -143,6 +146,7 @@ class LogicalValueTests(unittest.TestCase):
         self.assertEqual(
             observation.to_dict(),
             {
+                "id": "logical-operation:observe-left",
                 "qubit_id": "logical:left",
                 "basis": {"name": "z"},
                 "reason": "classical_return",
@@ -150,6 +154,93 @@ class LogicalValueTests(unittest.TestCase):
             },
         )
         self.assertEqual(json.loads(observation.to_json()), observation.to_dict())
+
+    def test_logical_program_keeps_ordered_instructions_without_allocation_fields(self) -> None:
+        left = LogicalQubitValue(LogicalQubitId("logical:left"), display_name="left")
+        right = LogicalQubitValue(LogicalQubitId("logical:right"), display_name="right")
+        h = LogicalGateOperation(
+            LogicalOperationId("logical-operation:h"),
+            LogicalGateOpCode.H,
+            (left.id,),
+        )
+        cx = LogicalGateOperation(
+            LogicalOperationId("logical-operation:cx"),
+            LogicalGateOpCode.CX,
+            (right.id,),
+            controls=(left.id,),
+        )
+        observe = Observation(
+            LogicalOperationId("logical-operation:observe-left"),
+            left.id,
+            Basis("z"),
+            ObservationReason.PROGRAM_OUTPUT,
+        )
+
+        program = LogicalProgram(
+            ProgramId("logical:bell"),
+            "bell",
+            (left, right),
+            (h, cx, observe),
+        )
+
+        self.assertEqual(program.instructions, (h, cx, observe))
+        self.assertEqual(
+            [instruction["id"] for instruction in program.to_dict()["instructions"]],
+            ["logical-operation:h", "logical-operation:cx", "logical-operation:observe-left"],
+        )
+        self.assertFalse(hasattr(program, "qubit_count"))
+        self.assertFalse(hasattr(program, "allocated_qubit_count"))
+
+    def test_logical_program_rejects_invalid_references_and_instruction_shapes(self) -> None:
+        left = LogicalQubitValue(LogicalQubitId("logical:left"))
+        unknown = LogicalQubitId("logical:unknown")
+
+        with self.assertRaisesRegex(ValueError, "undeclared logical qubit"):
+            LogicalProgram(
+                ProgramId("logical:unknown-reference"),
+                "unknown-reference",
+                (left,),
+                (
+                    LogicalGateOperation(
+                        LogicalOperationId("logical-operation:h"),
+                        LogicalGateOpCode.H,
+                        (unknown,),
+                    ),
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "distinct control and target"):
+            LogicalProgram(
+                ProgramId("logical:invalid-cx"),
+                "invalid-cx",
+                (left,),
+                (
+                    LogicalGateOperation(
+                        LogicalOperationId("logical-operation:cx"),
+                        LogicalGateOpCode.CX,
+                        (left.id,),
+                        controls=(left.id,),
+                    ),
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "instruction IDs must be unique"):
+            LogicalProgram(
+                ProgramId("logical:duplicate-instruction"),
+                "duplicate-instruction",
+                (left,),
+                (
+                    LogicalGateOperation(
+                        LogicalOperationId("logical-operation:duplicate"),
+                        LogicalGateOpCode.H,
+                        (left.id,),
+                    ),
+                    Observation(
+                        LogicalOperationId("logical-operation:duplicate"),
+                        left.id,
+                        Basis("z"),
+                        ObservationReason.PROGRAM_OUTPUT,
+                    ),
+                ),
+            )
 
     def test_logical_values_and_effects_have_deterministic_contracts(self) -> None:
         value = LogicalQubitValue(

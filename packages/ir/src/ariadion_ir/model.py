@@ -7,10 +7,12 @@ from typing import Final
 
 from ariadion_core import (
     IrOperationId,
+    LogicalOperationId,
     ProgramId,
     SnapshotOperationId,
     SourceIdentity,
     SourceNodeId,
+    SourceOperationId,
     SourceRange,
     SourceRef,
     canonical_json,
@@ -46,15 +48,26 @@ class OperationProvenance:
 
     parent_source_ids: tuple[SourceIdentity, ...] = ()
     transformation: str | None = None
+    parent_logical_operation_ids: tuple[LogicalOperationId, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.parent_source_ids, tuple):
+            raise ValueError("provenance parent_source_ids must be a tuple")
         for source_id in self.parent_source_ids:
             require_nonempty_identifier(source_id, label="provenance parent source ID")
+        if not isinstance(self.parent_logical_operation_ids, tuple):
+            raise ValueError("provenance parent_logical_operation_ids must be a tuple")
+        for logical_operation_id in self.parent_logical_operation_ids:
+            require_nonempty_identifier(
+                logical_operation_id,
+                label="provenance parent logical operation ID",
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "parent_source_ids": list(self.parent_source_ids),
             "transformation": self.transformation,
+            "parent_logical_operation_ids": list(self.parent_logical_operation_ids),
         }
 
     def to_json(self) -> str:
@@ -156,6 +169,10 @@ class Operation:
     @property
     def snapshot_operation_id(self) -> SnapshotOperationId | None:
         return self.source.snapshot_operation_id if self.source is not None else None
+
+    @property
+    def source_operation_id(self) -> SourceOperationId | None:
+        return self.source.source_operation_id if self.source is not None else None
 
     @property
     def source_node_id(self) -> SourceNodeId | None:

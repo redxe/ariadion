@@ -130,7 +130,7 @@ def _render_source_and_provenance(view: TraceStepViewModel) -> list[str]:
         if view.source.column is not None:
             location = f"{location}:{view.source.column}"
         lines.append(f"Source: {location}")
-        lines.append(f"Source operation ID: {view.source.snapshot_operation_id}")
+        lines.append(f"Source operation ID: {view.source.source_operation_id}")
         if view.source.source_node_id is not None:
             lines.append(f"Source node ID: {view.source.source_node_id}")
 

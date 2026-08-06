@@ -7,6 +7,7 @@ from .identity import (
     SnapshotOperationId,
     SourceIdentity,
     SourceNodeId,
+    SourceOperationId,
     SyntaxNodeId,
     require_nonempty_identifier,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "SnapshotOperationId",
     "SourceIdentity",
     "SourceNodeId",
+    "SourceOperationId",
     "SyntaxNodeId",
     "SourceRange",
     "SourceRef",

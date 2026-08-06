@@ -10,7 +10,7 @@ Ariadion is both a programming model and an interactive environment. The initial
 ariadion-core
     ├── ariadion-language ─┐
     ├── ariadion-ir ───────┼── Daidalon ──> ariadion-runtime
-    ├── ariadion-semantics │   (future compiler input)
+    ├── ariadion-semantics │
     └── ariadion-syntax ───┘   (future frontend input)
 
 ariadion-runtime ──> simulator / Theonoe / visualization
@@ -18,14 +18,19 @@ ariadion-runtime ──> simulator / Theonoe / visualization
 Ariadion SDK ───────────────────────────────────────> language and runtime
 ```
 
-The compiler produces immutable semantic IR. Runtime backends consume IR. Debuggers and visualizations observe execution artifacts but do not change source semantics. `ariadion-core` owns neutral identity and source-location contracts so the language model and IR remain siblings. Daidalon preserves source references in lowered operations and diagnostics while assigning distinct IR-operation IDs for generated compiler output.
+The compiler produces immutable semantic IR. Runtime backends consume IR. Debuggers
+and visualizations observe execution artifacts but do not change source semantics.
+`ariadion-core` owns neutral identity and source-location contracts so the language
+model and IR remain siblings. Daidalon consumes the hand-built `LogicalProgram`
+contract today, preserves source references in lowered operations and diagnostics,
+and assigns distinct IR-operation IDs for generated compiler output.
 
 `ariadion-syntax` currently depends only on `ariadion-core`. A future resolved and
 typed source-semantic model will bridge Python-compatible extension syntax into
 Daidalon without making the syntax package depend on IR, runtime, simulators, or
-Theonoe. `ariadion-semantics` also currently depends only on `ariadion-core`; its
-reliability contracts are future compiler inputs, not a new Daidalon dependency in
-this design-only slice.
+Theonoe. `ariadion-semantics` depends only on `ariadion-core`; Daidalon depends on
+it to lower logical values and instructions, while its reliability contracts remain
+planning-only inputs for later compiler stages.
 
 ## Frontend and managed allocation
 
@@ -59,12 +64,15 @@ through transformation. A standalone parser for `program name` and `qubits data[
 is not on the current path.
 
 The allocated `CircuitIR` continues to use dense integer targets and an explicit
-`qubit_count`; those are compiler results. Daidalon will expose a logical-to-IR
-allocation artifact for diagnostics, resource reporting, trace navigation, and
-later hardware mapping. Before allocation, a schedule makes duration and idle-time
-assumptions explicit; reliability analysis compares its estimate to a requested
-failure budget; a future protection-and-allocation plan then selects a feasible
-bare or protected realization.
+`qubit_count`; those are compiler results. Daidalon now exposes an `AllocationPlan`
+beside the resulting IR. The first policy, `dense-no-reuse-v1`, maps declaration
+order to slots 0, 1, 2, 3 and sets both peak live and allocated counts to the
+number of declared logical values. It deliberately does not infer lifetimes or
+reuse slots. Later allocation artifacts can support diagnostics, resource reporting,
+trace navigation, and hardware mapping. Before a future optimized allocation, a
+schedule makes duration and idle-time assumptions explicit; reliability analysis
+compares its estimate to a requested failure budget; a protection-and-allocation
+plan can then select a feasible bare or protected realization.
 
 At the public boundary, `Qubit` is already a logical value and `Bit` is a distinct
 classical observation result. `LogicalQubitId`, `LogicalQubitValue`, and
@@ -76,11 +84,11 @@ facts, not source-value representations.
 
 ## Reliability planning and protection boundaries
 
-`ariadion-semantics` now contains immutable contracts for a `ReliabilityGoal`, a
-layered `NoiseProfile`, `SimulationFidelity`, and a descriptive `ProtectionPlan`.
-They freeze future compiler inputs and outputs only: they do not simulate channels,
-ingest backend calibration, select a code distance, lay out a surface code, or map
-a source `Qubit` to physical qubits.
+`ariadion-semantics` contains immutable contracts for a `ReliabilityGoal`, a
+layered `NoiseProfile`, a composable `SimulationRequest`, and a descriptive
+`ProtectionPlan`. They freeze future compiler inputs and outputs only: they do not
+simulate channels, ingest backend calibration, select a code distance, lay out a
+surface code, or map a source `Qubit` to physical qubits.
 
 The future planner's decision process is intentionally model-dependent:
 
@@ -101,26 +109,26 @@ threshold constant. `ProtectedRealization`, `EncodedQubitPlan`, or
 `FaultTolerantRealization` are appropriate names for a future encoded realization;
 `LogicalQubit` is not, because it collides with the source-semantic term.
 
-## Simulation fidelity is staged
+## Simulation requests are composable
 
-Simulation fidelity is a planning contract, not a promise that one numerical engine
-can evaluate every model. The stages are:
+A future `SimulationRequest` is a planning contract, not a promise that one
+numerical engine can evaluate every combination. It keeps independent dimensions
+separate rather than compressing them into one fidelity label:
 
-| Level | Intended model |
-| --- | --- |
-| `IDEAL` | Pure state-vector evolution. |
-| `STOCHASTIC` | Pauli, depolarizing, reset, and readout errors. |
-| `DECOHERENCE` | T1/T2 relaxation, gate durations, and idle durations. |
-| `DEVICE_PROFILE` | Backend-derived per-qubit and per-operation noise. |
-| `CORRELATED` | Crosstalk, leakage, coherent error, drift, and correlated events. |
-| `PROTECTED` | Encoded QEC rounds, syndrome extraction, decoding, and logical-failure estimation. |
+| Dimension | Contract | Examples |
+| --- | --- | --- |
+| Numerical evolution | `EvolutionModel` | State vector, density matrix, stochastic trajectories, stabilizer methods. |
+| Noise provenance | `NoiseModelOrigin` | No noise model, declared assumptions, device-profile-derived assumptions. |
+| Noise capabilities | `NoiseFeature` tuple | Gate channels, idle decoherence, readout errors, leakage, correlations. |
+| Protected realization | optional `ProtectionPlan` | Bare, mitigated, error-detected, or fault-tolerant planning result. |
 
-Likely implementations differ by level: state vectors for ideal pure states,
-density matrices for exact small mixed-state circuits, stochastic trajectories for
-larger noisy circuits, stabilizer-specialized simulation for compatible QEC
-circuits, and dedicated encoded-QEC simulation for syndrome rounds and decoders.
-Only the dependency-free ideal state-vector reference simulator exists today; none
-of the noisy or protected engines are implemented by these contracts.
+Likely implementations differ by requested dimensions: state vectors for ideal pure
+states, density matrices for exact small mixed-state circuits, stochastic
+trajectories for larger noisy circuits, stabilizer-specialized simulation for
+compatible QEC circuits, and dedicated encoded-QEC simulation for syndrome rounds
+and decoders. Only the dependency-free ideal state-vector reference simulator
+exists today; neither noisy nor protected execution is implemented by these
+contracts.
 
 ## Object model
 
@@ -143,12 +151,14 @@ prototype will operate on `Qubit` values instead of requiring `Program(width)`.
 
 ### `ariadion-semantics`
 
-Immutable pre-allocation contracts for logical quantum values, logical operations,
-bases, observations, function effects, reliability goals, layered noise profiles,
-simulation-fidelity labels, and protection-plan descriptions. It depends only on
-`ariadion-core` and contains no allocated integer targets, circuit width, backend
-policy, noise engine, QEC planner, or lowering. Daidalon will consume these
-contracts for lifetime analysis, scheduling, reliability analysis, and allocation.
+Immutable pre-allocation contracts for logical quantum values, `LogicalProgram`,
+gate-shaped `QuantumInstruction` values, observations, function effects,
+reliability goals, layered noise profiles, composable simulation requests, and
+protection-plan descriptions. It depends only on `ariadion-core` and contains no
+allocated integer targets, circuit width, backend policy, noise engine, QEC planner,
+or lowering. Daidalon consumes the logical program contracts for the current
+declaration-order allocation slice; lifetime analysis, scheduling, reliability
+analysis, and optimized allocation remain future work.
 
 ### `ariadion-syntax`
 
@@ -175,10 +185,12 @@ allocation.
 
 ### `daidalon`
 
-Validates resolved quantum programs, performs lifetime and resource analysis,
-creates allocation plans, and lowers them to semantic IR. Future compiler passes
-will include canonicalization, decomposition, routing, scheduling, bare-execution
-estimation, protection planning, resource estimation, and backend-specific lowering.
+Validates resolved quantum programs, creates an explicit deterministic allocation
+plan, and lowers current logical gate and Z-basis observation instructions to
+semantic IR. The current `dense-no-reuse-v1` policy is intentionally not lifetime
+analysis. Future compiler passes will include canonicalization, decomposition,
+routing, scheduling, bare-execution estimation, protection planning, resource
+estimation, and backend-specific lowering.
 
 ### `ariadion-simulator`
 
@@ -221,7 +233,7 @@ Studio can reuse those models without scraping CLI text.
 ## Near-term vertical slice
 
 ```text
-write -> validate -> lower -> render -> simulate -> inspect
+write or hand-build -> validate -> allocate -> lower -> simulate -> trace -> inspect
 ```
 
 A change is considered vertically complete only when it can be exercised from the SDK and covered by a runtime-level test.
@@ -231,5 +243,8 @@ A change is considered vertically complete only when it can be exercised from th
 The evidence, assumptions, and limits for future noise modeling live in
 [noise-modeling research](research/noise-modeling.md). Threshold, leakage, empirical
 QEC, and resource-planning evidence lives in [fault-tolerance and resource-planning
-research](research/fault-tolerance-and-resource-planning.md). Both records cite
-primary papers or official technical documentation consulted on 2026-08-06.
+research](research/fault-tolerance-and-resource-planning.md). Future instruction
+forms and adaptive physical realization evidence live in
+[adaptive-physical-realization research](research/adaptive-physical-realization.md).
+All records cite primary papers or official technical documentation consulted on
+2026-08-06.

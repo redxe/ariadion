@@ -51,15 +51,15 @@ trace-preserving condition $\sum_k A_k^\dagger A_k = I$ and state evolution
 $\rho \mapsto \sum_k A_k \rho A_k^\dagger$.
 
 **Ariadion decision:** channel assumptions are modeled separately from the ideal
-state-vector reference simulator. Planned fidelity levels distinguish ideal pure
-state evolution from stochastic, decoherence, device-profile, correlated, and
-protected models. A future exact small noisy-circuit path can use density matrices;
-larger models may need trajectories, stabilizer-specialized methods, or dedicated
-encoded-QEC simulation instead.
+state-vector reference simulator. A composable `SimulationRequest` separates the
+numerical `EvolutionModel`, `NoiseModelOrigin`, selected `NoiseFeature` values, and
+an optional `ProtectionPlan`. A future exact small noisy-circuit path can use
+density matrices; larger models may need trajectories, stabilizer-specialized
+methods, or dedicated encoded-QEC simulation instead.
 
 **Limitations:** the contracts do not imply that every noise profile has a Kraus
 form that is practical to evaluate, that density matrices scale to large circuits,
-or that one simulator engine can cover all fidelity levels.
+or that one simulator engine can cover every requested dimension combination.
 
 ## Contract implications
 
@@ -71,8 +71,8 @@ or that one simulator engine can cover all fidelity levels.
   semantic boundary.
 - `LeakageModel` and `CorrelationModel` are explicit optional components rather
   than silently folded into independent computational-basis channels.
-- `SimulationFidelity` is a requested modeling depth, not evidence that the
-  requested engine is available.
+- `SimulationRequest` records independent modeling dimensions; it is not evidence
+  that the requested engine or protected realization is available.
 
 ## References
 

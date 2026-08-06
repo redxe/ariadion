@@ -13,23 +13,22 @@
 - typed angles with `RX`, `RY`, and `RZ` rotation gates
 - human-readable, structured explanations for arbitrary rotations
 - immutable syntax identities, source literals, and schema-versioned frontend contracts
+- hand-built `LogicalProgram` allocation through `CircuitIR`, trace, and inspection
+- declaration-order `dense-no-reuse-v1` allocation artifacts and logical-to-IR provenance
 
 ## Next sequence
 
 The next implementation work must preserve this order:
 
-1. Finalize `Qubit`, `Bit`, effect, and observation contracts.
-2. Implement public `Qubit()` and internal logical identities.
-3. Compile a hand-built logical Bell program into allocated IR.
-4. Add `AllocationPlan` and logical-to-IR provenance.
-5. Prototype `@quantum` with Python AST.
-6. Infer terminal observations at `Qubit`-to-`Bit` boundaries.
-7. Define noise-channel contracts.
-8. Add a small density-matrix noisy simulator.
-9. Add scheduling and T1/T2 idle decoherence.
-10. Add reliability goals and bare-execution estimates.
-11. Add pluggable protection-planning interfaces.
-12. Add encoded-QEC simulation and decoder integration later.
+1. Prototype `@quantum` capture with Python AST.
+2. Infer terminal observations at `Qubit`-to-`Bit` boundaries.
+3. Add lifetime analysis and slot reuse beyond `dense-no-reuse-v1`.
+4. Define noise-channel contracts and bind them to simulation requests.
+5. Add a small density-matrix noisy simulator.
+6. Add scheduling and T1/T2 idle decoherence.
+7. Add reliability goals and bare-execution estimates.
+8. Add pluggable protection-planning interfaces.
+9. Add encoded-QEC simulation and decoder integration later.
 
 ## Milestone 1 — value, effect, and observation contracts
 
@@ -44,9 +43,9 @@ The next implementation work must preserve this order:
 
 - hand-build a logical Bell program using semantic identities
 - lower it through Daidalon into allocated `CircuitIR`
-- infer lifetimes and peak allocation
 - add `AllocationPlan` and logical-to-IR provenance
-- expose logical names in source-to-trace links and resource reports
+- run the resulting IR through simulation, trace capture, and inspection
+- use deterministic declaration-order allocation with no reuse or lifetime analysis
 
 ## Milestone 3 — decorated Python frontend and inferred observations
 

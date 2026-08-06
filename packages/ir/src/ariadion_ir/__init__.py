@@ -5,6 +5,7 @@ from ariadion_core import (
     SnapshotOperationId,
     SourceIdentity,
     SourceNodeId,
+    SourceOperationId,
     SourceRange,
     SourceRef,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "SnapshotOperationId",
     "SourceIdentity",
     "SourceNodeId",
+    "SourceOperationId",
     "SourceRange",
     "SourceRef",
 ]

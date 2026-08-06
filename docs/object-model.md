@@ -22,6 +22,7 @@ owner's data but must not silently repair, reorder, or reinterpret it.
 | Aggregate root | Mutability | Owns | Does not own |
 | --- | --- | --- | --- |
 | `Program` | Mutable while building | Source declarations, source operations, and source construction order | Compiled semantics or execution results |
+| `LogicalProgram` | Immutable | Declared logical values, ordered quantum instructions, and logical-reference invariants | Slots, circuit width, backend policy, or execution results |
 | `CircuitIR` | Immutable | Qubit layout, compiled operation order, IR provenance, and semantic operation data | UI formatting, trace continuity, or backend policy |
 | `ExecutionTrace` | Immutable | Execution metadata, initial snapshot, contiguous operation occurrences, and state history | State interpretation or navigation |
 | `TraceDebuggerSession` | Immutable | Current trace-step selection and frontend-ready projection | Terminal input, source mutation, or simulation |
@@ -91,8 +92,8 @@ validate their own invariants.
 
 Small immutable types make ownership explicit and prevent unqualified primitives
 from leaking across package boundaries. Existing examples include `Angle`,
-`AngleMetadata`, `ProgramId`, `SourceNodeId`, `SnapshotOperationId`,
-`IrOperationId`, `SourceRange`, and `SourceRef`.
+`AngleMetadata`, `ProgramId`, `SourceOperationId`, `SourceNodeId`,
+`SnapshotOperationId`, `IrOperationId`, `SourceRange`, and `SourceRef`.
 
 Existing and future language work should use value objects where a bare integer or
 string would lose meaning, including:
@@ -144,7 +145,9 @@ representation. `AllocatedQubitSlot` is documentation terminology for an allocat
 backend target; it is not a source construction parameter. `ProtectedRealization`
 may later be described by an `EncodedQubitPlan` or `FaultTolerantRealization`, but
 the name `LogicalQubit` must not be used for that QEC object because it collides
-with source-semantic language.
+with source-semantic language. The current hand-built logical slice uses one dense
+slot per declared value under the explicitly limited `dense-no-reuse-v1` policy; it
+does not infer lifetimes or reuse a slot.
 
 `ReliabilityGoal`, `NoiseProfile`, and `ProtectionPlan` are immutable planning
 contracts owned by the semantic layer. They describe requested bounds, assumptions,
@@ -153,37 +156,36 @@ physical slot, or implement a decoder.
 
 ## Identity across layers
 
-Layers link through stable identifiers, never Python object identity. Python
-extension syntax uses a required snapshot identity and optional durable editor
-identity; the planned semantic and allocated chain can be viewed as:
+Layers link through stable identifiers, never Python object identity. A source
+construct has a neutral `SourceOperationId`; it is not assumed to be a
+width-builder operation. The current width-based builder additionally retains its
+`SnapshotOperationId` as compatibility data, and an editor may provide a durable
+`SourceNodeId`. The semantic, allocated, and execution chain is:
 
 ```text
-Python AST + Ariadion extension nodes:
-    SyntaxNodeId (one parsed source snapshot)
-    SourceNodeId (optional durable editor identity)
+source construct identity
+    SourceOperationId
+    -> LogicalOperationId (one gate or observation instruction)
+    -> one or more IrOperationId values (lowered or generated operations)
+    -> trace occurrence
 
-Resolved quantum semantics:
-    LogicalQubitId / LogicalQubitValue (one logical quantum value)
-
-Protection and allocation planning:
-    ProtectedRealization assumptions (zero or more physical qubits per source value)
-    -> AllocatedQubitSlot / integer target (one selected backend representation)
-
-Allocated and execution artifacts:
-    SnapshotOperationId (current width-based builder compatibility)
-    -> IrOperationId (one semantic operation)
-    -> trace step index (one execution occurrence today)
-    -> TraceStepInspection
-    -> TraceStepViewModel
+logical value identity
+    LogicalQubitId
+    -> AllocationEntry / AllocatedQubitSlot
+    -> integer IR target
 ```
 
-`SyntaxNodeId` is required for a parsed source snapshot but does not promise to
-survive edits. `SourceNodeId` must survive source editing when supplied by an
-editor. `LogicalQubitId` distinguishes a source-level value from any allocated
-target. Snapshot operation IDs are deterministic only inside the current width-based
-builder snapshot; `LogicalOperationId` preserves source-operation identity before
-allocation. IR operation IDs distinguish lowered or generated semantic operations.
-Trace steps preserve an ordered occurrence of an IR operation during one execution.
+`SourceRef.source_operation_id` is the canonical source-operation field.
+`SourceRef.snapshot_operation_id` is an optional compatibility property for a
+reference derived from the legacy builder; semantic programs must not fabricate a
+snapshot identity. `SyntaxNodeId` is required for one parsed source snapshot but
+does not promise to survive edits. `SourceNodeId` must survive source editing when
+supplied by an editor. `LogicalQubitId` distinguishes a source-level value from an
+allocated target. `LogicalOperationId` identifies every `QuantumInstruction`,
+including an `Observation`; `OperationProvenance.parent_logical_operation_ids`
+preserves its link to allocated IR. IR IDs distinguish lowered or generated output
+operations. Trace steps preserve an ordered occurrence of an IR operation during
+one execution.
 
 A future `OperationLink` value object may centralize these relationships for
 source navigation, persistent breakpoints, compiler provenance, remote result
@@ -195,7 +197,8 @@ class OperationLink:
     program_id: ProgramId
     syntax_node_id: SyntaxNodeId | None
     source_node_id: SourceNodeId | None
-    snapshot_operation_id: SnapshotOperationId | None
+    source_operation_id: SourceOperationId | None
+    logical_operation_id: LogicalOperationId | None
     ir_operation_id: IrOperationId
     execution_occurrence_id: ExecutionOccurrenceId | None
 ```
@@ -316,7 +319,7 @@ inform allocation before IR targets are assigned.
 Python AST + extension node
     -> resolved logical-value node
     -> typed/owned semantic node
-    -> logical operation schedule
+    -> LogicalProgram / logical instruction schedule
     -> reliability analysis
     -> protection and allocation plan
     -> IR operation
@@ -332,7 +335,7 @@ measurement models timing-sensitive algorithm behavior; a terminal typed classic
 return may create an implicit observation. `Qubit` truth testing must not silently
 observe a value, and a Python alias must never create another quantum state.
 
-The schema-v3 named-register source AST remains compatibility data. The next
-language milestones are logical quantum values and ownership contracts, resource
-inference, a valid-Python `@quantum` prototype, and only then justified extension
-syntax or editor support.
+The schema-v3 named-register source AST remains compatibility data. The current
+logical slice is hand-built data rather than AST capture. Next language milestones
+are ownership contracts, resource inference, a valid-Python `@quantum` prototype,
+and only then justified extension syntax or editor support.

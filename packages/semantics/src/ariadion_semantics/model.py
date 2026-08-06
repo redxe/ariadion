@@ -2,14 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import TypeAlias
 
 from ariadion_core import (
     LogicalOperationId,
     LogicalQubitId,
+    ProgramId,
     SourceRef,
     canonical_json,
     require_nonempty_identifier,
 )
+
+
+SemanticSourceRef: TypeAlias = SourceRef
 
 
 class FunctionEffect(str, Enum):
@@ -20,8 +25,8 @@ class FunctionEffect(str, Enum):
     HYBRID = "hybrid"
 
 
-class LogicalOpCode(str, Enum):
-    """Pre-allocation operations over logical quantum identities."""
+class LogicalGateOpCode(str, Enum):
+    """The currently modeled logical gate instruction forms."""
 
     X = "x"
     H = "h"
@@ -64,7 +69,7 @@ class LogicalQubitValue:
 
     id: LogicalQubitId
     display_name: str | None = None
-    source: SourceRef | None = None
+    source: SemanticSourceRef | None = None
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.id, label="logical qubit ID")
@@ -85,19 +90,24 @@ class LogicalQubitValue:
 
 
 @dataclass(frozen=True, slots=True)
-class LogicalOperation:
-    """A pre-allocation operation targeting logical identities rather than slots."""
+class LogicalGateOperation:
+    """One gate-shaped instruction over logical identities before allocation.
+
+    This is intentionally one member of ``QuantumInstruction``, not the root of
+    Ariadion's future physical language. Evolution, unitary, analog-interaction,
+    and control-native instruction forms can join the union later.
+    """
 
     id: LogicalOperationId
-    opcode: LogicalOpCode
+    opcode: LogicalGateOpCode
     targets: tuple[LogicalQubitId, ...]
     controls: tuple[LogicalQubitId, ...] = ()
-    source: SourceRef | None = None
+    source: SemanticSourceRef | None = None
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.id, label="logical operation ID")
-        if not isinstance(self.opcode, LogicalOpCode):
-            raise ValueError("logical operation opcode must be LogicalOpCode")
+        if not isinstance(self.opcode, LogicalGateOpCode):
+            raise ValueError("logical gate operation opcode must be LogicalGateOpCode")
         _validate_logical_qubit_ids(self.targets, label="logical operation targets")
         _validate_logical_qubit_ids(
             self.controls,
@@ -122,14 +132,16 @@ class LogicalOperation:
 
 @dataclass(frozen=True, slots=True)
 class Observation:
-    """A semantic observation boundary that Daidalon will later lower to MEASURE."""
+    """A semantic observation boundary with its own instruction identity."""
 
+    id: LogicalOperationId
     qubit_id: LogicalQubitId
     basis: Basis
     reason: ObservationReason
-    source: SourceRef | None = None
+    source: SemanticSourceRef | None = None
 
     def __post_init__(self) -> None:
+        require_nonempty_identifier(self.id, label="observation logical operation ID")
         require_nonempty_identifier(self.qubit_id, label="observed logical qubit ID")
         if not isinstance(self.basis, Basis):
             raise ValueError("observation basis must be Basis")
@@ -140,10 +152,77 @@ class Observation:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "id": self.id,
             "qubit_id": self.qubit_id,
             "basis": self.basis.to_dict(),
             "reason": self.reason.value,
             "source": self.source.to_dict() if self.source is not None else None,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+QuantumInstruction: TypeAlias = LogicalGateOperation | Observation
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalProgram:
+    """An ordered pre-allocation quantum program over logical value identities."""
+
+    id: ProgramId
+    name: str
+    qubits: tuple[LogicalQubitValue, ...]
+    instructions: tuple[QuantumInstruction, ...]
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.id, label="logical program ID")
+        require_nonempty_identifier(self.name, label="logical program name")
+        _require_tuple(self.qubits, label="logical program qubits")
+        _require_tuple(self.instructions, label="logical program instructions")
+        if not all(isinstance(qubit, LogicalQubitValue) for qubit in self.qubits):
+            raise ValueError("logical program qubits must contain LogicalQubitValue values")
+        if not all(
+            isinstance(instruction, (LogicalGateOperation, Observation))
+            for instruction in self.instructions
+        ):
+            raise ValueError("logical program instructions must contain QuantumInstruction values")
+
+        qubit_ids = tuple(qubit.id for qubit in self.qubits)
+        _require_unique_identifiers(qubit_ids, label="logical program qubit IDs")
+        known_qubit_ids = set(qubit_ids)
+        for qubit in self.qubits:
+            _validate_source_program(qubit.source, self.id, label="logical qubit")
+
+        instruction_ids = tuple(instruction.id for instruction in self.instructions)
+        _require_unique_identifiers(
+            instruction_ids,
+            label="logical program instruction IDs",
+        )
+        for instruction in self.instructions:
+            _validate_source_program(
+                instruction.source,
+                self.id,
+                label="logical instruction",
+            )
+            if isinstance(instruction, LogicalGateOperation):
+                _validate_logical_gate_arity(instruction)
+                referenced_qubits = instruction.controls + instruction.targets
+            else:
+                referenced_qubits = (instruction.qubit_id,)
+            for qubit_id in referenced_qubits:
+                if qubit_id not in known_qubit_ids:
+                    raise ValueError(
+                        "logical program instruction references an undeclared logical qubit: "
+                        f"{qubit_id}"
+                    )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "qubits": [qubit.to_dict() for qubit in self.qubits],
+            "instructions": [instruction.to_dict() for instruction in self.instructions],
         }
 
     def to_json(self) -> str:
@@ -161,3 +240,36 @@ def _validate_logical_qubit_ids(
         raise ValueError(f"{label} must be {expected}")
     for qubit_id in value:
         require_nonempty_identifier(qubit_id, label=label)
+
+
+def _require_tuple(value: object, *, label: str) -> None:
+    if not isinstance(value, tuple):
+        raise ValueError(f"{label} must be a tuple")
+
+
+def _require_unique_identifiers(value: tuple[str, ...], *, label: str) -> None:
+    if len(value) != len(set(value)):
+        raise ValueError(f"{label} must be unique")
+
+
+def _validate_source_program(
+    source: SemanticSourceRef | None,
+    program_id: ProgramId,
+    *,
+    label: str,
+) -> None:
+    if source is not None and source.program_id != program_id:
+        raise ValueError(f"{label} source program ID must match logical program ID")
+
+
+def _validate_logical_gate_arity(operation: LogicalGateOperation) -> None:
+    if operation.opcode is LogicalGateOpCode.CX:
+        if len(operation.controls) != 1 or len(operation.targets) != 1:
+            raise ValueError("logical CX requires exactly one control and one target")
+        if operation.controls[0] == operation.targets[0]:
+            raise ValueError("logical CX requires distinct control and target qubits")
+        return
+    if len(operation.controls) != 0 or len(operation.targets) != 1:
+        raise ValueError(
+            f"logical {operation.opcode.value.upper()} requires exactly one target and no controls"
+        )

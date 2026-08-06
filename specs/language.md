@@ -27,8 +27,9 @@ and the eventual mapping to simulator or hardware qubits.
 This document defines the target public language; the current runtime still
 executes the width-based Python builder described below. `Program(width)` and its
 integer-target operations are compatibility and migration mechanisms, not the
-future source-language model. They remain supported until logical-value lowering
-proves an equivalent vertical slice.
+future source-language model. A hand-built `LogicalProgram` now proves the first
+logical-value lowering slice, but AST capture and public quantum-function lowering
+remain future work.
 
 ## Python-compatible quantum functions
 
@@ -133,18 +134,20 @@ Bit -> bool
 In particular, `if q:` for a `Qubit` is rejected initially. Ariadion must not
 silently insert a mid-circuit measurement through ordinary Python truth testing.
 
-The resolved semantic `Observation` records the `LogicalQubitId`, selected `Basis`,
-an `ObservationReason`, and an optional source reference. Reasons distinguish an
-explicit `observe(...)` call from an inferred classical return, classical
-assignment, branch-condition, or program-output boundary. This lets compiler
-artifacts and execution traces explain an observation without pretending it was a
-user-written low-level `MEASURE` operation.
+The resolved semantic `Observation` records its own `LogicalOperationId`, the
+`LogicalQubitId`, selected `Basis`, an `ObservationReason`, and an optional source
+reference. Reasons distinguish an explicit `observe(...)` call from an inferred
+classical return, classical assignment, branch-condition, or program-output
+boundary. This lets compiler artifacts and execution traces explain an observation
+without pretending it was a user-written low-level `MEASURE` operation.
 
 ## Logical quantum values and managed resources
 
 Each `Qubit()` creation receives a logical identity. Resolved quantum operations
-target those identities, and lifetime analysis determines the peak simultaneously
-live set. Daidalon then allocates dense integer targets for `CircuitIR`.
+target those identities, and a future lifetime analysis will determine the peak
+simultaneously live set. The current hand-built logical slice instead allocates one
+dense slot per declared logical value in declaration order, then lowers to
+`CircuitIR`.
 
 ```text
 logical values and lifetimes
@@ -154,13 +157,15 @@ logical values and lifetimes
     -> allocated CircuitIR.qubit_count and integer targets
 ```
 
-The first allocation policy may use one slot per distinct live logical value. Later
-policies can reuse a slot after a value's lifetime ends, introduce ancillas, insert
-resets, route for hardware topology, select a `ProtectedRealization`, and report
-provider-specific requirements. The compiler must expose facts such as logical
-values created, peak live values, allocated simulator qubits, hardware qubits, and
-planning assumptions. A future annotation such as `@quantum(max_qubits=12)` is a
-resource contract or hint, not manual allocation.
+The current `dense-no-reuse-v1` allocation policy uses one slot per declared
+logical value, reports equal peak-live and allocated counts, and never reuses a
+slot. Later policies can reuse a slot after a value's lifetime ends, introduce
+ancillas, insert resets, route for hardware topology, select a
+`ProtectedRealization`, and report provider-specific requirements. The compiler
+must expose facts such as logical values created, peak live values, allocated
+simulator qubits, hardware qubits, and planning assumptions. A future annotation
+such as `@quantum(max_qubits=12)` is a resource contract or hint, not manual
+allocation.
 
 ## Current compatibility surface
 
@@ -286,9 +291,8 @@ resolution, type, ownership, and resource failures use source-linked diagnostics
 with exact original locations. `SyntaxDiagnostic` remains independent from
 semantic compiler diagnostics.
 
-The following identity behavior describes the current width-based builder
-compatibility surface. A logical-value frontend will preserve the same
-snapshot-versus-durable distinction without requiring a `Program(width)` source API.
+The following identity behavior describes the width-based builder compatibility
+surface and the neutral source-identity contract used by logical programs.
 
 Each `Program` has a `ProgramId` that scopes source and IR artifacts. The default
 is a process-local snapshot ID of the form `snapshot:<creation-index>:<name>`, so
@@ -300,6 +304,11 @@ Every builder-created operation receives a `SnapshotOperationId` of the form
 `<program-id>:operation:<insertion-index>`. It is deterministic within one program
 snapshot and suitable for a compiled trace, but it is not durable across edits:
 inserting an earlier operation renumbers later snapshot IDs.
+
+Every source construct can instead have a neutral `SourceOperationId`. `SourceRef`
+stores that canonical identity. For a builder-derived reference,
+`snapshot_operation_id` remains an optional compatibility property; a semantic
+program never invents a builder snapshot ID.
 
 A frontend that needs durable breakpoints, lesson checkpoints, or selected syntax
 nodes must supply a `SourceNodeId` through `source_node_id`. Ariadion preserves it
@@ -314,17 +323,18 @@ explicit `SourceRange` to any operation method, including one-based `column`,
 always present for builder-created operations.
 
 Compiler diagnostics retain their code and operation index, then expose
-`program_id`, `snapshot_operation_id`, `source_node_id`, and `source_range` through
-their immutable source reference. The compatibility `source_id` property resolves
-to the durable node ID when present and otherwise to the snapshot operation ID.
-Program-wide diagnostics may have no source reference; their messages remain useful
-without a file or position.
+`program_id`, `source_operation_id`, optional `snapshot_operation_id`,
+`source_node_id`, and `source_range` through their immutable source reference. The
+`source_id` property resolves to the durable node ID when present and otherwise to
+the source operation ID. Program-wide diagnostics may have no source reference;
+their messages remain useful without a file or position.
 
 `SyntaxNodeId` identifies one parsed source snapshot and `SourceNodeId`, when
 supplied by an editor, identifies a durable source element across edits. Builder
 `SnapshotOperationId` values remain compatibility identities for the existing
-width-based API; future logical operations require their own source and semantic
-identities before allocation generates IR-operation IDs.
+width-based API. Logical instructions use `LogicalOperationId`, including
+observations, so the persistent identity chain is
+`SourceOperationId -> LogicalOperationId -> IrOperationId -> trace occurrence`.
 
 ## Source-model and IR boundary
 

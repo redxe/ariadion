@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from ariadion import Program, ProgramId, SourceNodeId, SourceRange, run
-from ariadion_core import SnapshotOperationId, SourceRef
+from ariadion_core import SnapshotOperationId, SourceOperationId, SourceRef
 from ariadion_ir import OpCode, Operation, OperationProvenance
 from daidalon import CompileError, compile_program, make_ir_operation_id
 
@@ -65,8 +65,8 @@ class VerticalSliceTests(unittest.TestCase):
                 '{"column":1,"end_column":13,"end_line":4,'
                 '"file":"examples/bell.py","line":4,'
                 '"program_id":"examples/bell.py",'
-                '"snapshot_operation_id":"examples/bell.py:operation:0",'
-                '"source_node_id":null}'
+                '"source_node_id":null,'
+                '"source_operation_id":"examples/bell.py:operation:0"}'
             ),
         )
 
@@ -149,10 +149,10 @@ class VerticalSliceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "source node ID must be a non-empty string"):
                 program.h(0, source_node_id=SourceNodeId(""))
 
-        with self.assertRaisesRegex(ValueError, "snapshot operation ID must be a non-empty string"):
+        with self.assertRaisesRegex(ValueError, "source operation ID must be a non-empty string"):
             SourceRef(
                 program_id=ProgramId("documents/bell"),
-                snapshot_operation_id=SnapshotOperationId(""),
+                source_operation_id=SourceOperationId(""),
             )
 
         self.assertEqual(program.operations, ())
@@ -163,10 +163,12 @@ class VerticalSliceTests(unittest.TestCase):
             snapshot_operation_id=SnapshotOperationId("documents/bell:operation:4"),
             source_node_id=SourceNodeId("node:bell:measure-x"),
         )
+        self.assertEqual(source.source_operation_id, "documents/bell:operation:4")
+        self.assertEqual(source.snapshot_operation_id, "documents/bell:operation:4")
         basis_change_id = make_ir_operation_id(source, "basis-lowering", 0)
         measurement_id = make_ir_operation_id(source, "basis-lowering", 1)
         provenance = OperationProvenance(
-            parent_source_ids=(source.snapshot_operation_id,),
+            parent_source_ids=(source.source_operation_id,),
             transformation="basis-lowering",
         )
         operation = Operation(
@@ -190,7 +192,8 @@ class VerticalSliceTests(unittest.TestCase):
         self.assertEqual(
             provenance.to_json(),
             (
-                '{"parent_source_ids":["documents/bell:operation:4"],'
+                '{"parent_logical_operation_ids":[],'
+                '"parent_source_ids":["documents/bell:operation:4"],'
                 '"transformation":"basis-lowering"}'
             ),
         )

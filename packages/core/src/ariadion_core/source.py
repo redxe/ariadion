@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 
 from .identity import (
     ProgramId,
     SnapshotOperationId,
     SourceIdentity,
     SourceNodeId,
+    SourceOperationId,
     require_nonempty_identifier,
 )
 
@@ -67,25 +68,68 @@ class SourceRange:
 
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class SourceRef:
-    """A source reference scoped to one program snapshot."""
+    """A neutral source reference scoped to one program or document.
+
+    ``source_operation_id`` is the canonical identity for the source construct.
+    ``snapshot_operation_id`` remains available only for references created by the
+    compatibility width-based builder; semantic programs never need to invent one.
+    """
 
     program_id: ProgramId
-    snapshot_operation_id: SnapshotOperationId
+    source_operation_id: SourceOperationId
     file: str | None = None
     line: int | None = None
     column: int | None = None
     end_line: int | None = None
     end_column: int | None = None
     source_node_id: SourceNodeId | None = None
+    _snapshot_operation_id: SnapshotOperationId | None = dataclass_field(repr=False, compare=False)
+
+    def __init__(
+        self,
+        program_id: ProgramId,
+        snapshot_operation_id: SnapshotOperationId | None = None,
+        file: str | None = None,
+        line: int | None = None,
+        column: int | None = None,
+        end_line: int | None = None,
+        end_column: int | None = None,
+        source_node_id: SourceNodeId | None = None,
+        *,
+        source_operation_id: SourceOperationId | None = None,
+    ) -> None:
+        resolved_source_operation_id = _resolve_source_operation_id(
+            source_operation_id=source_operation_id,
+            snapshot_operation_id=snapshot_operation_id,
+        )
+        object.__setattr__(self, "program_id", program_id)
+        object.__setattr__(self, "source_operation_id", resolved_source_operation_id)
+        object.__setattr__(self, "file", file)
+        object.__setattr__(self, "line", line)
+        object.__setattr__(self, "column", column)
+        object.__setattr__(self, "end_line", end_line)
+        object.__setattr__(self, "end_column", end_column)
+        object.__setattr__(self, "source_node_id", source_node_id)
+        object.__setattr__(self, "_snapshot_operation_id", snapshot_operation_id)
+        self.__post_init__()
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.program_id, label="program ID")
         require_nonempty_identifier(
-            self.snapshot_operation_id,
-            label="snapshot operation ID",
+            self.source_operation_id,
+            label="source operation ID",
         )
+        if self._snapshot_operation_id is not None:
+            require_nonempty_identifier(
+                self._snapshot_operation_id,
+                label="snapshot operation ID",
+            )
+            if self.source_operation_id != SourceOperationId(self._snapshot_operation_id):
+                raise ValueError(
+                    "snapshot operation ID must match source operation ID when provided"
+                )
         if self.source_node_id is not None:
             require_nonempty_identifier(self.source_node_id, label="source node ID")
         SourceRange(
@@ -101,31 +145,43 @@ class SourceRef:
         cls,
         *,
         program_id: ProgramId,
-        snapshot_operation_id: SnapshotOperationId,
         source_range: SourceRange | None,
+        source_operation_id: SourceOperationId | None = None,
+        snapshot_operation_id: SnapshotOperationId | None = None,
         source_node_id: SourceNodeId | None = None,
     ) -> SourceRef:
+        resolved_source_operation_id = _resolve_source_operation_id(
+            source_operation_id=source_operation_id,
+            snapshot_operation_id=snapshot_operation_id,
+        )
         if source_range is None:
             return cls(
                 program_id=program_id,
-                snapshot_operation_id=snapshot_operation_id,
+                source_operation_id=resolved_source_operation_id,
                 source_node_id=source_node_id,
+                snapshot_operation_id=snapshot_operation_id,
             )
         return cls(
             program_id=program_id,
-            snapshot_operation_id=snapshot_operation_id,
+            source_operation_id=resolved_source_operation_id,
             file=source_range.file,
             line=source_range.line,
             column=source_range.column,
             end_line=source_range.end_line,
             end_column=source_range.end_column,
             source_node_id=source_node_id,
+            snapshot_operation_id=snapshot_operation_id,
         )
 
     @property
     def source_id(self) -> SourceIdentity:
-        """Compatibility view; prefer explicit snapshot or durable node IDs."""
-        return self.source_node_id or self.snapshot_operation_id
+        """Prefer the durable node identity, then the neutral source identity."""
+        return self.source_node_id or self.source_operation_id
+
+    @property
+    def snapshot_operation_id(self) -> SnapshotOperationId | None:
+        """Compatibility identity for builder-derived references, when available."""
+        return self._snapshot_operation_id
 
     @property
     def source_range(self) -> SourceRange | None:
@@ -145,7 +201,7 @@ class SourceRef:
     def to_dict(self) -> dict[str, str | int | None]:
         return {
             "program_id": self.program_id,
-            "snapshot_operation_id": self.snapshot_operation_id,
+            "source_operation_id": self.source_operation_id,
             "source_node_id": self.source_node_id,
             "file": self.file,
             "line": self.line,
@@ -156,3 +212,20 @@ class SourceRef:
 
     def to_json(self) -> str:
         return canonical_json(self.to_dict())
+
+
+def _resolve_source_operation_id(
+    *,
+    source_operation_id: SourceOperationId | None,
+    snapshot_operation_id: SnapshotOperationId | None,
+) -> SourceOperationId:
+    if source_operation_id is None:
+        if snapshot_operation_id is None:
+            raise ValueError("source operation ID is required")
+        return SourceOperationId(snapshot_operation_id)
+    if (
+        snapshot_operation_id is not None
+        and source_operation_id != SourceOperationId(snapshot_operation_id)
+    ):
+        raise ValueError("snapshot operation ID must match source operation ID when provided")
+    return source_operation_id
