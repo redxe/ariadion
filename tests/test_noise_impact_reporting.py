@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError, replace
 import unittest
 from math import exp
 
@@ -22,11 +23,16 @@ from ariadion_simulator import (
     simulate_density_matrix,
 )
 from theonoe import (
-    DensityStateReport,
+    BinaryReadoutChannelSnapshot,
+    IdleDecoherenceProfileSnapshot,
     MetricProvenance,
     NoiseImpactBaselineMode,
     NoiseImpactComparisonProvenance,
     NoiseImpactEventKind,
+    NoiseImpactEventFinding,
+    NoiseImpactMetric,
+    NoiseImpactScheduleSummary,
+    NoiseImpactScope,
     build_noise_impact_report,
     inspect_density_state,
 )
@@ -199,15 +205,18 @@ class NoiseImpactReportTests(unittest.TestCase):
         assert request.schedule is not None
         self.assertEqual(
             report.comparison.noisy_schedule.operation_fingerprint,
-            request.schedule.operation_fingerprint,
+            run.provenance.schedule.operation_fingerprint if run.provenance.schedule is not None else (),
         )
         self.assertEqual(
             report.comparison.noisy_schedule.peak_duration_ns,
-            request.schedule.peak_duration_ns,
+            run.provenance.schedule.peak_duration_ns if run.provenance.schedule is not None else 0.0,
         )
         self.assertEqual(
             report.comparison.noisy_idle_decoherence,
-            request.idle_decoherence.to_dict() if request.idle_decoherence is not None else None,
+            IdleDecoherenceProfileSnapshot(
+                t1_ns=request.idle_decoherence.t1_ns if request.idle_decoherence is not None else None,
+                t2_ns=request.idle_decoherence.t2_ns if request.idle_decoherence is not None else None,
+            ) if request.idle_decoherence is not None else None,
         )
 
     def test_runtime_helper_cannot_fabricate_readout_or_gate_provenance(self) -> None:
@@ -233,9 +242,9 @@ class NoiseImpactReportTests(unittest.TestCase):
             if finding.kind is NoiseImpactEventKind.READOUT_DISTORTION
         ]
         self.assertEqual(len(gate_findings), 1)
-        self.assertEqual(gate_findings[0].gate.channel["kind"], "bit_flip")
+        self.assertEqual(gate_findings[0].gate.channel.to_dict()["kind"], "bit_flip")
         self.assertEqual(len(readout_findings), 1)
-        self.assertEqual(readout_findings[0].readout.channel["kind"], "binary_readout")
+        self.assertEqual(readout_findings[0].readout.channel.to_dict()["kind"], "binary_readout")
 
     def test_quantum_only_reports_omit_output_distribution_metrics(self) -> None:
         request = DensityMatrixExecutionRequest(
@@ -291,30 +300,36 @@ class NoiseImpactReportTests(unittest.TestCase):
         for finding in report.event_findings:
             self.assertEqual(finding.provenance, MetricProvenance.OBSERVED)
 
-    def test_public_state_validation_rejects_nonphysical_values(self) -> None:
-        with self.assertRaisesRegex(ValueError, "purity"):
-            DensityStateReport(
+    def test_public_density_input_rejects_non_hermitian_matrix(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Hermitian"):
+            inspect_density_state(
+                (
+                    (0.5 + 0j, 0.25 + 0.2j),
+                    (0.25 + 0.2j, 0.5 + 0j),
+                ),
                 qubit_count=1,
-                dimension=2,
-                computational_basis_populations=(1.0, 0.0),
-                purity=1.5,
-                l1_coherence=0.0,
             )
-        with self.assertRaisesRegex(ValueError, "purity"):
-            DensityStateReport(
+
+    def test_public_density_input_rejects_non_unit_trace_matrix(self) -> None:
+        with self.assertRaisesRegex(ValueError, "trace"):
+            inspect_density_state(
+                (
+                    (0.6 + 0j, 0j),
+                    (0j, 0.6 + 0j),
+                ),
                 qubit_count=1,
-                dimension=2,
-                computational_basis_populations=(1.0, 0.0),
-                purity=0.1,
-                l1_coherence=0.0,
             )
-        with self.assertRaisesRegex(ValueError, "l1_coherence"):
-            DensityStateReport(
-                qubit_count=1,
-                dimension=2,
-                computational_basis_populations=(1.0, 0.0),
-                purity=1.0,
-                l1_coherence=-1e-6,
+
+    def test_public_density_input_rejects_non_psd_high_dimensional_case(self) -> None:
+        with self.assertRaisesRegex(ValueError, "positive semidefinite"):
+            inspect_density_state(
+                (
+                    (0.5 + 0j, 0.0 + 0j, 0.5 + 0j, 0.0 + 0j),
+                    (0.0 + 0j, -0.01 + 0j, 0.0 + 0j, 0.0 + 0j),
+                    (0.5 + 0j, 0.0 + 0j, 0.51 + 0j, 0.0 + 0j),
+                    (0.0 + 0j, 0.0 + 0j, 0.0 + 0j, 0.0 + 0j),
+                ),
+                qubit_count=2,
             )
 
     def test_inspect_density_state_accepts_real_numeric_entries(self) -> None:
@@ -348,6 +363,139 @@ class NoiseImpactReportTests(unittest.TestCase):
                 noisy_physical_distribution=(0.6, 0.1),
                 reported_distribution=(0.6, 0.4),
             )
+
+    def test_supported_runtime_construction_rejects_provenance_circuit_mismatch(self) -> None:
+        run = run_logical_module(
+            _return_one.to_logical_module(),
+            execution=DensityMatrixExecutionRequest(),
+        )
+        with self.assertRaisesRegex(ValueError, "provenance circuit_id"):
+            replace(
+                run,
+                provenance=replace(
+                    run.provenance,
+                    circuit_id=ProgramId("noise-impact:forged-circuit"),
+                ),
+            )
+
+    def test_supported_runtime_construction_rejects_readout_policy_mismatch(self) -> None:
+        request = DensityMatrixExecutionRequest(
+            ExecutableNoiseModel(readout_channel=BinaryReadoutChannel(0.1, 0.2))
+        )
+        run = run_logical_module(_return_one.to_logical_module(), execution=request)
+        with self.assertRaisesRegex(ValueError, "without readout noise"):
+            replace(
+                run,
+                provenance=replace(run.provenance, readout_channel=None),
+            )
+
+    def test_event_findings_reject_missing_extra_and_mismatched_evidence(self) -> None:
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            NoiseImpactEventFinding(
+                kind=NoiseImpactEventKind.GATE_CHANNEL,
+                provenance=MetricProvenance.OBSERVED,
+                summary="bad",
+            )
+        run = run_logical_module(
+            _return_one.to_logical_module(),
+            execution=DensityMatrixExecutionRequest(
+                ExecutableNoiseModel(
+                    gate_channels=(
+                        GateChannelBinding(OneQubitGate.X, BitFlipChannel(0.2)),
+                    )
+                )
+            ),
+        )
+        report = build_density_noise_impact_report(run)
+        gate_finding = next(
+            finding
+            for finding in report.event_findings
+            if finding.kind is NoiseImpactEventKind.GATE_CHANNEL
+        )
+        readout_run = run_logical_module(
+            _return_one.to_logical_module(),
+            execution=DensityMatrixExecutionRequest(
+                ExecutableNoiseModel(readout_channel=BinaryReadoutChannel(0.1, 0.2))
+            ),
+        )
+        readout_report = build_density_noise_impact_report(readout_run)
+        readout_finding = next(
+            finding
+            for finding in readout_report.event_findings
+            if finding.kind is NoiseImpactEventKind.READOUT_DISTORTION
+        )
+        with self.assertRaisesRegex(ValueError, "exactly one event evidence"):
+            NoiseImpactEventFinding(
+                kind=NoiseImpactEventKind.GATE_CHANNEL,
+                provenance=MetricProvenance.OBSERVED,
+                summary="bad",
+                gate=gate_finding.gate,
+                readout=readout_finding.readout,
+            )
+
+    def test_duplicate_metric_names_are_rejected(self) -> None:
+        run = run_logical_module(
+            _return_one.to_logical_module(),
+            execution=DensityMatrixExecutionRequest(),
+        )
+        report = build_density_noise_impact_report(run)
+        with self.assertRaisesRegex(ValueError, "unique"):
+            replace(report, metrics=report.metrics + (report.metrics[0],))
+
+    def test_schedule_and_circuit_identity_mismatch_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "program_id"):
+            NoiseImpactComparisonProvenance(
+                circuit_id=ProgramId("noise-impact:circuit-a"),
+                representation="density_matrix",
+                noisy_backend_id="reference-density-matrix",
+                ideal_backend_id="reference-density-matrix",
+                ideal_baseline_mode=NoiseImpactBaselineMode.IDEAL_NOISE_DISABLED_REPLAY,
+                noisy_schedule=NoiseImpactScheduleSummary(
+                    program_id=ProgramId("noise-impact:circuit-b"),
+                    operation_fingerprint=(),
+                    peak_duration_ns=0.0,
+                ),
+                noisy_idle_decoherence=IdleDecoherenceProfileSnapshot(t1_ns=100.0, t2_ns=200.0),
+                ideal_baseline_derivation="test",
+            )
+
+    def test_report_json_is_immutable_against_source_and_nested_mutation(self) -> None:
+        source_channel = {
+            "kind": "binary_readout",
+            "p_one_given_zero": 0.1,
+            "p_zero_given_one": 0.2,
+        }
+        report = build_noise_impact_report(
+            comparison=NoiseImpactComparisonProvenance(
+                circuit_id=ProgramId("noise-impact:immutability"),
+                representation="density_matrix",
+                noisy_backend_id="reference-density-matrix",
+                ideal_backend_id="reference-density-matrix",
+                ideal_baseline_mode=NoiseImpactBaselineMode.IDEAL_NOISE_DISABLED_REPLAY,
+                noisy_schedule=None,
+                noisy_idle_decoherence=None,
+                ideal_baseline_derivation="test",
+            ),
+            ideal_density_matrix=((1.0, 0.0), (0.0, 0.0)),
+            noisy_density_matrix=((1.0, 0.0), (0.0, 0.0)),
+            qubit_count=1,
+            ideal_physical_distribution=(1.0, 0.0),
+            noisy_physical_distribution=(1.0, 0.0),
+            reported_distribution=(0.9, 0.1),
+            readout_channel=source_channel,
+        )
+        baseline_json = report.to_json()
+        source_channel["p_one_given_zero"] = 0.9
+        self.assertEqual(report.to_json(), baseline_json)
+
+        readout_finding = next(
+            finding
+            for finding in report.event_findings
+            if finding.kind is NoiseImpactEventKind.READOUT_DISTORTION
+        )
+        with self.assertRaises(FrozenInstanceError):
+            readout_finding.readout.channel.p_one_given_zero = 0.7
+        self.assertEqual(report.to_json(), baseline_json)
 
     def test_build_report_includes_idle_findings_and_deterministic_json(self) -> None:
         circuit = _two_qubit_idle_circuit()
@@ -426,7 +574,7 @@ class NoiseImpactReportTests(unittest.TestCase):
                 ideal_backend_id="reference-density-matrix",
                 ideal_baseline_mode=NoiseImpactBaselineMode.IDEAL_NOISE_DISABLED_REPLAY,
                 noisy_schedule=None,
-                noisy_idle_decoherence=request.idle_decoherence.to_dict(),
+                noisy_idle_decoherence=None,
                 ideal_baseline_derivation="test",
             ),
             ideal_density_matrix=ideal.density_matrix,
@@ -468,7 +616,7 @@ class NoiseImpactReportTests(unittest.TestCase):
                 ideal_backend_id="reference-density-matrix",
                 ideal_baseline_mode=NoiseImpactBaselineMode.IDEAL_NOISE_DISABLED_REPLAY,
                 noisy_schedule=None,
-                noisy_idle_decoherence=request.idle_decoherence.to_dict(),
+                noisy_idle_decoherence=None,
                 ideal_baseline_derivation="test",
             ),
             ideal_density_matrix=ideal.density_matrix,

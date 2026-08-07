@@ -120,11 +120,18 @@ standalone causal attribution percentages.
 
 Runtime exposes `build_density_noise_impact_report(...)` as an explicit,
 read-only projection from a completed `DensityMatrixLogicalRunResult`.
-`DensityMatrixLogicalRunResult` now retains the
-`execution_request: DensityMatrixExecutionRequest` that produced its simulation
-and classical distributions, and the report helper derives noise/readout/schedule
-provenance from that run-owned request. Callers cannot attach an unrelated
-execution request or forge backend identity at report time.
+`DensityMatrixLogicalRunResult` now retains a runtime-owned immutable
+`DensityExecutionProvenanceSnapshot` built inside supported execution paths. It
+captures circuit identity, actual backend identity, optional schedule summary,
+optional idle-decoherence profile, executable gate-noise bindings, readout
+policy, simulator evidence linkage, and classical distribution linkage. The
+report helper derives provenance from this snapshot rather than from a retained
+raw `DensityMatrixExecutionRequest`.
+
+This guarantee is intentionally scoped: supported runtime construction rejects
+accidental mismatches across circuit/schedule/backend/readout/evidence
+artifacts. Hostile in-process Python fabrication and cryptographic attestation
+are out of scope.
 
 The helper recomputes an ideal baseline by re-executing the same compiled
 circuit with executable noise disabled. Under current semantics, schedule data
@@ -132,7 +139,9 @@ drives idle-noise evolution only; ideal replay does not execute
 schedule-dependent idle decoherence. Comparison provenance therefore records
 both backend identities and the ideal-baseline mode, and preserves noisy
 schedule summary evidence (`program_id`, operation fingerprint, and
-`peak_duration_ns`) when a noisy schedule was used.
+`peak_duration_ns`) when a noisy schedule was used. Schedule and
+idle-decoherence provenance are paired: either both are present or both are
+absent.
 
 ## Reset
 

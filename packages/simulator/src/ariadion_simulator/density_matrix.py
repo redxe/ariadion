@@ -239,6 +239,46 @@ class DensityMatrixResult:
         return result
 
 
+@dataclass(frozen=True, slots=True)
+class ValidatedDensityState:
+    """Immutable physically validated density state for public analysis boundaries."""
+
+    density_matrix: DensityMatrix
+    qubit_count: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.qubit_count, bool) or not isinstance(self.qubit_count, int) or self.qubit_count < 0:
+            raise DensityMatrixInvariantError(
+                "validated density state qubit_count must be a non-negative integer"
+            )
+        if not isinstance(self.density_matrix, tuple) or not all(
+            isinstance(row, tuple) for row in self.density_matrix
+        ):
+            raise DensityMatrixInvariantError(
+                "validated density state density_matrix must be an immutable tuple of rows"
+            )
+        _validate_density_matrix(self.density_matrix, qubit_count=self.qubit_count)
+
+    @property
+    def dimension(self) -> int:
+        return 1 << self.qubit_count
+
+    @classmethod
+    def from_matrix(
+        cls,
+        density_matrix: tuple[tuple[int | float | complex, ...], ...],
+        *,
+        qubit_count: int,
+    ) -> ValidatedDensityState:
+        """Canonicalize numeric entries and validate full physical invariants."""
+
+        canonical = _canonicalize_density_matrix_entries(
+            density_matrix,
+            qubit_count=qubit_count,
+        )
+        return cls(density_matrix=canonical, qubit_count=qubit_count)
+
+
 def simulate_density_matrix(
     circuit: CircuitIR,
     *,
@@ -656,6 +696,38 @@ def _validate_density_matrix(
     _validate_positive_semidefinite(density_matrix, dimension=dimension)
 
 
+def _canonicalize_density_matrix_entries(
+    density_matrix: tuple[tuple[int | float | complex, ...], ...],
+    *,
+    qubit_count: int,
+) -> DensityMatrix:
+    if isinstance(qubit_count, bool) or not isinstance(qubit_count, int) or qubit_count < 0:
+        raise DensityMatrixInvariantError("density matrix qubit_count must be non-negative integer")
+    dimension = 1 << qubit_count
+    if not isinstance(density_matrix, tuple) or len(density_matrix) != dimension:
+        raise DensityMatrixInvariantError("density matrix dimension must equal 2**qubit_count")
+    canonical_rows: list[tuple[complex, ...]] = []
+    for row in density_matrix:
+        if not isinstance(row, tuple) or len(row) != dimension:
+            raise DensityMatrixInvariantError(
+                "density matrix must be square with dimension 2**qubit_count"
+            )
+        canonical_row: list[complex] = []
+        for value in row:
+            if isinstance(value, bool) or not isinstance(value, (int, float, complex)):
+                raise DensityMatrixInvariantError(
+                    "density matrix entries must be finite complex values"
+                )
+            complex_value = complex(value)
+            if not (isfinite(complex_value.real) and isfinite(complex_value.imag)):
+                raise DensityMatrixInvariantError(
+                    "density matrix entries must be finite complex values"
+                )
+            canonical_row.append(complex_value)
+        canonical_rows.append(tuple(canonical_row))
+    return tuple(canonical_rows)
+
+
 def _validate_positive_semidefinite(
     density_matrix: DensityMatrix | list[list[complex]],
     *,
@@ -722,6 +794,7 @@ __all__ = [
     "DensityMatrixResult",
     "DensityMatrixTerminalObservationError",
     "GateNoiseApplicationEvent",
+    "ValidatedDensityState",
     "measurement_probabilities",
     "simulate_density_matrix",
     "validate_density_matrix",

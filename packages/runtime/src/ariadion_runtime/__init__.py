@@ -1,4 +1,6 @@
 from .runtime import (
+	DensityExecutionProvenanceSnapshot,
+	DensityExecutionScheduleSnapshot,
 	DensityMatrixLogicalRunResult,
 	DensityMatrixRunResult,
 	DensityMatrixTraceUnsupportedError,
@@ -58,6 +60,8 @@ __all__ = [
 	"ExecutionMode",
 	"ExecutionTrace",
 	"ExactClassicalDistribution",
+	"DensityExecutionProvenanceSnapshot",
+	"DensityExecutionScheduleSnapshot",
 	"DensityMatrixExecutionRequest",
 	"DensityMatrixLogicalRunResult",
 	"DensityMatrixRunResult",

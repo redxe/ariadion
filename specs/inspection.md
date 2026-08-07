@@ -97,6 +97,12 @@ trace inspection: it compares one matched ideal baseline density matrix against 
 noisy density matrix and, when present, contrasts physical and readout-reported
 classical distributions.
 
+Public report construction consumes simulator-validated density states. If a raw
+matrix convenience path is used, it immediately canonicalizes numeric
+`int`/`float`/`complex` entries and constructs a simulator-owned
+`ValidatedDensityState` before analysis; no public path performs report analysis
+from shape-only matrix validation.
+
 Reported metrics include Hilbert-Schmidt distance, computational-basis
 population TVD, l1 coherence values/deltas, purity values/deltas, physical output
 TVD, and readout-distortion TVD. Computational-basis population and l1 coherence
@@ -120,5 +126,11 @@ claim additive causal decomposition of total state deviation across events.
 Readout distortion is reported as a classical output effect and is not represented
 as quantum-state damage in the retained density matrix.
 
+Event findings enforce exactly one evidence payload matching each declared
+`NoiseImpactEventKind`; unrelated extra evidence is rejected. Gate and readout
+channel evidence, along with idle-decoherence profile provenance, are retained as
+immutable typed snapshots with deterministic `to_dict()` serialization.
+
 When a program has no classical output distribution, output-distribution metrics
-are absent rather than encoded as zero-impact values.
+are absent rather than encoded as zero-impact values. When distributions are
+present and equal, output TVD metrics remain present with zero values.

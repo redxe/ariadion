@@ -6,7 +6,20 @@ from math import isclose, isfinite, sqrt
 from typing import Final
 
 from ariadion_core import ProgramId, canonical_json, require_nonempty_identifier
-from ariadion_simulator import GateNoiseApplicationEvent, IdleDecoherenceEvent
+from ariadion_noise import (
+    AmplitudeDampingChannel,
+    BinaryReadoutChannel,
+    BitFlipChannel,
+    DepolarizingChannel,
+    PhaseDampingChannel,
+    PhaseFlipChannel,
+    QuantumChannel,
+)
+from ariadion_simulator import (
+    GateNoiseApplicationEvent,
+    IdleDecoherenceEvent,
+    ValidatedDensityState,
+)
 
 NOISE_IMPACT_SCHEMA_VERSION: Final = 1
 NOISE_IMPACT_ABS_TOLERANCE: Final = 1e-12
@@ -103,6 +116,120 @@ class NoiseImpactScheduleSummary:
                 for operation_id, opcode, targets, controls, angle_radians in self.operation_fingerprint
             ],
             "peak_duration_ns": float(self.peak_duration_ns),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class IdleDecoherenceProfileSnapshot:
+    t1_ns: float | None
+    t2_ns: float | None
+
+    def __post_init__(self) -> None:
+        if self.t1_ns is None and self.t2_ns is None:
+            raise ValueError("idle decoherence snapshot requires t1_ns or t2_ns")
+        for value, label in ((self.t1_ns, "t1_ns"), (self.t2_ns, "t2_ns")):
+            if value is None:
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(float(value))
+                or float(value) <= 0
+            ):
+                raise ValueError(
+                    f"idle decoherence snapshot {label} must be a positive finite number"
+                )
+        if self.t1_ns is not None and self.t2_ns is not None and self.t2_ns > 2 * self.t1_ns:
+            raise ValueError("idle decoherence snapshot t2_ns must be <= 2 * t1_ns")
+
+    def to_dict(self) -> dict[str, float | None]:
+        return {"t1_ns": self.t1_ns, "t2_ns": self.t2_ns}
+
+
+@dataclass(frozen=True, slots=True)
+class BitFlipChannelSnapshot:
+    probability: float
+
+    def __post_init__(self) -> None:
+        _validate_probability(self.probability, label="bit_flip probability")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "bit_flip", "probability": self.probability}
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseFlipChannelSnapshot:
+    probability: float
+
+    def __post_init__(self) -> None:
+        _validate_probability(self.probability, label="phase_flip probability")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "phase_flip", "probability": self.probability}
+
+
+@dataclass(frozen=True, slots=True)
+class DepolarizingChannelSnapshot:
+    probability: float
+
+    def __post_init__(self) -> None:
+        _validate_probability(self.probability, label="depolarizing probability")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "depolarizing", "probability": self.probability}
+
+
+@dataclass(frozen=True, slots=True)
+class AmplitudeDampingChannelSnapshot:
+    probability: float
+
+    def __post_init__(self) -> None:
+        _validate_probability(self.probability, label="amplitude_damping probability")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "amplitude_damping", "probability": self.probability}
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseDampingChannelSnapshot:
+    probability: float
+
+    def __post_init__(self) -> None:
+        _validate_probability(self.probability, label="phase_damping probability")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "phase_damping", "probability": self.probability}
+
+
+GateChannelSnapshot = (
+    BitFlipChannelSnapshot
+    | PhaseFlipChannelSnapshot
+    | DepolarizingChannelSnapshot
+    | AmplitudeDampingChannelSnapshot
+    | PhaseDampingChannelSnapshot
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BinaryReadoutChannelSnapshot:
+    p_one_given_zero: float
+    p_zero_given_one: float
+
+    def __post_init__(self) -> None:
+        _validate_probability(
+            self.p_one_given_zero,
+            label="binary_readout p_one_given_zero",
+        )
+        _validate_probability(
+            self.p_zero_given_one,
+            label="binary_readout p_zero_given_one",
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "binary_readout",
+            "p_one_given_zero": self.p_one_given_zero,
+            "p_zero_given_one": self.p_zero_given_one,
         }
 
 
@@ -222,7 +349,7 @@ class NoiseImpactComparisonProvenance:
     ideal_backend_id: str
     ideal_baseline_mode: NoiseImpactBaselineMode
     noisy_schedule: NoiseImpactScheduleSummary | None
-    noisy_idle_decoherence: dict[str, float | None] | None
+    noisy_idle_decoherence: IdleDecoherenceProfileSnapshot | None
     ideal_baseline_derivation: str
     metric_tolerance: float = NOISE_IMPACT_ABS_TOLERANCE
 
@@ -242,27 +369,22 @@ class NoiseImpactComparisonProvenance:
             raise ValueError(
                 "noise impact noisy_schedule must be NoiseImpactScheduleSummary or None"
             )
-        if self.noisy_idle_decoherence is not None:
-            if not isinstance(self.noisy_idle_decoherence, dict):
-                raise ValueError(
-                    "noise impact noisy_idle_decoherence must be a dict or None"
-                )
-            expected_keys = {"t1_ns", "t2_ns"}
-            if set(self.noisy_idle_decoherence) != expected_keys:
-                raise ValueError(
-                    "noise impact noisy_idle_decoherence must contain exactly t1_ns and t2_ns"
-                )
-            for key in ("t1_ns", "t2_ns"):
-                value = self.noisy_idle_decoherence[key]
-                if value is not None and (
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not isfinite(float(value))
-                    or value <= 0
-                ):
-                    raise ValueError(
-                        f"noise impact noisy_idle_decoherence {key} must be None or a positive finite number"
-                    )
+        if self.noisy_idle_decoherence is not None and not isinstance(
+            self.noisy_idle_decoherence,
+            IdleDecoherenceProfileSnapshot,
+        ):
+            raise ValueError(
+                "noise impact noisy_idle_decoherence must be "
+                "IdleDecoherenceProfileSnapshot or None"
+            )
+        if (self.noisy_schedule is None) != (self.noisy_idle_decoherence is None):
+            raise ValueError(
+                "noise impact noisy_schedule and noisy_idle_decoherence must be paired"
+            )
+        if self.noisy_schedule is not None and self.noisy_schedule.program_id != self.circuit_id:
+            raise ValueError(
+                "noise impact noisy_schedule program_id must match comparison circuit_id"
+            )
         require_nonempty_identifier(
             self.ideal_baseline_derivation,
             label="noise impact ideal baseline derivation",
@@ -285,7 +407,11 @@ class NoiseImpactComparisonProvenance:
             "noisy_schedule": (
                 self.noisy_schedule.to_dict() if self.noisy_schedule is not None else None
             ),
-            "noisy_idle_decoherence": self.noisy_idle_decoherence,
+            "noisy_idle_decoherence": (
+                self.noisy_idle_decoherence.to_dict()
+                if self.noisy_idle_decoherence is not None
+                else None
+            ),
             "ideal_baseline_derivation": self.ideal_baseline_derivation,
             "metric_tolerance": self.metric_tolerance,
         }
@@ -324,16 +450,47 @@ class GateNoiseImpactEvidence:
     operation_id: str
     target_slot: int
     gate: str
-    channel: dict[str, object]
+    channel: GateChannelSnapshot
     application_order: int
     application_ordering: str
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.operation_id, label="gate noise evidence operation_id")
+        if (
+            isinstance(self.target_slot, bool)
+            or not isinstance(self.target_slot, int)
+            or self.target_slot < 0
+        ):
+            raise ValueError("gate noise evidence target_slot must be a non-negative integer")
+        require_nonempty_identifier(self.gate, label="gate noise evidence gate")
+        if not isinstance(
+            self.channel,
+            (
+                BitFlipChannelSnapshot,
+                PhaseFlipChannelSnapshot,
+                DepolarizingChannelSnapshot,
+                AmplitudeDampingChannelSnapshot,
+                PhaseDampingChannelSnapshot,
+            ),
+        ):
+            raise ValueError("gate noise evidence channel must be a supported channel snapshot")
+        if (
+            isinstance(self.application_order, bool)
+            or not isinstance(self.application_order, int)
+            or self.application_order < 0
+        ):
+            raise ValueError("gate noise evidence application_order must be a non-negative integer")
+        if self.application_ordering != "ideal_then_channel":
+            raise ValueError(
+                "gate noise evidence application_ordering must be 'ideal_then_channel'"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "operation_id": self.operation_id,
             "target_slot": self.target_slot,
             "gate": self.gate,
-            "channel": self.channel,
+            "channel": self.channel.to_dict(),
             "application_order": self.application_order,
             "application_ordering": self.application_ordering,
         }
@@ -341,12 +498,25 @@ class GateNoiseImpactEvidence:
 
 @dataclass(frozen=True, slots=True)
 class ReadoutDistortionEvidence:
-    channel: dict[str, object]
+    channel: BinaryReadoutChannelSnapshot
     physical_vs_reported_tvd: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.channel, BinaryReadoutChannelSnapshot):
+            raise ValueError("readout distortion evidence channel must be BinaryReadoutChannelSnapshot")
+        if (
+            isinstance(self.physical_vs_reported_tvd, bool)
+            or not isinstance(self.physical_vs_reported_tvd, (int, float))
+            or not isfinite(float(self.physical_vs_reported_tvd))
+            or float(self.physical_vs_reported_tvd) < -NOISE_IMPACT_ABS_TOLERANCE
+        ):
+            raise ValueError(
+                "readout distortion evidence physical_vs_reported_tvd must be finite and non-negative"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "channel": self.channel,
+            "channel": self.channel.to_dict(),
             "physical_vs_reported_tvd": self.physical_vs_reported_tvd,
         }
 
@@ -366,12 +536,22 @@ class NoiseImpactEventFinding:
         if not isinstance(self.provenance, MetricProvenance):
             raise ValueError("noise impact finding provenance must be MetricProvenance")
         require_nonempty_identifier(self.summary, label="noise impact finding summary")
-        if self.kind is NoiseImpactEventKind.IDLE_DECOHERENCE and self.idle is None:
-            raise ValueError("idle findings require idle evidence")
-        if self.kind is NoiseImpactEventKind.GATE_CHANNEL and self.gate is None:
-            raise ValueError("gate findings require gate evidence")
-        if self.kind is NoiseImpactEventKind.READOUT_DISTORTION and self.readout is None:
-            raise ValueError("readout findings require readout evidence")
+        evidence_count = sum(
+            value is not None for value in (self.idle, self.gate, self.readout)
+        )
+        if evidence_count != 1:
+            raise ValueError(
+                "noise impact findings must contain exactly one event evidence payload"
+            )
+        if self.kind is NoiseImpactEventKind.IDLE_DECOHERENCE:
+            if self.idle is None or self.gate is not None or self.readout is not None:
+                raise ValueError("idle findings must include only idle evidence")
+        if self.kind is NoiseImpactEventKind.GATE_CHANNEL:
+            if self.gate is None or self.idle is not None or self.readout is not None:
+                raise ValueError("gate findings must include only gate evidence")
+        if self.kind is NoiseImpactEventKind.READOUT_DISTORTION:
+            if self.readout is None or self.idle is not None or self.gate is not None:
+                raise ValueError("readout findings must include only readout evidence")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -419,6 +599,9 @@ class NoiseImpactReport:
                 raise ValueError(f"noise impact {label} must be DensityStateReport")
         if not isinstance(self.metrics, tuple) or not all(isinstance(metric, NoiseImpactMetric) for metric in self.metrics):
             raise ValueError("noise impact metrics must contain NoiseImpactMetric values")
+        metric_names = tuple(metric.name for metric in self.metrics)
+        if len(metric_names) != len(set(metric_names)):
+            raise ValueError("noise impact metric names must be unique")
         if not isinstance(self.event_findings, tuple) or not all(
             isinstance(finding, NoiseImpactEventFinding) for finding in self.event_findings
         ):
@@ -430,6 +613,19 @@ class NoiseImpactReport:
         )
         if not isinstance(self.limitations, NoiseImpactLimitations):
             raise ValueError("noise impact limitations must be NoiseImpactLimitations")
+        has_output_distributions = self.ideal_physical_distribution is not None
+        output_metric_names = {"physical_output_tvd", "readout_distortion_tvd"}
+        present_output_metrics = {
+            metric.name for metric in self.metrics if metric.name in output_metric_names
+        }
+        if has_output_distributions and present_output_metrics != output_metric_names:
+            raise ValueError(
+                "noise impact reports with output distributions must include both output TVD metrics"
+            )
+        if not has_output_distributions and present_output_metrics:
+            raise ValueError(
+                "noise impact reports without output distributions must omit output TVD metrics"
+            )
         if (
             isinstance(self.schema_version, bool)
             or not isinstance(self.schema_version, int)
@@ -468,17 +664,22 @@ class NoiseImpactReport:
 
 
 def inspect_density_state(
-    density_matrix: tuple[tuple[complex, ...], ...],
+    density_matrix: ValidatedDensityState | tuple[tuple[int | float | complex, ...], ...],
     *,
-    qubit_count: int,
+    qubit_count: int | None = None,
 ) -> DensityStateReport:
-    dimension = 1 << qubit_count
-    _validate_density_matrix_shape(density_matrix, dimension=dimension)
-    populations = tuple(float(density_matrix[index][index].real) for index in range(dimension))
-    purity = _purity(density_matrix)
-    l1_coherence = _l1_coherence(density_matrix)
-    return DensityStateReport(
+    validated = _coerce_validated_density_state(
+        density_matrix,
         qubit_count=qubit_count,
+        label="density state inspection",
+    )
+    matrix = validated.density_matrix
+    dimension = validated.dimension
+    populations = tuple(float(matrix[index][index].real) for index in range(dimension))
+    purity = _purity(matrix)
+    l1_coherence = _l1_coherence(matrix)
+    return DensityStateReport(
+        qubit_count=validated.qubit_count,
         dimension=dimension,
         computational_basis_populations=populations,
         purity=purity,
@@ -489,18 +690,35 @@ def inspect_density_state(
 def build_noise_impact_report(
     *,
     comparison: NoiseImpactComparisonProvenance,
-    ideal_density_matrix: tuple[tuple[complex, ...], ...],
-    noisy_density_matrix: tuple[tuple[complex, ...], ...],
-    qubit_count: int,
+    ideal_density_matrix: ValidatedDensityState | tuple[tuple[int | float | complex, ...], ...],
+    noisy_density_matrix: ValidatedDensityState | tuple[tuple[int | float | complex, ...], ...],
+    qubit_count: int | None = None,
     ideal_physical_distribution: tuple[float, ...] | None,
     noisy_physical_distribution: tuple[float, ...] | None,
     reported_distribution: tuple[float, ...] | None,
     idle_events: tuple[IdleDecoherenceEvent, ...] = (),
     gate_events: tuple[GateNoiseApplicationEvent, ...] = (),
-    readout_channel: dict[str, object] | None = None,
+    readout_channel: BinaryReadoutChannel | BinaryReadoutChannelSnapshot | dict[str, object] | None = None,
 ) -> NoiseImpactReport:
-    ideal_state = inspect_density_state(ideal_density_matrix, qubit_count=qubit_count)
-    noisy_state = inspect_density_state(noisy_density_matrix, qubit_count=qubit_count)
+    ideal_validated = _coerce_validated_density_state(
+        ideal_density_matrix,
+        qubit_count=qubit_count,
+        label="ideal density matrix",
+    )
+    noisy_validated = _coerce_validated_density_state(
+        noisy_density_matrix,
+        qubit_count=qubit_count,
+        label="noisy density matrix",
+    )
+    if ideal_validated.qubit_count != noisy_validated.qubit_count:
+        raise ValueError("noise impact ideal and noisy density states must have matching qubit_count")
+    if qubit_count is not None and ideal_validated.qubit_count != qubit_count:
+        raise ValueError("noise impact qubit_count must match validated density states")
+
+    ideal_state = inspect_density_state(ideal_validated)
+    noisy_state = inspect_density_state(noisy_validated)
+    ideal_matrix = ideal_validated.density_matrix
+    noisy_matrix = noisy_validated.density_matrix
 
     _validate_output_distribution_bundle(
         ideal=ideal_physical_distribution,
@@ -508,13 +726,13 @@ def build_noise_impact_report(
         reported=reported_distribution,
     )
 
-    hs_distance = _hilbert_schmidt_distance(noisy_density_matrix, ideal_density_matrix)
+    hs_distance = _hilbert_schmidt_distance(noisy_matrix, ideal_matrix)
     population_tvd = _total_variation_distance(
         ideal_state.computational_basis_populations,
         noisy_state.computational_basis_populations,
     )
     coherence_delta = noisy_state.l1_coherence - ideal_state.l1_coherence
-    abs_coherence_mag_change = _off_diagonal_magnitude_delta(noisy_density_matrix, ideal_density_matrix)
+    abs_coherence_mag_change = _off_diagonal_magnitude_delta(noisy_matrix, ideal_matrix)
     purity_delta = noisy_state.purity - ideal_state.purity
     physical_output_tvd: float | None = None
     readout_distortion_tvd: float | None = None
@@ -670,20 +888,21 @@ def build_noise_impact_report(
                     operation_id=event.operation_id,
                     target_slot=event.target_slot,
                     gate=event.gate.value,
-                    channel=event.channel.to_dict(),
+                    channel=_snapshot_gate_channel(event.channel),
                     application_order=event.application_order,
                     application_ordering=event.application_ordering,
                 ),
             )
         )
-    if readout_channel is not None and readout_distortion_tvd is not None:
+    readout_snapshot = _coerce_readout_channel_snapshot(readout_channel)
+    if readout_snapshot is not None and readout_distortion_tvd is not None:
         findings.append(
             NoiseImpactEventFinding(
                 kind=NoiseImpactEventKind.READOUT_DISTORTION,
                 provenance=MetricProvenance.OBSERVED,
                 summary="Modeled classical readout distortion evidence",
                 readout=ReadoutDistortionEvidence(
-                    channel=readout_channel,
+                    channel=readout_snapshot,
                     physical_vs_reported_tvd=readout_distortion_tvd,
                 ),
             )
@@ -765,22 +984,73 @@ def _total_variation_distance(
     return 0.5 * sum(abs(l_value - r_value) for l_value, r_value in zip(left, right, strict=True))
 
 
-def _validate_density_matrix_shape(
-    density_matrix: tuple[tuple[complex, ...], ...],
+def _coerce_validated_density_state(
+    value: ValidatedDensityState | tuple[tuple[int | float | complex, ...], ...],
     *,
-    dimension: int,
-) -> None:
-    if not isinstance(density_matrix, tuple) or len(density_matrix) != dimension:
-        raise ValueError("density matrix must be a tuple with dimension 2**qubit_count")
-    for row in density_matrix:
-        if not isinstance(row, tuple) or len(row) != dimension:
-            raise ValueError("density matrix rows must match matrix dimension")
-        for value in row:
-            if not isinstance(value, (int, float, complex)) or isinstance(value, bool):
-                raise ValueError("density matrix entries must be numeric values")
-            complex_value = complex(value)
-            if not isfinite(complex_value.real) or not isfinite(complex_value.imag):
-                raise ValueError("density matrix entries must be finite complex values")
+    qubit_count: int | None,
+    label: str,
+) -> ValidatedDensityState:
+    if isinstance(value, ValidatedDensityState):
+        if qubit_count is not None and value.qubit_count != qubit_count:
+            raise ValueError(f"{label} qubit_count does not match validated density state")
+        return value
+    if qubit_count is None:
+        raise ValueError(f"{label} requires qubit_count when a raw matrix is provided")
+    return ValidatedDensityState.from_matrix(value, qubit_count=qubit_count)
+
+
+def _validate_probability(value: float, *, label: str) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not isfinite(float(value))
+        or float(value) < 0
+        or float(value) > 1
+    ):
+        raise ValueError(f"{label} must be in [0, 1]")
+
+
+def _snapshot_gate_channel(channel: QuantumChannel) -> GateChannelSnapshot:
+    if isinstance(channel, BitFlipChannel):
+        return BitFlipChannelSnapshot(channel.probability)
+    if isinstance(channel, PhaseFlipChannel):
+        return PhaseFlipChannelSnapshot(channel.probability)
+    if isinstance(channel, DepolarizingChannel):
+        return DepolarizingChannelSnapshot(channel.probability)
+    if isinstance(channel, AmplitudeDampingChannel):
+        return AmplitudeDampingChannelSnapshot(channel.probability)
+    if isinstance(channel, PhaseDampingChannel):
+        return PhaseDampingChannelSnapshot(channel.probability)
+    raise ValueError("unsupported gate channel type for noise impact evidence")
+
+
+def _coerce_readout_channel_snapshot(
+    channel: BinaryReadoutChannel | BinaryReadoutChannelSnapshot | dict[str, object] | None,
+) -> BinaryReadoutChannelSnapshot | None:
+    if channel is None:
+        return None
+    if isinstance(channel, BinaryReadoutChannelSnapshot):
+        return channel
+    if isinstance(channel, BinaryReadoutChannel):
+        return BinaryReadoutChannelSnapshot(
+            p_one_given_zero=channel.p_one_given_zero,
+            p_zero_given_one=channel.p_zero_given_one,
+        )
+    if isinstance(channel, dict):
+        if set(channel.keys()) != {"kind", "p_one_given_zero", "p_zero_given_one"}:
+            raise ValueError(
+                "noise impact readout_channel dict must contain kind, p_one_given_zero, and p_zero_given_one"
+            )
+        if channel.get("kind") != "binary_readout":
+            raise ValueError("noise impact readout_channel kind must be 'binary_readout'")
+        return BinaryReadoutChannelSnapshot(
+            p_one_given_zero=channel["p_one_given_zero"],  # type: ignore[arg-type]
+            p_zero_given_one=channel["p_zero_given_one"],  # type: ignore[arg-type]
+        )
+    raise ValueError(
+        "noise impact readout_channel must be BinaryReadoutChannel, "
+        "BinaryReadoutChannelSnapshot, dict, or None"
+    )
 
 
 def _validate_probability_distribution(
@@ -829,7 +1099,12 @@ def _validate_output_distribution_bundle(
 
 
 __all__ = [
+    "AmplitudeDampingChannelSnapshot",
+    "BinaryReadoutChannelSnapshot",
+    "BitFlipChannelSnapshot",
+    "DepolarizingChannelSnapshot",
     "DensityStateReport",
+    "IdleDecoherenceProfileSnapshot",
     "MetricProvenance",
     "NoiseImpactBaselineMode",
     "NoiseImpactComparisonProvenance",
@@ -842,6 +1117,8 @@ __all__ = [
     "NoiseImpactScope",
     "NOISE_IMPACT_ABS_TOLERANCE",
     "NOISE_IMPACT_SCHEMA_VERSION",
+    "PhaseDampingChannelSnapshot",
+    "PhaseFlipChannelSnapshot",
     "build_noise_impact_report",
     "inspect_density_state",
 ]

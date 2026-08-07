@@ -5,12 +5,13 @@ from dataclasses import dataclass
 from ariadion_core import (
     ClassicalBitId,
     LogicalQubitId,
+    ProgramId,
     canonical_json,
     require_nonempty_identifier,
 )
 from ariadion_ir import CircuitIR
 from ariadion_language import Program
-from ariadion_noise import BinaryReadoutChannel
+from ariadion_noise import BinaryReadoutChannel, GateChannelBinding, IdleDecoherenceProfile
 from ariadion_semantics import (
     LogicalModule,
     LogicalProgram,
@@ -20,10 +21,13 @@ from ariadion_semantics import (
 from ariadion_simulator import (
     DensityMatrixExecutionRequest,
     DensityMatrixResult,
+    GateNoiseApplicationEvent,
+    IdleDecoherenceEvent,
     SampledExecutionRequest,
     SampledSimulationResult,
     SimulationExecution,
     SimulationResult,
+    ValidatedDensityState,
     simulate,
     simulate_density_matrix,
 )
@@ -36,6 +40,8 @@ from daidalon import (
 )
 from theonoe import StateReport, inspect_amplitudes, inspect_state, render_report
 from theonoe import (
+    BinaryReadoutChannelSnapshot,
+    IdleDecoherenceProfileSnapshot,
     NoiseImpactBaselineMode,
     NoiseImpactComparisonProvenance,
     NoiseImpactReport,
@@ -335,12 +341,177 @@ class SampledLogicalRunResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DensityExecutionScheduleSnapshot:
+    """Runtime-owned immutable schedule provenance for density execution."""
+
+    program_id: ProgramId
+    operation_fingerprint: tuple[
+        tuple[str, str, tuple[int, ...], tuple[int, ...], float | None],
+        ...,
+    ]
+    peak_duration_ns: float
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(
+            self.program_id,
+            label="density execution schedule program_id",
+        )
+        if not isinstance(self.operation_fingerprint, tuple):
+            raise ValueError(
+                "density execution schedule operation_fingerprint must be a tuple"
+            )
+        for entry in self.operation_fingerprint:
+            if (
+                not isinstance(entry, tuple)
+                or len(entry) != 5
+                or not isinstance(entry[0], str)
+                or not isinstance(entry[1], str)
+                or not isinstance(entry[2], tuple)
+                or not isinstance(entry[3], tuple)
+            ):
+                raise ValueError(
+                    "density execution schedule operation_fingerprint must contain "
+                    "(operation_id, opcode, targets, controls, angle_radians) tuples"
+                )
+            if not all(isinstance(target, int) and target >= 0 for target in entry[2]):
+                raise ValueError(
+                    "density execution schedule operation_fingerprint targets must be "
+                    "non-negative integers"
+                )
+            if not all(isinstance(control, int) and control >= 0 for control in entry[3]):
+                raise ValueError(
+                    "density execution schedule operation_fingerprint controls must be "
+                    "non-negative integers"
+                )
+            if entry[4] is not None and not isinstance(entry[4], (int, float)):
+                raise ValueError(
+                    "density execution schedule operation_fingerprint angle_radians must "
+                    "be None or numeric"
+                )
+        if (
+            isinstance(self.peak_duration_ns, bool)
+            or not isinstance(self.peak_duration_ns, (int, float))
+            or self.peak_duration_ns < 0
+        ):
+            raise ValueError(
+                "density execution schedule peak_duration_ns must be a non-negative number"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class DensityExecutionProvenanceSnapshot:
+    """Runtime-owned provenance facts for supported density logical execution."""
+
+    circuit_id: ProgramId
+    backend_id: str
+    schedule: DensityExecutionScheduleSnapshot | None
+    idle_decoherence: IdleDecoherenceProfile | None
+    gate_noise_bindings: tuple[GateChannelBinding, ...]
+    readout_channel: BinaryReadoutChannel | None
+    gate_event_operation_ids: tuple[str, ...]
+    idle_event_slots: tuple[int, ...]
+    classical_result_ids: tuple[ClassicalBitId, ...]
+    physical_distribution_size: int | None
+    reported_distribution_size: int | None
+    reported_matches_physical: bool | None
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.circuit_id, label="density execution provenance circuit_id")
+        require_nonempty_identifier(self.backend_id, label="density execution provenance backend_id")
+        if self.schedule is not None and not isinstance(
+            self.schedule,
+            DensityExecutionScheduleSnapshot,
+        ):
+            raise ValueError("density execution provenance schedule must be DensityExecutionScheduleSnapshot or None")
+        if self.idle_decoherence is not None and not isinstance(
+            self.idle_decoherence,
+            IdleDecoherenceProfile,
+        ):
+            raise ValueError(
+                "density execution provenance idle_decoherence must be IdleDecoherenceProfile or None"
+            )
+        if (self.schedule is None) != (self.idle_decoherence is None):
+            raise ValueError(
+                "density execution provenance schedule and idle_decoherence must be paired"
+            )
+        if self.schedule is not None and self.schedule.program_id != self.circuit_id:
+            raise ValueError(
+                "density execution provenance schedule program_id must match circuit_id"
+            )
+        if not isinstance(self.gate_noise_bindings, tuple) or not all(
+            isinstance(binding, GateChannelBinding) for binding in self.gate_noise_bindings
+        ):
+            raise ValueError(
+                "density execution provenance gate_noise_bindings must be GateChannelBinding values"
+            )
+        if self.readout_channel is not None and not isinstance(
+            self.readout_channel,
+            BinaryReadoutChannel,
+        ):
+            raise ValueError(
+                "density execution provenance readout_channel must be BinaryReadoutChannel or None"
+            )
+        if not isinstance(self.gate_event_operation_ids, tuple) or not all(
+            isinstance(operation_id, str) and operation_id
+            for operation_id in self.gate_event_operation_ids
+        ):
+            raise ValueError(
+                "density execution provenance gate_event_operation_ids must be a tuple of IDs"
+            )
+        if not isinstance(self.idle_event_slots, tuple) or not all(
+            isinstance(slot, int) and slot >= 0 for slot in self.idle_event_slots
+        ):
+            raise ValueError(
+                "density execution provenance idle_event_slots must be non-negative integers"
+            )
+        if not isinstance(self.classical_result_ids, tuple) or not all(
+            isinstance(result_id, str) and result_id for result_id in self.classical_result_ids
+        ):
+            raise ValueError(
+                "density execution provenance classical_result_ids must be a tuple of IDs"
+            )
+        sizes = (self.physical_distribution_size, self.reported_distribution_size)
+        if all(size is None for size in sizes):
+            if self.classical_result_ids:
+                raise ValueError(
+                    "density execution provenance classical_result_ids require distributions"
+                )
+            if self.reported_matches_physical is not None:
+                raise ValueError(
+                    "density execution provenance reported_matches_physical must be None when distributions are absent"
+                )
+        else:
+            if any(size is None for size in sizes):
+                raise ValueError(
+                    "density execution provenance distribution sizes must both be present or both absent"
+                )
+            assert self.physical_distribution_size is not None
+            assert self.reported_distribution_size is not None
+            if self.physical_distribution_size <= 0 or self.reported_distribution_size <= 0:
+                raise ValueError(
+                    "density execution provenance distribution sizes must be positive"
+                )
+            if self.physical_distribution_size != self.reported_distribution_size:
+                raise ValueError(
+                    "density execution provenance physical and reported distribution sizes must match"
+                )
+            if not self.classical_result_ids:
+                raise ValueError(
+                    "density execution provenance distributions require classical_result_ids"
+                )
+            if self.reported_matches_physical is None:
+                raise ValueError(
+                    "density execution provenance reported_matches_physical must be set when distributions are present"
+                )
+
+
+@dataclass(frozen=True, slots=True)
 class DensityMatrixLogicalRunResult:
     """Exact mixed-state logical execution with physical and reported readout laws."""
 
     compilation: LogicalCompilationResult
     simulation: DensityMatrixResult
-    execution_request: DensityMatrixExecutionRequest
+    provenance: DensityExecutionProvenanceSnapshot
     physical_classical_output_distribution: ExactClassicalDistribution | None
     reported_classical_output_distribution: ExactClassicalDistribution | None
     returned_quantum_values: tuple[ReturnedQuantumValue, ...]
@@ -352,10 +523,33 @@ class DensityMatrixLogicalRunResult:
             raise ValueError(
                 "density-matrix logical simulation circuit must match compiled IR"
             )
-        if not isinstance(self.execution_request, DensityMatrixExecutionRequest):
+        if not isinstance(self.provenance, DensityExecutionProvenanceSnapshot):
             raise ValueError(
-                "density-matrix logical execution_request must be "
-                "DensityMatrixExecutionRequest"
+                "density-matrix logical provenance must be DensityExecutionProvenanceSnapshot"
+            )
+        if self.provenance.circuit_id != self.compilation.ir.id:
+            raise ValueError(
+                "density-matrix logical provenance circuit_id must match compiled IR"
+            )
+        if self.provenance.circuit_id != self.simulation.circuit.id:
+            raise ValueError(
+                "density-matrix logical provenance circuit_id must match simulation circuit"
+            )
+        if self.provenance.backend_id != "reference-density-matrix":
+            raise ValueError(
+                "density-matrix logical provenance backend_id must describe the executed reference backend"
+            )
+        if self.provenance.gate_event_operation_ids != tuple(
+            event.operation_id for event in self.simulation.gate_noise_events
+        ):
+            raise ValueError(
+                "density-matrix logical provenance gate_event_operation_ids must match simulation evidence"
+            )
+        if self.provenance.idle_event_slots != tuple(
+            event.slot for event in self.simulation.idle_decoherence_events
+        ):
+            raise ValueError(
+                "density-matrix logical provenance idle_event_slots must match simulation evidence"
             )
         if self.return_shape != self.compilation.readout.return_shape:
             raise ValueError("density-matrix logical return_shape must match compiled readout")
@@ -384,11 +578,56 @@ class DensityMatrixLogicalRunResult:
                 raise ValueError(
                     "density-matrix logical distribution IDs must match classical return leaves"
                 )
+            assert self.physical_classical_output_distribution is not None
+            assert self.reported_classical_output_distribution is not None
+            distribution_size = len(self.physical_classical_output_distribution.probabilities)
+            if self.provenance.physical_distribution_size != distribution_size:
+                raise ValueError(
+                    "density-matrix logical provenance physical_distribution_size must match physical output"
+                )
+            if (
+                self.provenance.reported_distribution_size
+                != len(self.reported_classical_output_distribution.probabilities)
+            ):
+                raise ValueError(
+                    "density-matrix logical provenance reported_distribution_size must match reported output"
+                )
+            if self.provenance.classical_result_ids != classical_return_ids:
+                raise ValueError(
+                    "density-matrix logical provenance classical_result_ids must match classical returns"
+                )
+            if self.provenance.readout_channel is None:
+                if (
+                    self.reported_classical_output_distribution.probabilities
+                    != self.physical_classical_output_distribution.probabilities
+                ):
+                    raise ValueError(
+                        "density-matrix logical reported distribution must equal physical distribution without readout noise"
+                    )
+            if (
+                self.provenance.reported_matches_physical
+                != (
+                    self.reported_classical_output_distribution.probabilities
+                    == self.physical_classical_output_distribution.probabilities
+                )
+            ):
+                raise ValueError(
+                    "density-matrix logical provenance reported_matches_physical must match distributions"
+                )
         elif any(distribution is not None for distribution in distributions):
             raise ValueError(
                 "density-matrix logical runs without classical returns cannot expose "
                 "classical distributions"
             )
+        else:
+            if self.provenance.physical_distribution_size is not None:
+                raise ValueError(
+                    "density-matrix logical provenance must omit distribution sizes without classical returns"
+                )
+            if self.provenance.classical_result_ids:
+                raise ValueError(
+                    "density-matrix logical provenance must omit classical_result_ids without classical returns"
+                )
         quantum_return_ids = self.compilation.readout.quantum_return_ids()
         if tuple(value.logical_qubit_id for value in self.returned_quantum_values) != (
             quantum_return_ids
@@ -490,10 +729,17 @@ def _run_logical_compilation(
             simulation,
             readout_channel=execution.noise_model.readout_channel,
         )
+        provenance = _build_density_execution_provenance(
+            compilation=compilation,
+            simulation=simulation,
+            execution=execution,
+            physical_distribution=physical_distribution,
+            reported_distribution=reported_distribution,
+        )
         return DensityMatrixLogicalRunResult(
             compilation=compilation,
             simulation=simulation,
-            execution_request=execution,
+            provenance=provenance,
             physical_classical_output_distribution=physical_distribution,
             reported_classical_output_distribution=reported_distribution,
             returned_quantum_values=_returned_quantum_values(compilation),
@@ -563,6 +809,10 @@ def build_density_noise_impact_report(
         raise ValueError("density noise-impact reporting requires DensityMatrixLogicalRunResult")
 
     reference_backend_id = "reference-density-matrix"
+    if run.provenance.backend_id != reference_backend_id:
+        raise ValueError(
+            "density noise-impact reporting currently supports reference-density-matrix provenance only"
+        )
 
     ideal_simulation = simulate_density_matrix(run.compilation.ir)
     ideal_physical_distribution, _ = _density_classical_output_distributions(
@@ -586,7 +836,7 @@ def build_density_noise_impact_report(
         if run.reported_classical_output_distribution is not None
         else None
     )
-    schedule = run.execution_request.schedule
+    schedule = run.provenance.schedule
     schedule_summary = (
         NoiseImpactScheduleSummary(
             program_id=schedule.program_id,
@@ -606,8 +856,11 @@ def build_density_noise_impact_report(
             ideal_baseline_mode=NoiseImpactBaselineMode.IDEAL_NOISE_DISABLED_REPLAY,
             noisy_schedule=schedule_summary,
             noisy_idle_decoherence=(
-                run.execution_request.idle_decoherence.to_dict()
-                if run.execution_request.idle_decoherence is not None
+                IdleDecoherenceProfileSnapshot(
+                    t1_ns=run.provenance.idle_decoherence.t1_ns,
+                    t2_ns=run.provenance.idle_decoherence.t2_ns,
+                )
+                if run.provenance.idle_decoherence is not None
                 else None
             ),
             ideal_baseline_derivation=(
@@ -616,19 +869,95 @@ def build_density_noise_impact_report(
                 "not executed during ideal replay"
             ),
         ),
-        ideal_density_matrix=ideal_simulation.density_matrix,
-        noisy_density_matrix=run.simulation.density_matrix,
-        qubit_count=run.compilation.ir.qubit_count,
+        ideal_density_matrix=ValidatedDensityState(
+            density_matrix=ideal_simulation.density_matrix,
+            qubit_count=run.compilation.ir.qubit_count,
+        ),
+        noisy_density_matrix=ValidatedDensityState(
+            density_matrix=run.simulation.density_matrix,
+            qubit_count=run.compilation.ir.qubit_count,
+        ),
         ideal_physical_distribution=ideal_probabilities,
         noisy_physical_distribution=noisy_physical_probabilities,
         reported_distribution=reported_probabilities,
         idle_events=run.simulation.idle_decoherence_events,
         gate_events=run.simulation.gate_noise_events,
         readout_channel=(
-            run.execution_request.noise_model.readout_channel.to_dict()
-            if run.execution_request.noise_model.readout_channel is not None
+            BinaryReadoutChannelSnapshot(
+                p_one_given_zero=run.provenance.readout_channel.p_one_given_zero,
+                p_zero_given_one=run.provenance.readout_channel.p_zero_given_one,
+            )
+            if run.provenance.readout_channel is not None
             else None
         ),
+    )
+
+
+def _build_density_execution_provenance(
+    *,
+    compilation: LogicalCompilationResult,
+    simulation: DensityMatrixResult,
+    execution: DensityMatrixExecutionRequest,
+    physical_distribution: ExactClassicalDistribution | None,
+    reported_distribution: ExactClassicalDistribution | None,
+) -> DensityExecutionProvenanceSnapshot:
+    if simulation.circuit.id != compilation.ir.id:
+        raise ValueError("density execution provenance simulation circuit must match compilation IR")
+    schedule_snapshot = (
+        DensityExecutionScheduleSnapshot(
+            program_id=execution.schedule.program_id,
+            operation_fingerprint=execution.schedule.operation_fingerprint,
+            peak_duration_ns=execution.schedule.peak_duration_ns,
+        )
+        if execution.schedule is not None
+        else None
+    )
+    readout_channel = execution.noise_model.readout_channel
+    if (physical_distribution is None) != (reported_distribution is None):
+        raise ValueError(
+            "density execution provenance requires physical and reported distributions to be paired"
+        )
+    if physical_distribution is None:
+        classical_result_ids: tuple[ClassicalBitId, ...] = ()
+        physical_size: int | None = None
+        reported_size: int | None = None
+        reported_matches: bool | None = None
+    else:
+        assert reported_distribution is not None
+        if physical_distribution.result_ids != reported_distribution.result_ids:
+            raise ValueError(
+                "density execution provenance requires matching physical and reported result IDs"
+            )
+        classical_result_ids = physical_distribution.result_ids
+        physical_size = len(physical_distribution.probabilities)
+        reported_size = len(reported_distribution.probabilities)
+        reported_matches = (
+            physical_distribution.probabilities == reported_distribution.probabilities
+        )
+        if readout_channel is None and not reported_matches:
+            raise ValueError(
+                "density execution provenance requires matching physical and reported "
+                "distributions when readout_channel is absent"
+            )
+
+    gate_event_operation_ids = tuple(
+        event.operation_id for event in simulation.gate_noise_events
+    )
+    idle_event_slots = tuple(event.slot for event in simulation.idle_decoherence_events)
+
+    return DensityExecutionProvenanceSnapshot(
+        circuit_id=compilation.ir.id,
+        backend_id="reference-density-matrix",
+        schedule=schedule_snapshot,
+        idle_decoherence=execution.idle_decoherence,
+        gate_noise_bindings=execution.noise_model.gate_channels,
+        readout_channel=readout_channel,
+        gate_event_operation_ids=gate_event_operation_ids,
+        idle_event_slots=idle_event_slots,
+        classical_result_ids=classical_result_ids,
+        physical_distribution_size=physical_size,
+        reported_distribution_size=reported_size,
+        reported_matches_physical=reported_matches,
     )
 
 
