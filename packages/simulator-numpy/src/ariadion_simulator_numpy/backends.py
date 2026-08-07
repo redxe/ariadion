@@ -26,6 +26,8 @@ from ariadion_simulator import (
     DensityMatrixTerminalObservationError,
     ExactResetUnsupportedError,
     ExactTerminalObservationError,
+    IdleDecoherenceEvent,
+    IdleInterval,
     OperatorStructure,
     SimulationCapabilities,
     SimulationNormError,
@@ -34,8 +36,10 @@ from ariadion_simulator import (
     SimulationResult,
     StateRepresentation,
     build_simulation_plan,
+    idle_decoherence_channels_for_duration,
     kernel_metadata_for_operation,
 )
+from ariadion_noise import NoiseFeature
 
 NUMPY_COMPLEX_DTYPE: Final = np.dtype(np.complex128)
 """Fixed precision for reference parity; mixed precision is intentionally unsupported."""
@@ -51,14 +55,14 @@ _ONE_QUBIT_GATE_BY_OPCODE: Final = {
 _NUMPY_STATE_VECTOR_CAPABILITIES: Final = SimulationCapabilities(
     representations=(StateRepresentation.STATE_VECTOR,),
     queries=(SimulationQuery.FULL_STATE, SimulationQuery.PROBABILITIES),
-    supports_noise=False,
+    noise_features=(),
     supports_reset=False,
     supports_sampling=False,
 )
 _NUMPY_DENSITY_MATRIX_CAPABILITIES: Final = SimulationCapabilities(
     representations=(StateRepresentation.DENSITY_MATRIX,),
     queries=(SimulationQuery.FULL_STATE, SimulationQuery.PROBABILITIES),
-    supports_noise=True,
+    noise_features=(NoiseFeature.GATE_CHANNELS, NoiseFeature.IDLE_DECOHERENCE),
     supports_reset=True,
     supports_sampling=False,
 )
@@ -178,6 +182,18 @@ class NumpyDensityMatrixBackend:
         density = np.zeros((dimension, dimension), dtype=NUMPY_COMPLEX_DTYPE)
         density[0, 0] = 1
         terminal_observation: tuple[IrOperationId, int] | None = None
+
+        # Idle decoherence tracking: requires both schedule and idle_decoherence.
+        apply_idle = request.schedule is not None and request.idle_decoherence is not None
+        schedule_lookup: dict[IrOperationId, tuple[float, float]] = {}
+        if apply_idle and request.schedule is not None:
+            schedule_lookup = {
+                op.operation_id: (op.start_ns, op.end_ns)
+                for op in request.schedule.scheduled_operations
+            }
+        slot_last_end: dict[int, float] = {s: 0.0 for s in range(circuit.qubit_count)}
+        decoherence_events: list[IdleDecoherenceEvent] = []
+
         for step_index, operation in enumerate(circuit.operations):
             if terminal_observation is not None and operation.opcode is not OpCode.MEASURE:
                 observed_operation_id, observed_step_index = terminal_observation
@@ -187,6 +203,50 @@ class NumpyDensityMatrixBackend:
                     following_operation_id=operation.id,
                     following_step_index=step_index,
                 )
+
+            # Apply idle decoherence for every involved slot before this operation.
+            if apply_idle and request.idle_decoherence is not None:
+                scheduled = schedule_lookup.get(operation.id)
+                if scheduled is not None:
+                    op_start_ns, op_end_ns = scheduled
+                    involved_slots = list(operation.targets) + list(operation.controls)
+                    for slot in involved_slots:
+                        idle_start = slot_last_end[slot]
+                        idle_end = op_start_ns
+                        if idle_end > idle_start:
+                            interval = IdleInterval(
+                                slot=slot, start_ns=idle_start, end_ns=idle_end
+                            )
+                            amp_ch, phase_ch, gamma1, p_phi, assumptions = (
+                                idle_decoherence_channels_for_duration(
+                                    interval.duration_ns, request.idle_decoherence
+                                )
+                            )
+                            if amp_ch is not None:
+                                density = _apply_quantum_channel(
+                                    density,
+                                    target=slot,
+                                    qubit_count=circuit.qubit_count,
+                                    channel=amp_ch,
+                                )
+                            if phase_ch is not None:
+                                density = _apply_quantum_channel(
+                                    density,
+                                    target=slot,
+                                    qubit_count=circuit.qubit_count,
+                                    channel=phase_ch,
+                                )
+                            decoherence_events.append(
+                                IdleDecoherenceEvent(
+                                    slot=slot,
+                                    interval=interval,
+                                    amplitude_damping_probability=gamma1,
+                                    phase_damping_probability=p_phi,
+                                    assumptions=assumptions,
+                                )
+                            )
+                        slot_last_end[slot] = op_end_ns
+
             if operation.opcode is OpCode.MEASURE:
                 if terminal_observation is None:
                     terminal_observation = (operation.id, step_index)
@@ -221,11 +281,47 @@ class NumpyDensityMatrixBackend:
                     channel=channel,
                 )
 
+        # Apply remaining idle time to all slots that have not reached peak_duration_ns.
+        if apply_idle and request.schedule is not None and request.idle_decoherence is not None:
+            peak = request.schedule.peak_duration_ns
+            for slot in range(circuit.qubit_count):
+                idle_start = slot_last_end[slot]
+                if peak > idle_start:
+                    interval = IdleInterval(slot=slot, start_ns=idle_start, end_ns=peak)
+                    amp_ch, phase_ch, gamma1, p_phi, assumptions = (
+                        idle_decoherence_channels_for_duration(
+                            interval.duration_ns, request.idle_decoherence
+                        )
+                    )
+                    if amp_ch is not None:
+                        density = _apply_quantum_channel(
+                            density,
+                            target=slot,
+                            qubit_count=circuit.qubit_count,
+                            channel=amp_ch,
+                        )
+                    if phase_ch is not None:
+                        density = _apply_quantum_channel(
+                            density,
+                            target=slot,
+                            qubit_count=circuit.qubit_count,
+                            channel=phase_ch,
+                        )
+                    decoherence_events.append(
+                        IdleDecoherenceEvent(
+                            slot=slot,
+                            interval=interval,
+                            amplitude_damping_probability=gamma1,
+                            phase_damping_probability=p_phi,
+                            assumptions=assumptions,
+                        )
+                    )
+
         matrix = tuple(
             tuple(complex(value) for value in row)
             for row in density
         )
-        return DensityMatrixResult(circuit, matrix)
+        return DensityMatrixResult(circuit, matrix, tuple(decoherence_events))
 
 
 def _apply_statevector_operation(

@@ -37,7 +37,7 @@
 
 The next implementation work must preserve this order:
 
-1. Add scheduling and T1/T2 idle decoherence.
+1. Add scheduling and T1/T2 idle decoherence. (complete)
 2. Add noise-impact explanations.
 3. Add bare reliability estimation.
 4. Add pluggable protection-planning interfaces, then encoded-QEC simulation and

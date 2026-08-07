@@ -377,6 +377,56 @@ class NoiseBindingResult:
         return canonical_json(self.to_dict())
 
 
+@dataclass(frozen=True, slots=True)
+class IdleDecoherenceProfile:
+    """T1/T2 time constants for executable idle-decoherence channel calculation.
+
+    At least one of ``t1_ns`` and ``t2_ns`` must be supplied. When both are
+    given, ``t2_ns`` must satisfy ``t2_ns <= 2 * t1_ns``; a larger value would
+    imply a negative pure-dephasing rate, which is unphysical.
+
+    Behavior by supplied constants:
+
+    * Only T1 given: amplitude-damping channel only; no additional pure-dephasing
+      channel is applied.
+    * Only T2 given: pure phase-damping only; no population loss.
+    * Both given: amplitude damping at rate T1 plus additional phase damping chosen
+      so the total coherence decay equals ``exp(-t / t2_ns)``.
+
+    Zero idle duration always produces identity evolution regardless of which
+    constants are supplied.
+    """
+
+    t1_ns: float | None = None
+    t2_ns: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.t1_ns is None and self.t2_ns is None:
+            raise ValueError("idle decoherence profile requires t1_ns or t2_ns")
+        t1 = (
+            _normalize_positive_number(self.t1_ns, label="idle decoherence profile t1_ns")
+            if self.t1_ns is not None
+            else None
+        )
+        t2 = (
+            _normalize_positive_number(self.t2_ns, label="idle decoherence profile t2_ns")
+            if self.t2_ns is not None
+            else None
+        )
+        if t1 is not None and t2 is not None and t2 > 2 * t1:
+            raise ValueError(
+                "idle decoherence profile t2_ns must be less than or equal to 2 * t1_ns"
+            )
+        object.__setattr__(self, "t1_ns", t1)
+        object.__setattr__(self, "t2_ns", t2)
+
+    def to_dict(self) -> dict[str, float | None]:
+        return {"t1_ns": self.t1_ns, "t2_ns": self.t2_ns}
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
 def validate_quantum_channel(channel: QuantumChannel) -> KrausOperators:
     """Validate and return one executable one-qubit Kraus channel.
 
@@ -453,6 +503,17 @@ def _normalize_probability(value: object, *, label: str) -> float:
     return probability
 
 
+def _normalize_positive_number(value: object, *, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be numeric")
+    number = float(value)
+    if not isfinite(number):
+        raise ValueError(f"{label} must be finite")
+    if number <= 0:
+        raise ValueError(f"{label} must be positive")
+    return number
+
+
 def _require_binary_bit(value: object, *, label: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value not in {0, 1}:
         raise ValueError(f"{label} must be an integer bit")
@@ -470,6 +531,7 @@ __all__ = [
     "DepolarizingChannel",
     "ExecutableNoiseModel",
     "GateChannelBinding",
+    "IdleDecoherenceProfile",
     "KRAUS_COMPLETENESS_ABS_TOLERANCE",
     "KrausOperator",
     "KrausOperators",

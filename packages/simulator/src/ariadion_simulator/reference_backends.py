@@ -13,6 +13,7 @@ from .backend import (
     StateRepresentation,
     build_simulation_plan,
 )
+from ariadion_noise import NoiseFeature
 from .density_matrix import (
     DensityMatrixExecutionRequest,
     DensityMatrixResult,
@@ -28,21 +29,21 @@ from .statevector import (
 _REFERENCE_STATE_VECTOR_CAPABILITIES: Final = SimulationCapabilities(
     representations=(StateRepresentation.STATE_VECTOR,),
     queries=(SimulationQuery.FULL_STATE, SimulationQuery.PROBABILITIES),
-    supports_noise=False,
+    noise_features=(),
     supports_reset=False,
     supports_sampling=False,
 )
 _REFERENCE_SAMPLED_TRAJECTORY_CAPABILITIES: Final = SimulationCapabilities(
     representations=(StateRepresentation.STATE_VECTOR,),
     queries=(SimulationQuery.FULL_STATE, SimulationQuery.SAMPLES),
-    supports_noise=False,
+    noise_features=(),
     supports_reset=True,
     supports_sampling=True,
 )
 _REFERENCE_DENSITY_MATRIX_CAPABILITIES: Final = SimulationCapabilities(
     representations=(StateRepresentation.DENSITY_MATRIX,),
     queries=(SimulationQuery.FULL_STATE, SimulationQuery.PROBABILITIES),
-    supports_noise=True,
+    noise_features=(NoiseFeature.GATE_CHANNELS, NoiseFeature.IDLE_DECOHERENCE),
     supports_reset=True,
     supports_sampling=False,
 )

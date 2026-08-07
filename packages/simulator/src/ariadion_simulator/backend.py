@@ -13,6 +13,7 @@ from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 from ariadion_core import canonical_json, require_nonempty_identifier
 from ariadion_ir import CircuitIR
+from ariadion_noise import NoiseFeature
 
 
 class StateRepresentation(str, Enum):
@@ -44,13 +45,23 @@ _REPRESENTATION_ORDER = {
 _QUERY_ORDER = {query: index for index, query in enumerate(SimulationQuery)}
 
 
+_NOISE_FEATURE_ORDER = {feature: index for index, feature in enumerate(NoiseFeature)}
+
+
 @dataclass(frozen=True, slots=True)
 class SimulationCapabilities:
-    """Declared backend support without exposing numerical implementation details."""
+    """Declared backend support with explicit noise-feature granularity.
+
+    ``noise_features`` lists each noise capability the backend can execute,
+    e.g. ``GATE_CHANNELS`` or ``IDLE_DECOHERENCE``. The derived
+    ``supports_noise`` property returns ``True`` when any noise feature is
+    present, preserving backward-compatible intent without hiding which
+    capabilities are actually available.
+    """
 
     representations: tuple[StateRepresentation, ...]
     queries: tuple[SimulationQuery, ...]
-    supports_noise: bool
+    noise_features: tuple[NoiseFeature, ...]
     supports_reset: bool
     supports_sampling: bool
 
@@ -72,8 +83,15 @@ class SimulationCapabilities:
             raise ValueError("simulation capabilities queries must contain SimulationQuery values")
         if len(self.queries) != len(set(self.queries)):
             raise ValueError("simulation capabilities queries must be unique")
+        if not isinstance(self.noise_features, tuple):
+            raise ValueError("simulation capabilities noise_features must be a tuple")
+        if not all(isinstance(feature, NoiseFeature) for feature in self.noise_features):
+            raise ValueError(
+                "simulation capabilities noise_features must contain NoiseFeature values"
+            )
+        if len(self.noise_features) != len(set(self.noise_features)):
+            raise ValueError("simulation capabilities noise_features must be unique")
         for value, label in (
-            (self.supports_noise, "supports_noise"),
             (self.supports_reset, "supports_reset"),
             (self.supports_sampling, "supports_sampling"),
         ):
@@ -89,6 +107,16 @@ class SimulationCapabilities:
             "queries",
             tuple(sorted(self.queries, key=_QUERY_ORDER.__getitem__)),
         )
+        object.__setattr__(
+            self,
+            "noise_features",
+            tuple(sorted(self.noise_features, key=_NOISE_FEATURE_ORDER.__getitem__)),
+        )
+
+    @property
+    def supports_noise(self) -> bool:
+        """Return ``True`` when any noise feature is declared."""
+        return bool(self.noise_features)
 
     def supports(self, representation: StateRepresentation, query: SimulationQuery) -> bool:
         """Return whether this backend supports the requested semantic work."""
@@ -99,7 +127,7 @@ class SimulationCapabilities:
         return {
             "representations": [representation.value for representation in self.representations],
             "queries": [query.value for query in self.queries],
-            "supports_noise": self.supports_noise,
+            "noise_features": [feature.value for feature in self.noise_features],
             "supports_reset": self.supports_reset,
             "supports_sampling": self.supports_sampling,
         }

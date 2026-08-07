@@ -14,13 +14,19 @@ from typing import Final, TypeAlias
 
 from ariadion_ir import CircuitIR, IrOperationId, OpCode, Operation
 from ariadion_noise import (
+    AmplitudeDampingChannel,
     ExecutableNoiseModel,
+    IdleDecoherenceProfile,
     KrausOperator,
     OneQubitGate,
+    PhaseDampingChannel,
     QuantumChannel,
     validate_executable_noise_model,
     validate_quantum_channel,
 )
+
+from .idle_decoherence import IdleDecoherenceEvent, idle_decoherence_channels_for_duration
+from .scheduling import ExecutionSchedule, IdleInterval
 
 DENSITY_MATRIX_ABS_TOLERANCE: Final = 1e-12
 """Absolute tolerance for Hermiticity and trace-one validation."""
@@ -70,14 +76,31 @@ class DensityMatrixTerminalObservationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class DensityMatrixExecutionRequest:
-    """Explicitly select exact density-matrix execution and its typed noise model."""
+    """Explicitly select exact density-matrix execution and its typed noise model.
+
+    ``schedule`` and ``idle_decoherence`` must be supplied together to activate
+    idle-decoherence channels. Supplying one without the other leaves idle
+    decoherence inactive.
+    """
 
     noise_model: ExecutableNoiseModel = field(default_factory=ExecutableNoiseModel)
+    schedule: ExecutionSchedule | None = None
+    idle_decoherence: IdleDecoherenceProfile | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.noise_model, ExecutableNoiseModel):
             raise ValueError(
                 "density-matrix execution noise_model must be an ExecutableNoiseModel"
+            )
+        if self.schedule is not None and not isinstance(self.schedule, ExecutionSchedule):
+            raise ValueError(
+                "density-matrix execution schedule must be an ExecutionSchedule"
+            )
+        if self.idle_decoherence is not None and not isinstance(
+            self.idle_decoherence, IdleDecoherenceProfile
+        ):
+            raise ValueError(
+                "density-matrix execution idle_decoherence must be an IdleDecoherenceProfile"
             )
 
 
@@ -87,6 +110,7 @@ class DensityMatrixResult:
 
     circuit: CircuitIR
     density_matrix: DensityMatrix
+    idle_decoherence_events: tuple[IdleDecoherenceEvent, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.circuit, CircuitIR):
@@ -96,6 +120,13 @@ class DensityMatrixResult:
         ):
             raise DensityMatrixInvariantError("density matrix must be an immutable tuple of rows")
         _validate_density_matrix(self.density_matrix, qubit_count=self.circuit.qubit_count)
+        if not isinstance(self.idle_decoherence_events, tuple) or not all(
+            isinstance(event, IdleDecoherenceEvent) for event in self.idle_decoherence_events
+        ):
+            raise DensityMatrixInvariantError(
+                "density-matrix result idle_decoherence_events must be a tuple of "
+                "IdleDecoherenceEvent values"
+            )
 
     @property
     def probabilities(self) -> tuple[float, ...]:
@@ -111,9 +142,16 @@ def simulate_density_matrix(
 ) -> DensityMatrixResult:
     """Run ideal or explicitly configured noisy exact density-matrix execution.
 
-    Every configured channel is resolved through its neutral public gate category,
-    then applied after the matching ideal single-qubit operation. Unbound opcodes
-    remain ideal. No trace argument exists because current traces are amplitude-only.
+    Every configured gate channel is resolved through its neutral public gate
+    category, then applied after the matching ideal single-qubit operation.
+    When both ``schedule`` and ``idle_decoherence`` are supplied in the request,
+    idle-decoherence channels are applied to each slot just before the slot's
+    next operation, using the ASAP schedule to determine the idle interval.
+    Remaining idle time after the last operation is applied at the end.
+
+    Cheap invariant checks (finite entries, Hermiticity, trace-one) are applied
+    after each step. The cubic positive-semidefiniteness audit runs once when the
+    final ``DensityMatrixResult`` is constructed.
     """
 
     if not isinstance(circuit, CircuitIR):
@@ -130,6 +168,17 @@ def simulate_density_matrix(
     density[0][0] = 1 + 0j
     terminal_observation: tuple[IrOperationId, int] | None = None
 
+    # Idle decoherence tracking: requires both schedule and idle_decoherence.
+    apply_idle = request.schedule is not None and request.idle_decoherence is not None
+    schedule_lookup: dict[IrOperationId, tuple[float, float]] = {}
+    if apply_idle and request.schedule is not None:
+        schedule_lookup = {
+            op.operation_id: (op.start_ns, op.end_ns)
+            for op in request.schedule.scheduled_operations
+        }
+    slot_last_end: dict[int, float] = {s: 0.0 for s in range(circuit.qubit_count)}
+    decoherence_events: list[IdleDecoherenceEvent] = []
+
     for step_index, operation in enumerate(circuit.operations):
         if terminal_observation is not None and operation.opcode is not OpCode.MEASURE:
             observed_operation_id, observed_step_index = terminal_observation
@@ -139,6 +188,44 @@ def simulate_density_matrix(
                 following_operation_id=operation.id,
                 following_step_index=step_index,
             )
+
+        # Apply idle decoherence for every involved slot before this operation.
+        if apply_idle and request.idle_decoherence is not None:
+            scheduled = schedule_lookup.get(operation.id)
+            if scheduled is not None:
+                op_start_ns, op_end_ns = scheduled
+                involved_slots = list(operation.targets) + list(operation.controls)
+                for slot in involved_slots:
+                    idle_start = slot_last_end[slot]
+                    idle_end = op_start_ns
+                    if idle_end > idle_start:
+                        interval = IdleInterval(
+                            slot=slot, start_ns=idle_start, end_ns=idle_end
+                        )
+                        amp_ch, phase_ch, gamma1, p_phi, assumptions = (
+                            idle_decoherence_channels_for_duration(
+                                interval.duration_ns, request.idle_decoherence
+                            )
+                        )
+                        if amp_ch is not None:
+                            density = _apply_quantum_channel(
+                                density, target=slot, channel=amp_ch
+                            )
+                        if phase_ch is not None:
+                            density = _apply_quantum_channel(
+                                density, target=slot, channel=phase_ch
+                            )
+                        decoherence_events.append(
+                            IdleDecoherenceEvent(
+                                slot=slot,
+                                interval=interval,
+                                amplitude_damping_probability=gamma1,
+                                phase_damping_probability=p_phi,
+                                assumptions=assumptions,
+                            )
+                        )
+                    slot_last_end[slot] = op_end_ns
+
         if operation.opcode is OpCode.MEASURE:
             if terminal_observation is None:
                 terminal_observation = (operation.id, step_index)
@@ -155,12 +242,56 @@ def simulate_density_matrix(
                         target=operation.targets[0],
                         channel=channel,
                     )
-        _validate_density_matrix(density, qubit_count=circuit.qubit_count)
+        # Cheap O(n^2) invariant check after each step; PSD runs once at result construction.
+        _validate_density_matrix_invariants(density, qubit_count=circuit.qubit_count)
+
+    # Apply remaining idle time to all slots that have not reached peak_duration_ns.
+    if apply_idle and request.schedule is not None and request.idle_decoherence is not None:
+        peak = request.schedule.peak_duration_ns
+        for slot in range(circuit.qubit_count):
+            idle_start = slot_last_end[slot]
+            if peak > idle_start:
+                interval = IdleInterval(slot=slot, start_ns=idle_start, end_ns=peak)
+                amp_ch, phase_ch, gamma1, p_phi, assumptions = (
+                    idle_decoherence_channels_for_duration(
+                        interval.duration_ns, request.idle_decoherence
+                    )
+                )
+                if amp_ch is not None:
+                    density = _apply_quantum_channel(density, target=slot, channel=amp_ch)
+                if phase_ch is not None:
+                    density = _apply_quantum_channel(density, target=slot, channel=phase_ch)
+                decoherence_events.append(
+                    IdleDecoherenceEvent(
+                        slot=slot,
+                        interval=interval,
+                        amplitude_damping_probability=gamma1,
+                        phase_damping_probability=p_phi,
+                        assumptions=assumptions,
+                    )
+                )
 
     return DensityMatrixResult(
         circuit=circuit,
         density_matrix=tuple(tuple(row) for row in density),
+        idle_decoherence_events=tuple(decoherence_events),
     )
+
+
+def validate_density_matrix(
+    density_matrix: DensityMatrix,
+    *,
+    qubit_count: int,
+) -> None:
+    """Explicitly audit a density matrix for all physical invariants.
+
+    Checks finite entries, Hermiticity, trace-one, and positive semidefiniteness.
+    This is the full physical audit intended for externally constructed matrices
+    and explicit validation requests; it includes the cubic-cost PSD check.
+
+    Raises ``DensityMatrixInvariantError`` if any invariant is violated.
+    """
+    _validate_density_matrix(density_matrix, qubit_count=qubit_count)
 
 
 def measurement_probabilities(
@@ -336,11 +467,18 @@ def _apply_reset(density: list[list[complex]], target: int) -> list[list[complex
     return result
 
 
-def _validate_density_matrix(
+def _validate_density_matrix_invariants(
     density_matrix: DensityMatrix | list[list[complex]],
     *,
     qubit_count: int,
 ) -> None:
+    """Cheap O(n^2) invariant check: finite entries, Hermiticity, trace-one.
+
+    Does NOT perform the cubic positive-semidefiniteness audit. Call this after
+    each operation in a trusted simulation loop where intermediate states are
+    computed by correct unitary and CPTP operations, and call
+    ``_validate_density_matrix`` once at the public result boundary.
+    """
     if not isinstance(density_matrix, tuple | list):
         raise DensityMatrixInvariantError("density matrix must be a tuple of rows")
     if isinstance(qubit_count, bool) or not isinstance(qubit_count, int) or qubit_count < 0:
@@ -387,6 +525,15 @@ def _validate_density_matrix(
         abs_tol=DENSITY_MATRIX_ABS_TOLERANCE,
     ):
         raise DensityMatrixInvariantError("density matrix trace must equal one")
+
+
+def _validate_density_matrix(
+    density_matrix: DensityMatrix | list[list[complex]],
+    *,
+    qubit_count: int,
+) -> None:
+    _validate_density_matrix_invariants(density_matrix, qubit_count=qubit_count)
+    dimension = 1 << qubit_count
     _validate_positive_semidefinite(density_matrix, dimension=dimension)
 
 
@@ -457,4 +604,5 @@ __all__ = [
     "DensityMatrixTerminalObservationError",
     "measurement_probabilities",
     "simulate_density_matrix",
+    "validate_density_matrix",
 ]

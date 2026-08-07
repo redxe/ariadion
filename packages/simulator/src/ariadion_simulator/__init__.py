@@ -18,12 +18,27 @@ from .density_matrix import (
 	DensityMatrixTerminalObservationError,
 	measurement_probabilities,
 	simulate_density_matrix,
+	validate_density_matrix,
+)
+from .idle_decoherence import (
+	IdleDecoherenceEvent,
+	idle_decoherence_channels_for_duration,
 )
 from .kernels import KernelMetadata, OperatorStructure, kernel_metadata_for_operation
 from .reference_backends import (
 	ReferenceDensityMatrixBackend,
 	ReferenceSampledTrajectoryBackend,
 	ReferenceStateVectorBackend,
+)
+from .scheduling import (
+	ExecutionSchedule,
+	IdleInterval,
+	MissingOperationTimingError,
+	OperationTiming,
+	OperationTimingError,
+	ScheduledOperation,
+	SchedulingInvariantError,
+	schedule_asap,
 )
 from .statevector import (
 	EXPECTED_STATE_VECTOR_NORM,
@@ -57,11 +72,19 @@ __all__ = [
 	"EXPECTED_STATE_VECTOR_NORM",
 	"ExactResetUnsupportedError",
 	"ExactTerminalObservationError",
+	"ExecutionSchedule",
+	"IdleDecoherenceEvent",
+	"IdleInterval",
+	"MissingOperationTimingError",
+	"OperationTiming",
+	"OperationTimingError",
 	"SampledExecutionRequest",
 	"SampledSimulationResult",
 	"SampledSimulationShot",
 	"SampledTraceShotCountError",
 	"STATE_VECTOR_NORM_ABS_TOLERANCE",
+	"ScheduledOperation",
+	"SchedulingInvariantError",
 	"SimulationExecution",
 	"SimulationMeasurementOutcome",
 	"SimulationNormError",
@@ -70,9 +93,12 @@ __all__ = [
 	"SimulationTrace",
 	"SimulationTraceStep",
 	"apply_operation",
+	"idle_decoherence_channels_for_duration",
 	"measurement_probabilities",
+	"schedule_asap",
 	"simulate",
 	"simulate_density_matrix",
+	"validate_density_matrix",
 	"KernelMetadata",
 	"OperatorStructure",
 	"ReferenceDensityMatrixBackend",
