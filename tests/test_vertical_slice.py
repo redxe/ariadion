@@ -233,7 +233,7 @@ class VerticalSliceTests(unittest.TestCase):
         self.assertEqual(
             provenance.to_json(),
             (
-                '{"parent_logical_operation_ids":[],'
+                '{"call_stack":[],"parent_logical_operation_ids":[],'
                 '"parent_source_ids":["documents/bell:operation:4"],'
                 '"transformation":"basis-lowering"}'
             ),

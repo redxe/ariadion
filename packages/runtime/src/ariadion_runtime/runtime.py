@@ -10,6 +10,7 @@ from ariadion_core import (
 from ariadion_ir import CircuitIR
 from ariadion_language import Program
 from ariadion_semantics import (
+    LogicalModule,
     LogicalProgram,
     ReturnShape,
     UnboundQuantumParameterError,
@@ -20,7 +21,12 @@ from ariadion_simulator import (
     simulate,
 )
 from ariadion_visualization import render_circuit
-from daidalon import LogicalCompilationResult, compile_logical_program, compile_program
+from daidalon import (
+    LogicalCompilationResult,
+    compile_logical_module,
+    compile_logical_program,
+    compile_program,
+)
 from theonoe import StateReport, inspect_amplitudes, inspect_state, render_report
 
 from .trace import (
@@ -176,6 +182,29 @@ def run_logical_program(
     if program.parameters:
         raise UnboundQuantumParameterError(program.parameters)
     compilation = compile_logical_program(program)
+    return _run_logical_compilation(compilation, trace=trace)
+
+
+def run_logical_module(
+    module: LogicalModule,
+    *,
+    trace: TraceCaptureOptions | None = None,
+) -> LogicalRunResult:
+    """Compile and execute a call-resolved module without binding root parameters."""
+
+    if module.entry_program.parameters:
+        raise UnboundQuantumParameterError(module.entry_program.parameters)
+    compilation = compile_logical_module(module)
+    return _run_logical_compilation(compilation, trace=trace)
+
+
+def _run_logical_compilation(
+    compilation: LogicalCompilationResult,
+    *,
+    trace: TraceCaptureOptions | None,
+) -> LogicalRunResult:
+    """Execute one already allocated logical compilation result."""
+
     execution_trace = None
     if trace is not None and trace.enabled:
         captured_execution = simulate(compilation.ir, trace=trace)

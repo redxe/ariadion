@@ -10,9 +10,11 @@ from .compiler import (
     LogicalSlotAllocationEntry,
     LogicalSlotAllocationPlan,
     ReadoutPlan,
+    compile_logical_module,
     compile_logical_program,
     compile_program,
     make_ir_operation_id,
+    make_invoked_logical_ir_operation_id,
     make_logical_ir_operation_id,
 )
 
@@ -28,8 +30,10 @@ __all__ = [
     "LogicalSlotAllocationEntry",
     "LogicalSlotAllocationPlan",
     "ReadoutPlan",
+    "compile_logical_module",
     "compile_logical_program",
     "compile_program",
     "make_ir_operation_id",
+    "make_invoked_logical_ir_operation_id",
     "make_logical_ir_operation_id",
 ]

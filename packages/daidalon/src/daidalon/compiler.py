@@ -21,6 +21,7 @@ from ariadion_core import (
 )
 from ariadion_ir import (
     AngleMetadata,
+    CallFrameProvenance,
     CircuitIR,
     ObservationMetadata,
     OpCode,
@@ -29,8 +30,10 @@ from ariadion_ir import (
 )
 from ariadion_language import Angle, Basis, Program, SourceOperation
 from ariadion_semantics import (
+    LogicalCallOperation,
     LogicalGateOpCode,
     LogicalGateOperation,
+    LogicalModule,
     LogicalProgram,
     LogicalRotationOperation,
     NoneReturn,
@@ -465,6 +468,34 @@ def compile_logical_program(program: LogicalProgram) -> LogicalCompilationResult
     )
 
 
+def compile_logical_module(module: LogicalModule) -> LogicalCompilationResult:
+    """Allocate the module entry and lower semantic calls through explicit bindings."""
+
+    if not isinstance(module, LogicalModule):
+        raise ValueError("logical module compiler input must be LogicalModule")
+    diagnostics = _validate_logical_module_lowering(module)
+    if diagnostics:
+        raise CompileError(tuple(diagnostics))
+
+    entry_program = module.entry_program
+    logical_allocation = _allocate_logical_program(entry_program)
+    slots = {
+        entry.logical_qubit_id: entry.slot
+        for entry in logical_allocation.entries
+    }
+    operations = _lower_logical_module(module, slots)
+    return LogicalCompilationResult(
+        ir=CircuitIR(
+            entry_program.id,
+            entry_program.name,
+            logical_allocation.allocated_qubit_count,
+            operations,
+        ),
+        logical_allocation=logical_allocation,
+        readout=_build_readout_plan(entry_program, slots),
+    )
+
+
 def _validate(program: Program) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
     if program.qubit_count <= 0:
@@ -556,6 +587,15 @@ def _validate_logical_lowering(program: LogicalProgram) -> list[Diagnostic]:
                         f"logical gate {instruction.opcode.value!r} has no supported lowering",
                     )
                 )
+        elif isinstance(instruction, LogicalCallOperation):
+            diagnostics.append(
+                _logical_instruction_diagnostic(
+                    index,
+                    instruction,
+                    "A203",
+                    "logical calls require compilation through compile_logical_module",
+                )
+            )
         else:
             has_observation = True
             if instruction.basis.name != _Z_BASIS_NAME:
@@ -568,6 +608,136 @@ def _validate_logical_lowering(program: LogicalProgram) -> list[Diagnostic]:
                         f"received {instruction.basis.name!r}",
                     )
                 )
+    return diagnostics
+
+
+def _validate_logical_module_lowering(module: LogicalModule) -> list[Diagnostic]:
+    """Validate call expansion without letting a callee escape the first slice."""
+
+    diagnostics: list[Diagnostic] = []
+    programs_by_id = {program.id: program for program in module.programs}
+
+    def validate_program(
+        program: LogicalProgram,
+        bound_logical_ids: dict[LogicalQubitId, LogicalQubitId],
+    ) -> None:
+        has_observation = False
+        for index, instruction in enumerate(program.instructions):
+            if isinstance(instruction, (LogicalGateOperation, LogicalRotationOperation)):
+                if has_observation:
+                    diagnostics.append(
+                        _logical_instruction_diagnostic(
+                            index,
+                            instruction,
+                            "A202",
+                            "exact state-vector execution supports terminal observations only",
+                        )
+                    )
+                if (
+                    isinstance(instruction, LogicalGateOperation)
+                    and instruction.opcode not in _LOGICAL_GATE_OPCODE_MAP
+                ):
+                    diagnostics.append(
+                        _logical_instruction_diagnostic(
+                            index,
+                            instruction,
+                            "A200",
+                            f"logical gate {instruction.opcode.value!r} has no supported lowering",
+                        )
+                    )
+                if (
+                    isinstance(instruction, LogicalGateOperation)
+                    and instruction.opcode is LogicalGateOpCode.CX
+                    and bound_logical_ids.get(
+                        instruction.controls[0], instruction.controls[0]
+                    )
+                    == bound_logical_ids.get(instruction.targets[0], instruction.targets[0])
+                ):
+                    diagnostics.append(
+                        _logical_instruction_diagnostic(
+                            index,
+                            instruction,
+                            "A205",
+                            "logical call bindings cannot lower CX control and target "
+                            "to the same value",
+                        )
+                    )
+                continue
+            if isinstance(instruction, Observation):
+                has_observation = True
+                if instruction.basis.name != _Z_BASIS_NAME:
+                    diagnostics.append(
+                        _logical_instruction_diagnostic(
+                            index,
+                            instruction,
+                            "A201",
+                            "only z-basis observations are supported by logical allocation "
+                            f"lowering; received {instruction.basis.name!r}",
+                        )
+                    )
+                continue
+
+            if has_observation:
+                diagnostics.append(
+                    _logical_instruction_diagnostic(
+                        index,
+                        instruction,
+                        "A202",
+                        "exact state-vector execution supports terminal observations only",
+                    )
+                )
+            callee = programs_by_id[instruction.callee_program_id]
+            diagnostics.extend(_validate_module_callee(instruction, callee, index))
+            callee_bound_logical_ids = {
+                binding.parameter_id: bound_logical_ids.get(
+                    binding.argument_id,
+                    binding.argument_id,
+                )
+                for binding in instruction.arguments
+            }
+            validate_program(callee, callee_bound_logical_ids)
+
+    validate_program(module.entry_program, {})
+    return diagnostics
+
+
+def _validate_module_callee(
+    call: LogicalCallOperation,
+    callee: LogicalProgram,
+    operation_index: int,
+) -> list[Diagnostic]:
+    """Reject callable shapes that need value-lifetime semantics not available yet."""
+
+    diagnostics: list[Diagnostic] = []
+    if not isinstance(callee.return_shape, NoneReturn):
+        diagnostics.append(
+            _logical_instruction_diagnostic(
+                operation_index,
+                call,
+                "A204",
+                "composed quantum callees must return None in the current slice",
+            )
+        )
+    parameter_ids = {parameter.logical_qubit_id for parameter in callee.parameters}
+    callee_qubit_ids = {qubit.id for qubit in callee.qubits}
+    if callee_qubit_ids != parameter_ids:
+        diagnostics.append(
+            _logical_instruction_diagnostic(
+                operation_index,
+                call,
+                "A204",
+                "composed quantum callees cannot declare local Qubit() values",
+            )
+        )
+    if any(isinstance(instruction, Observation) for instruction in callee.instructions):
+        diagnostics.append(
+            _logical_instruction_diagnostic(
+                operation_index,
+                call,
+                "A204",
+                "composed quantum callees cannot contain observations",
+            )
+        )
     return diagnostics
 
 
@@ -627,14 +797,83 @@ def _build_readout_plan(
     return ReadoutPlan(observations=observations, return_shape=program.return_shape)
 
 
+def _lower_logical_module(
+    module: LogicalModule,
+    entry_slots: dict[LogicalQubitId, int],
+) -> tuple[Operation, ...]:
+    """Recursively lower semantic calls without rewriting their definition sources."""
+
+    programs_by_id = {program.id: program for program in module.programs}
+
+    def lower_program(
+        program: LogicalProgram,
+        slots: dict[LogicalQubitId, int],
+        call_stack: tuple[CallFrameProvenance, ...],
+        call_path: tuple[LogicalOperationId, ...],
+    ) -> list[Operation]:
+        operations: list[Operation] = []
+        for instruction in program.instructions:
+            if isinstance(instruction, LogicalCallOperation):
+                callee = programs_by_id[instruction.callee_program_id]
+                callee_slots = {
+                    binding.parameter_id: slots[binding.argument_id]
+                    for binding in instruction.arguments
+                }
+                frame = CallFrameProvenance(
+                    caller_program_id=program.id,
+                    call_operation_id=instruction.id,
+                    callee_program_id=callee.id,
+                    call_source=instruction.source,
+                )
+                operations.extend(
+                    lower_program(
+                        callee,
+                        callee_slots,
+                        call_stack + (frame,),
+                        call_path + (instruction.id,),
+                    )
+                )
+                continue
+            operation_id = (
+                make_invoked_logical_ir_operation_id(
+                    call_path,
+                    instruction.id,
+                    _LOGICAL_LOWERING_TRANSFORMATION,
+                    0,
+                )
+                if call_path
+                else make_logical_ir_operation_id(
+                    instruction.id,
+                    _LOGICAL_LOWERING_TRANSFORMATION,
+                    0,
+                )
+            )
+            operations.append(
+                _lower_logical_instruction(
+                    instruction,
+                    slots,
+                    ir_operation_id=operation_id,
+                    call_stack=call_stack,
+                )
+            )
+        return operations
+
+    return tuple(lower_program(module.entry_program, entry_slots, (), ()))
+
+
 def _lower_logical_instruction(
     instruction: LogicalGateOperation | LogicalRotationOperation | Observation,
     slots: dict[LogicalQubitId, int],
+    *,
+    ir_operation_id: IrOperationId | None = None,
+    call_stack: tuple[CallFrameProvenance, ...] = (),
 ) -> Operation:
     if isinstance(instruction, LogicalGateOperation):
         opcode = _LOGICAL_GATE_OPCODE_MAP[instruction.opcode]
         targets = tuple(slots[qubit_id] for qubit_id in instruction.targets)
         controls = tuple(slots[qubit_id] for qubit_id in instruction.controls)
+        if opcode is OpCode.CX and controls == targets:
+            raise RuntimeError("logical CX lowering requires distinct control and target slots")
         key = None
         observation = None
         angle_radians = None
@@ -668,7 +907,8 @@ def _lower_logical_instruction(
     return Operation(
         opcode=opcode,
         targets=targets,
-        id=make_logical_ir_operation_id(
+        id=ir_operation_id
+        or make_logical_ir_operation_id(
             instruction.id,
             _LOGICAL_LOWERING_TRANSFORMATION,
             0,
@@ -680,6 +920,7 @@ def _lower_logical_instruction(
             parent_source_ids=parent_source_ids,
             transformation=_LOGICAL_LOWERING_TRANSFORMATION,
             parent_logical_operation_ids=(instruction.id,),
+            call_stack=call_stack,
         ),
         observation=observation,
         angle_radians=angle_radians,
@@ -699,7 +940,9 @@ def _operation_diagnostic(
 
 def _logical_instruction_diagnostic(
     index: int,
-    instruction: LogicalGateOperation | LogicalRotationOperation | Observation,
+    instruction: (
+        LogicalGateOperation | LogicalRotationOperation | Observation | LogicalCallOperation
+    ),
     code: str,
     message: str,
 ) -> Diagnostic:
@@ -732,6 +975,29 @@ def make_logical_ir_operation_id(
     """Create an IR ID from semantic instruction identity rather than source IDs."""
 
     return _make_ir_operation_id(logical_operation_id, transformation, output_index)
+
+
+def make_invoked_logical_ir_operation_id(
+    call_path: tuple[LogicalOperationId, ...],
+    logical_operation_id: LogicalOperationId,
+    transformation: str,
+    output_index: int,
+) -> IrOperationId:
+    """Create a deterministic IR ID for one callee operation at one invocation path."""
+
+    if not isinstance(call_path, tuple) or not call_path:
+        raise ValueError("invoked logical IR operation IDs require a non-empty call path")
+    for call_operation_id in call_path:
+        require_nonempty_identifier(
+            call_operation_id,
+            label="invoked logical IR call operation ID",
+        )
+    require_nonempty_identifier(
+        logical_operation_id,
+        label="invoked logical IR operation ID",
+    )
+    invocation_identity = ":invoke:".join((*call_path, logical_operation_id))
+    return _make_ir_operation_id(invocation_identity, transformation, output_index)
 
 
 def _make_ir_operation_id(

@@ -2,6 +2,7 @@ from .runtime import (
 	LogicalRunResult,
 	ReturnedQuantumValue,
 	RunResult,
+	run_logical_module,
 	run_logical_program,
 	run_program,
 )
@@ -72,6 +73,7 @@ __all__ = [
 	"TraceStep",
 	"TraceStepViewModel",
 	"inspect_execution_trace",
+	"run_logical_module",
 	"run_logical_program",
 	"run_program",
 ]

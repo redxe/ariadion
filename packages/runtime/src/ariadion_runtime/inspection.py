@@ -4,7 +4,13 @@ from dataclasses import dataclass
 from typing import Final
 
 from ariadion_core import IrOperationId, ProgramId, SourceRef, canonical_json
-from ariadion_ir import AngleMetadata, ObservationMetadata, OpCode, OperationProvenance
+from ariadion_ir import (
+    AngleMetadata,
+    CallFrameProvenance,
+    ObservationMetadata,
+    OpCode,
+    OperationProvenance,
+)
 from theonoe import (
     DEFAULT_EPSILON,
     RotationAxis,
@@ -49,10 +55,17 @@ class TraceStepInspection:
     angle_metadata: AngleMetadata | None = None
     rotation_explanation: RotationExplanation | None = None
 
+    @property
+    def call_stack(self) -> tuple[CallFrameProvenance, ...]:
+        """Return semantic invocation frames without conflating them with source."""
+
+        return self.provenance.call_stack if self.provenance is not None else ()
+
     def to_dict(self) -> dict[str, object]:
         return {
             "index": self.index,
             "ir_operation_id": self.ir_operation_id,
+            "call_stack": [frame.to_dict() for frame in self.call_stack],
             "operation": {
                 "opcode": self.opcode.value,
                 "targets": list(self.targets),

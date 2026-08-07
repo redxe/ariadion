@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import ast
-import hashlib
+import builtins
 import inspect
-import json
 import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -22,6 +21,7 @@ from ariadion_core import (
 )
 from ariadion_language import (
     Basis,
+    Bit,
     Qubit,
     basis as basis_namespace,
     cx,
@@ -36,8 +36,10 @@ from ariadion_language import (
     z,
 )
 from ariadion_semantics import (
+    LogicalCallOperation,
     LogicalGateOpCode,
     LogicalGateOperation,
+    LogicalModule,
     LogicalProgram,
     LogicalQubitValue,
     LogicalRotationOperation,
@@ -45,6 +47,7 @@ from ariadion_semantics import (
     Observation,
     ObservationReason,
     ObservationResultValue,
+    QuantumArgumentBinding,
     QuantumParameter,
     ReturnValueKind,
     ReturnValueRef,
@@ -114,12 +117,6 @@ class QuantumFunction:
         repr=False,
         compare=False,
     )
-    _capture_cache: dict[str, LogicalProgram] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-        compare=False,
-    )
 
     def __post_init__(self) -> None:
         if not inspect.isfunction(self.python_function):
@@ -145,6 +142,35 @@ class QuantumFunction:
         )
 
     def to_logical_program(self) -> LogicalProgram:
+        """Capture current source and bindings without retaining stale semantic state."""
+
+        context = _CaptureContext()
+        try:
+            return context.capture(self)
+        except _CaptureAbort as error:
+            raise PythonFrontendError((error.diagnostic,)) from None
+
+    def to_logical_module(self) -> LogicalModule:
+        """Capture one resolved, acyclic module rooted at this quantum function."""
+
+        context = _CaptureContext()
+        try:
+            entry_program = context.capture(self)
+            return LogicalModule(entry_program.id, context.programs)
+        except _CaptureAbort as error:
+            raise PythonFrontendError((error.diagnostic,)) from None
+        except ValueError as error:
+            raise PythonFrontendError(
+                (
+                    FrontendDiagnostic(
+                        "P101",
+                        f"Resolved quantum function violates a semantic invariant: {error}",
+                        program_id=self.config.program_id,
+                    ),
+                )
+            ) from None
+
+    def _source_and_program_id(self) -> tuple[PythonFunctionSource, ProgramId]:
         fallback_program_id = self.config.program_id or _default_program_id(
             self.python_function.__module__ or "__main__",
             self.python_function.__qualname__,
@@ -186,22 +212,7 @@ class QuantumFunction:
             source.module_name,
             source.qualified_name,
         )
-        fingerprint = _source_fingerprint(source, self.config, program_id)
-        cached = self._capture_cache.get(fingerprint)
-        if cached is not None:
-            return cached
-
-        try:
-            program = _CaptureState(
-                function=self.python_function,
-                source=source,
-                program_id=program_id,
-                default_basis=self.config.default_basis,
-            ).capture()
-        except _CaptureAbort as error:
-            raise PythonFrontendError((error.diagnostic,)) from None
-        self._capture_cache[fingerprint] = program
-        return program
+        return source, program_id
 
 
 def quantum(
@@ -279,6 +290,89 @@ class _CaptureAbort(Exception):
         self.diagnostic = diagnostic
 
 
+class _CaptureContext:
+    """One deterministic capture traversal over the currently resolved globals."""
+
+    def __init__(self) -> None:
+        self._programs_by_id: dict[ProgramId, LogicalProgram] = {}
+        self._functions_by_program_id: dict[ProgramId, QuantumFunction] = {}
+        self._programs_in_capture_order: list[LogicalProgram] = []
+        self._active_functions_by_program_id: dict[ProgramId, QuantumFunction] = {}
+
+    @property
+    def programs(self) -> tuple[LogicalProgram, ...]:
+        return tuple(self._programs_in_capture_order)
+
+    def capture(
+        self,
+        function: QuantumFunction,
+        *,
+        invocation_source: SourceRef | None = None,
+    ) -> LogicalProgram:
+        source, program_id = function._source_and_program_id()
+        active_function = self._active_functions_by_program_id.get(program_id)
+        if active_function is function:
+            raise _CaptureAbort(
+                FrontendDiagnostic(
+                    "P115",
+                    "Recursive quantum call graphs are not supported.",
+                    source_range=(
+                        invocation_source.source_range
+                        if invocation_source is not None
+                        else None
+                    ),
+                    program_id=(
+                        invocation_source.program_id
+                        if invocation_source is not None
+                        else program_id
+                    ),
+                )
+            )
+        if active_function is not None:
+            raise _CaptureAbort(
+                self._program_id_collision_diagnostic(program_id, invocation_source)
+            )
+        existing = self._programs_by_id.get(program_id)
+        if existing is not None:
+            if self._functions_by_program_id[program_id] is not function:
+                raise _CaptureAbort(
+                    self._program_id_collision_diagnostic(program_id, invocation_source)
+                )
+            return existing
+
+        self._active_functions_by_program_id[program_id] = function
+        try:
+            program = _CaptureState(
+                function=function.python_function,
+                source=source,
+                program_id=program_id,
+                default_basis=function.config.default_basis,
+                capture_context=self,
+            ).capture()
+        finally:
+            del self._active_functions_by_program_id[program_id]
+        self._programs_by_id[program_id] = program
+        self._functions_by_program_id[program_id] = function
+        self._programs_in_capture_order.append(program)
+        return program
+
+    @staticmethod
+    def _program_id_collision_diagnostic(
+        program_id: ProgramId,
+        invocation_source: SourceRef | None,
+    ) -> FrontendDiagnostic:
+        return FrontendDiagnostic(
+            "P117",
+            "Distinct quantum functions cannot share a logical program ID.",
+            source_range=(
+                invocation_source.source_range if invocation_source is not None else None
+            ),
+            program_id=(
+                invocation_source.program_id if invocation_source is not None else program_id
+            ),
+        )
+
+
 class _CaptureState:
     def __init__(
         self,
@@ -287,18 +381,20 @@ class _CaptureState:
         source: PythonFunctionSource,
         program_id: ProgramId,
         default_basis: Basis,
+        capture_context: _CaptureContext,
     ) -> None:
         self.function = function
         self.source = source
         self.program_id = program_id
         self.default_basis = default_basis
+        self.capture_context = capture_context
         self.globals = function.__globals__
         self._source_ordinals: dict[tuple[str, int, int], int] = {}
         self._bindings: dict[str, LogicalQubitValue] = {}
         self._qubits: list[LogicalQubitValue] = []
         self._parameters: list[QuantumParameter] = []
         self._instructions: list[
-            LogicalGateOperation | LogicalRotationOperation | Observation
+            LogicalGateOperation | LogicalRotationOperation | Observation | LogicalCallOperation
         ] = []
         self._classical_bits: list[ObservationResultValue] = []
         self._classical_return_qubit_ids: set[LogicalQubitId] = set()
@@ -308,6 +404,7 @@ class _CaptureState:
 
     def capture(self) -> LogicalProgram:
         function_def = self._parse_function()
+        self._reject_closure(function_def)
         expected_return = self._parse_return_annotation(function_def)
         self._capture_parameters(function_def)
         return_shape = self._capture_body(function_def, expected_return)
@@ -325,6 +422,14 @@ class _CaptureState:
             self._fail(
                 "P101",
                 f"Resolved quantum function violates a semantic invariant: {error}",
+                function_def,
+            )
+
+    def _reject_closure(self, function_def: ast.FunctionDef) -> None:
+        if self.function.__code__.co_freevars:
+            self._fail(
+                "P114",
+                "Quantum functions with free-variable closure state are not supported.",
                 function_def,
             )
 
@@ -384,10 +489,10 @@ class _CaptureState:
                 function_def,
             )
         for position, argument in enumerate(arguments.args):
-            if not _is_name(argument.annotation, "Qubit"):
+            if not self._annotation_resolves_to(argument.annotation, "Qubit", Qubit):
                 self._fail(
                     "P108",
-                    "Quantum parameters must be annotated exactly as Qubit.",
+                    "Quantum parameters must be annotated exactly as the Ariadion Qubit class.",
                     argument.annotation or argument,
                 )
             source = self._source_for(argument, "parameter")
@@ -416,11 +521,14 @@ class _CaptureState:
                 "None is only supported as the whole-function return annotation.",
                 node,
             )
-        if _is_name(node, "Bit"):
+        if self._annotation_resolves_to(node, "Bit", Bit):
             return _ExpectedLeaf(ReturnValueKind.CLASSICAL_BIT)
-        if _is_name(node, "Qubit"):
+        if self._annotation_resolves_to(node, "Qubit", Qubit):
             return _ExpectedLeaf(ReturnValueKind.QUANTUM_VALUE)
-        if isinstance(node, ast.Subscript) and _is_name(node.value, "tuple"):
+        if (
+            isinstance(node, ast.Subscript)
+            and self._annotation_resolves_to(node.value, "tuple", builtins.tuple)
+        ):
             items = _subscript_items(node.slice)
             if not items:
                 self._fail("P109", "Tuple annotations must contain at least one item.", node)
@@ -434,6 +542,14 @@ class _CaptureState:
             "Supported annotations are None, Bit, Qubit, and nested built-in tuple forms.",
             node,
         )
+
+    def _annotation_resolves_to(
+        self,
+        node: ast.AST | None,
+        name: str,
+        expected: object,
+    ) -> bool:
+        return _is_name(node, name) and self._resolve_global_or_builtin_name(name) is expected
 
     def _capture_body(
         self,
@@ -528,15 +644,93 @@ class _CaptureState:
                 statement,
             )
         call = statement.value
-        marker = self._resolve_call_marker(
-            call.func,
-            tuple(_GATE_MARKERS) + tuple(_ROTATION_MARKERS),
-            "quantum intrinsic",
-        )
-        if marker in _GATE_MARKERS:
-            self._capture_gate(call, _GATE_MARKERS[marker])
+        if not isinstance(call.func, ast.Name):
+            self._fail("P103", "Only named quantum calls are supported.", call.func)
+        if call.func.id in self._bindings:
+            self._fail(
+                "P104",
+                f"`{call.func.id}` is locally shadowed and is not a quantum callable.",
+                call.func,
+            )
+        resolved = self._resolve_global_name(call.func.id)
+        for marker, opcode in _GATE_MARKERS.items():
+            if resolved is marker:
+                self._capture_gate(call, opcode)
+                return
+        for marker, axis in _ROTATION_MARKERS.items():
+            if resolved is marker:
+                self._capture_rotation(call, axis)
+                return
+        if isinstance(resolved, QuantumFunction):
+            self._capture_quantum_function_call(call, resolved)
             return
-        self._capture_rotation(call, _ROTATION_MARKERS[marker])
+        known_intrinsics = tuple(_GATE_MARKERS) + tuple(_ROTATION_MARKERS)
+        if call.func.id in {_callable_name(marker) for marker in known_intrinsics}:
+            self._fail(
+                "P104",
+                f"`{call.func.id}` does not resolve to the Ariadion quantum intrinsic.",
+                call.func,
+            )
+        self._fail("P103", f"Unsupported call `{call.func.id}` in @quantum function.", call.func)
+
+    def _capture_quantum_function_call(
+        self,
+        call: ast.Call,
+        callee_function: QuantumFunction,
+    ) -> None:
+        if call.keywords:
+            self._fail("P105", "Quantum function calls do not accept keyword arguments.", call)
+        source = self._source_for(call, "quantum-call")
+        callee_program = self.capture_context.capture(
+            callee_function,
+            invocation_source=source,
+        )
+        if len(call.args) != len(callee_program.parameters):
+            self._fail(
+                "P105",
+                "Quantum function call arity must match the callee quantum parameter count.",
+                call,
+            )
+        values = tuple(self._bound_qubit(argument) for argument in call.args)
+        self._validate_composed_callee(callee_program, call)
+        arguments = tuple(
+            QuantumArgumentBinding(parameter.logical_qubit_id, value.id)
+            for parameter, value in zip(callee_program.parameters, values, strict=True)
+        )
+        self._instructions.append(
+            LogicalCallOperation(
+                LogicalOperationId(f"{source.source_operation_id}:operation"),
+                callee_program.id,
+                arguments,
+                source,
+            )
+        )
+
+    def _validate_composed_callee(
+        self,
+        callee_program: LogicalProgram,
+        call: ast.Call,
+    ) -> None:
+        if any(isinstance(instruction, Observation) for instruction in callee_program.instructions):
+            self._fail(
+                "P116",
+                "Composed quantum callees cannot contain observations.",
+                call,
+            )
+        parameter_ids = {parameter.logical_qubit_id for parameter in callee_program.parameters}
+        qubit_ids = {qubit.id for qubit in callee_program.qubits}
+        if qubit_ids != parameter_ids:
+            self._fail(
+                "P116",
+                "Composed quantum callees cannot declare local Qubit() values.",
+                call,
+            )
+        if not isinstance(callee_program.return_shape, NoneReturn):
+            self._fail(
+                "P116",
+                "Composed quantum callees must return None in the current slice.",
+                call,
+            )
 
     def _capture_gate(self, call: ast.Call, opcode: LogicalGateOpCode) -> None:
         if call.keywords:
@@ -732,7 +926,7 @@ class _CaptureState:
                 f"`{function.id}` is locally shadowed and is not an intrinsic.",
                 function,
             )
-        resolved = self.globals.get(function.id, _MISSING)
+        resolved = self._resolve_global_name(function.id)
         for marker in supported:
             if resolved is marker:
                 return marker
@@ -744,6 +938,18 @@ class _CaptureState:
                 function,
             )
         self._fail("P103", f"Unsupported call `{function.id}` in @quantum function.", function)
+
+    def _resolve_global_name(self, name: str) -> object:
+        return self.globals.get(name, _MISSING)
+
+    def _resolve_global_or_builtin_name(self, name: str) -> object:
+        resolved = self._resolve_global_name(name)
+        if resolved is not _MISSING:
+            return resolved
+        builtin_namespace = self.globals.get("__builtins__", builtins)
+        if isinstance(builtin_namespace, dict):
+            return builtin_namespace.get(name, _MISSING)
+        return getattr(builtin_namespace, name, _MISSING)
 
     def _source_for(self, node: ast.AST, kind: str) -> SourceRef:
         source_range = self._range_for(node)
@@ -811,29 +1017,6 @@ def _source_function_name(qualified_name: str) -> str:
     """Return the terminal source function name from a qualified name."""
 
     return qualified_name.rsplit(".", 1)[-1]
-
-
-def _source_fingerprint(
-    source: PythonFunctionSource,
-    config: QuantumFunctionConfig,
-    program_id: ProgramId,
-) -> str:
-    normalized_text = "\n".join(
-        line.rstrip() for line in textwrap.dedent(source.text).strip().splitlines()
-    )
-    payload = {
-        "default_basis": config.default_basis.name,
-        "file": source.file,
-        "frontend_schema_version": PYTHON_FRONTEND_SCHEMA_VERSION,
-        "module_name": source.module_name,
-        "program_id": program_id,
-        "qualified_name": source.qualified_name,
-        "starting_line": source.starting_line,
-        "text": normalized_text,
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
 
 
 def _dedent_width(original: str, dedented: str) -> int:

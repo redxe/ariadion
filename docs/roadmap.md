@@ -21,12 +21,14 @@
 - safe valid-Python `@quantum` AST capture into `LogicalProgram`
 - source-provider boundary with inspected and explicit in-memory source
 - source-derived identities, source ranges, inferred typed returns, and unresolved quantum parameters
+- `LogicalModule` call graphs with explicit quantum argument bindings and acyclic validation
+- deferred Daidalon call expansion with definition and invocation provenance
 
 ## Next sequence
 
 The next implementation work must preserve this order:
 
-1. Add function composition, explicit quantum-input binding, and lifetime/escape analysis beyond `dense-no-reuse-v1`.
+1. Allow callee-local logical values, bind scalar quantum returns, and define escape/lifetime endpoints beyond `dense-no-reuse-v1`.
 2. Define sampled terminal and mid-circuit execution: shots, seeds, outcomes, collapse, feedback, reset, and post-measurement traces.
 3. Define noise-channel contracts and bind them to simulation requests.
 4. Add a small density-matrix noisy simulator.
@@ -63,9 +65,19 @@ The next implementation work must preserve this order:
 - quantum return leaves remain unobserved retained-state handles
 - explicit source-provider contracts preserve absolute ranges and deterministic IDs for inspected files and in-memory buffers
 - unsupported constructs receive source-linked frontend diagnostics; `.ari` loading and native parsing remain deferred
-- next frontend work is composition, explicit binding, ownership/lifetime analysis, and then justified extension syntax
+- next frontend work is callee-local values, quantum-return binding, ownership/lifetime analysis, and then justified extension syntax
 
-## Milestone 4 — staged noisy simulation and reliability planning
+## Milestone 4 — composed quantum functions and logical bindings — complete
+
+- preserve a quantum-function call as `LogicalCallOperation` rather than textual substitution
+- resolve a deterministic, acyclic `LogicalModule` from a root `QuantumFunction`
+- bind callee `QuantumParameter` identities to caller logical values explicitly
+- lower module calls only in Daidalon, allocating the entry program while first-slice callees remain parameter-only
+- retain callee definition source plus structured invocation `CallFrameProvenance`
+- generate invocation-specific deterministic IR operation IDs
+- reject closures, recursion, stale source-only capture assumptions, unsupported callee return/observation/local-value shapes, and unbound module-entry inputs
+
+## Milestone 5 — staged noisy simulation and reliability planning
 
 - define channel, leakage, correlation, and device-profile contracts
 - add a small density-matrix noisy simulator
@@ -74,7 +86,7 @@ The next implementation work must preserve this order:
 - add pluggable protection-planning interfaces and Pareto resource reporting
 - add encoded-QEC simulation and decoder integration only after these earlier slices
 
-## Milestone 5 — interactive debugging
+## Milestone 6 — interactive debugging
 
 - operation-by-operation snapshots
 - breakpoints and watch expressions
@@ -82,7 +94,7 @@ The next implementation work must preserve this order:
 - phase and interference explanations
 - entanglement provenance
 
-## Milestone 6 — Studio
+## Milestone 7 — Studio
 
 - editor and language server
 - synchronized code/circuit/state panes
@@ -90,7 +102,7 @@ The next implementation work must preserve this order:
 - project-driven tutorials
 - reproducible Capsules
 
-## Milestone 7 — providers and distribution
+## Milestone 8 — providers and distribution
 
 - provider-neutral execution protocol
 - cloud hardware adapters

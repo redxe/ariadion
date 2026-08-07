@@ -81,6 +81,38 @@ result = run(bell)
 $00 \,\mapsto\, 0.5$, $01 \,\mapsto\, 0$, $10 \,\mapsto\, 0$, and
 $11 \,\mapsto\, 0.5$.
 
+Captured quantum functions can now compose through explicit logical bindings:
+
+```python
+from ariadion import Bit, Qubit, cx, h, quantum, run
+
+
+@quantum
+def entangle(left: Qubit, right: Qubit) -> None:
+  h(left)
+  cx(left, right)
+
+
+@quantum
+def bell() -> tuple[Bit, Bit]:
+  left = Qubit()
+  right = Qubit()
+  entangle(left, right)
+  return left, right
+
+
+result = run(bell)
+```
+
+The `entangle(left, right)` call remains a `LogicalCallOperation` rather than
+textual substitution. Ariadion binds the callee parameters to `bell`'s existing
+logical values, then Daidalon expands it while lowering. Generated IR retains the
+definition source for `h(left)` and a separate invocation frame for the call site.
+For this first slice, a callable callee must be a parameter-only `Qubit`
+transformation that returns `None`, creates no local `Qubit()`, and contains no
+observations. Quantum or classical call results, callee-local ancillas, and
+external quantum-state injection remain later work.
+
 Rotations retain their written unit and lower to canonical radians without calling
 the angle helper as ordinary Python:
 
@@ -100,8 +132,8 @@ result = run(rotate)
 
 Quantum parameters are captured as unresolved logical inputs. They are not
 silently initialized to $|0\rangle$, so an independently executed function with a
-parameter fails with diagnostic code `P113` until a later composition and binding
-feature supplies that value:
+parameter fails with diagnostic code `P113` until a caller composition supplies
+that value:
 
 ```python
 from ariadion import Qubit, deg, quantum, rx
@@ -112,6 +144,9 @@ def rotate_input(target: Qubit) -> Qubit:
     rx(target, deg(190))
     return target
 ```
+
+Composition binds only a callee's parameter to an existing caller logical value.
+It does not bind parameters of the entry function to external runtime state.
 
 When a trace is inspected, rotation steps also carry a structured explanation:
 exact probability, relative-phase, and global-phase facts are separate from a

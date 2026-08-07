@@ -14,7 +14,7 @@ It is immutable: `next()`, `previous()`, and `go_to()` return a new session.
 `TraceStepViewModel` describes one active operation for any frontend. It exposes:
 
 - the source operation, IR operation ID, source reference, and compiler
-  provenance;
+  provenance, including a structured ordered call stack;
 - the canonical rotation angle and preserved source-unit metadata when applicable;
 - the circuit and zero-based active operation index for synchronized rendering;
 - before and after Theonoe state reports;
@@ -37,6 +37,23 @@ The session validates every inspection step against the matching trace operation
 operation ID, opcode, targets, controls, key, observation metadata, source,
 compiler provenance, and measurement record must agree. This prevents a UI from
 combining Theonoe analysis with metadata from a different operation.
+
+For a composed operation, `source` remains the callee definition location and
+`call_stack` contains `CallFrameProvenance` values for each invocation. A Studio
+or CLI projection can therefore independently render both facts:
+
+```text
+H left
+
+Defined at:
+  entangle.py:6  h(left)
+
+Called from:
+  bell.py:15  entangle(left, right)
+```
+
+The view model and inspection serialization carry the structured frame data; the
+example text is a renderer choice rather than a CLI-only encoding.
 
 ## CLI behavior
 
@@ -69,7 +86,8 @@ visibly labeled as an analytical terminal-observation marginal with an unchanged
 retained state; it is not rendered as a sampled collapse or as the logical run's
 joint returned distribution. Rotation rendering labels exact facts separately from
 educational interpretations. Terminal command parsing and input remain outside this
-rendering function.
+rendering function. The first renderer labels definition locations as `Defined at:`
+and invocation frames as `Called from:` when a call stack exists.
 
 Measurement output carries the runtime `targets_lsb_first` convention: target
 `targets[i]` maps to outcome bit `i`. See the runtime trace contract for the

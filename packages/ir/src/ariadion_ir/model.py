@@ -45,12 +45,53 @@ _ANGLE_METADATA_RADIANS_REL_TOLERANCE: Final = 1e-15
 
 
 @dataclass(frozen=True, slots=True)
+class CallFrameProvenance:
+    """One semantic invocation frame retained beside an operation's definition source."""
+
+    caller_program_id: ProgramId
+    call_operation_id: LogicalOperationId
+    callee_program_id: ProgramId
+    call_source: SourceRef | None = None
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(
+            self.caller_program_id,
+            label="call frame caller program ID",
+        )
+        require_nonempty_identifier(
+            self.call_operation_id,
+            label="call frame logical call operation ID",
+        )
+        require_nonempty_identifier(
+            self.callee_program_id,
+            label="call frame callee program ID",
+        )
+        if self.call_source is not None:
+            if not isinstance(self.call_source, SourceRef):
+                raise ValueError("call frame source must be SourceRef")
+            if self.call_source.program_id != self.caller_program_id:
+                raise ValueError("call frame source program ID must match its caller program ID")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "caller_program_id": self.caller_program_id,
+            "call_operation_id": self.call_operation_id,
+            "callee_program_id": self.callee_program_id,
+            "call_source": self.call_source.to_dict() if self.call_source is not None else None,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
 class OperationProvenance:
     """Describes source operations and transformations behind generated IR."""
 
     parent_source_ids: tuple[SourceIdentity, ...] = ()
     transformation: str | None = None
     parent_logical_operation_ids: tuple[LogicalOperationId, ...] = ()
+    call_stack: tuple[CallFrameProvenance, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.parent_source_ids, tuple):
@@ -64,12 +105,17 @@ class OperationProvenance:
                 logical_operation_id,
                 label="provenance parent logical operation ID",
             )
+        if not isinstance(self.call_stack, tuple):
+            raise ValueError("provenance call_stack must be a tuple")
+        if not all(isinstance(frame, CallFrameProvenance) for frame in self.call_stack):
+            raise ValueError("provenance call_stack must contain CallFrameProvenance values")
 
     def to_dict(self) -> dict[str, object]:
         return {
             "parent_source_ids": list(self.parent_source_ids),
             "transformation": self.transformation,
             "parent_logical_operation_ids": list(self.parent_logical_operation_ids),
+            "call_stack": [frame.to_dict() for frame in self.call_stack],
         }
 
     def to_json(self) -> str:

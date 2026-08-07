@@ -22,8 +22,9 @@ owner's data but must not silently repair, reorder, or reinterpret it.
 | Aggregate root | Mutability | Owns | Does not own |
 | --- | --- | --- | --- |
 | `Program` | Mutable while building | Source declarations, source operations, and source construction order | Compiled semantics or execution results |
-| `QuantumFunction` | Immutable wrapper with a private cache | A Python function reference, capture policy, source-provider boundary, and immutable captured `LogicalProgram` values | Invocation of the function body, IR, allocation, or execution results |
+| `QuantumFunction` | Immutable wrapper with fresh capture traversals | A Python function reference, capture policy, source-provider boundary, and immutable captured `LogicalProgram` or `LogicalModule` values | Invocation of the function body, IR, allocation, or execution results |
 | `LogicalProgram` | Immutable | Declared logical values, observation-result values, tagged return shape, quantum instructions, and logical-reference invariants | Slots, circuit width, backend policy, or execution results |
+| `LogicalModule` | Immutable | Entry program, reachable programs, call bindings, and acyclic call-graph invariants | Python function objects, slots, circuit width, or execution results |
 | `CircuitIR` | Immutable | Qubit layout, compiled operation order, IR provenance, and validated observation metadata | UI formatting, trace continuity, or backend policy |
 | `ExecutionTrace` | Immutable | Execution metadata, initial snapshot, contiguous operation occurrences, state history, and observation execution kind | State interpretation or navigation |
 | `TraceDebuggerSession` | Immutable | Current trace-step selection and frontend-ready projection | Terminal input, source mutation, or simulation |
@@ -41,8 +42,10 @@ belongs to a frontend projection rather than the trace itself.
 `QuantumFunction` is a deliberate boundary rather than a callable-program proxy.
 Ariadion reads the Python AST of a quantum function. It does not execute the
 function body to construct the program. Calling the wrapper directly is rejected;
-`run()` captures its immutable `LogicalProgram` and executes only the resulting
-compiled artifacts.
+`run()` captures its immutable `LogicalModule` and executes only the resulting
+compiled artifacts. Capture does not retain a persistent source-only cache because
+relevant global bindings can change; a future cache must fingerprint deterministic
+binding classifications rather than use Python object IDs.
 
 ## Invalid-state strategy
 
@@ -191,6 +194,12 @@ source construct identity
     -> one or more IrOperationId values (lowered or generated operations)
     -> trace occurrence
 
+call invocation identity
+    LogicalCallOperation
+    -> ordered QuantumArgumentBinding values
+    -> CallFrameProvenance in OperationProvenance.call_stack
+    -> invocation-specific IrOperationId
+
 logical value identity
     LogicalQubitId
     -> LogicalSlotAllocationEntry / AllocatedQubitSlot
@@ -245,6 +254,13 @@ class OperationLink:
 
 This is a future extension. It must not replace existing identifiers until it can
 represent every current relationship without information loss.
+
+`LogicalCallOperation` deliberately preserves a callable boundary. It names the
+callee `ProgramId` and ordered bindings from callee parameter IDs to caller logical
+value IDs. Daidalon expands that semantic operation later; it does not mutate a
+callee operation's `SourceRef.program_id` to look as though the operation was
+written at the caller call site. The source remains the definition, while each
+`CallFrameProvenance` records an invocation separately.
 
 ## Exact observation execution boundary
 
@@ -310,7 +326,7 @@ class CompilerPass(Protocol):
 
 Each pass should return a new immutable artifact or context, add diagnostics,
 preserve or extend provenance, and expose optional analysis data. Likely stages
-include validation, name resolution, type checking, angle normalization, function
+include validation, name resolution, type checking, angle normalization, call
 expansion, basis lowering, ownership and observation analysis, lifetime analysis,
 scheduling, reliability analysis, protection planning, allocation, decomposition,
 routing, resource estimation, and backend lowering.
@@ -401,6 +417,8 @@ observe a value, and a Python alias must never create another quantum state.
 
 The schema-v3 named-register source AST remains compatibility data. The current
 logical slice is now reachable through the valid-Python `@quantum` AST frontend as
-well as hand-built data. Next language milestones are composition and explicit
-quantum-input binding, ownership and lifetime analysis, resource inference, and
-only then justified extension syntax or richer editor support.
+well as hand-built data. The current frontend also composes parameter-only
+`None`-returning quantum callees through explicit logical bindings. Next language
+milestones are callee-local values, quantum return binding, ownership and lifetime
+analysis, resource inference, and only then justified extension syntax or richer
+editor support.

@@ -43,21 +43,22 @@ inputs for later compiler stages.
 
 The public language direction is a managed Python quantum extension. Programmers
 create and manipulate logical quantum values; allocation, reuse, layout, and
-physical-resource mapping are compiler responsibilities. The first valid-Python
-frontend is implemented as AST capture into `LogicalProgram`. Ariadion reads the
-Python AST of a quantum function. It does not execute the function body to
-construct the program. Its current narrow subset supports local `Qubit()`
-declarations, aliases, typed quantum parameters, named intrinsic markers,
-explicit-unit rotations, and typed terminal returns. The implemented path is:
+physical-resource mapping are compiler responsibilities. The valid-Python frontend
+captures each function AST into `LogicalProgram` and resolves reachable calls into
+`LogicalModule`. Ariadion does not execute either Python body to construct these
+artifacts. Its current narrow subset supports local `Qubit()` declarations, aliases,
+typed quantum parameters, named intrinsic markers, explicit-unit rotations, typed
+terminal returns, and identity-resolved quantum-function calls. The implemented
+path is:
 
 ```text
 Python-compatible Ariadion source
     ↓
 ariadion-frontend-python Python AST capture
     ↓
-LogicalProgram with source-derived identities
+LogicalProgram with source-derived identities and LogicalCallOperation values
     ↓
-typed return observations and quantum parameters
+LogicalModule with explicit callee-parameter bindings
     ↓
 logical operation schedule
     ↓
@@ -70,12 +71,14 @@ allocated CircuitIR
 simulator or hardware backend
 ```
 
-Python retains ownership of ordinary parsing. The frontend resolves only exact
-public marker identities from the wrapped function's globals and never evaluates
-the body, annotations, or angle expressions. It preserves exact original source
-ranges and source-derived identities through an explicit source-provider boundary,
-including in-memory IDE source. A standalone parser for `program name` and
-`qubits data[2]` is not on the current path.
+Python retains ownership of ordinary parsing. The frontend resolves exact public
+marker and `QuantumFunction` identities from the wrapped function's globals and
+never evaluates the body, annotations, or angle expressions. Annotation spelling
+must also resolve to Ariadion's public `Qubit` or `Bit` class, or the built-in
+`tuple` type. It preserves exact original source ranges and source-derived
+identities through an explicit source-provider boundary, including in-memory IDE
+source. A standalone parser for `program name` and `qubits data[2]` is not on the
+current path.
 
 The allocated `CircuitIR` continues to use dense integer targets and an explicit
 `qubit_count`; those are compiler results. Daidalon now exposes a
@@ -172,8 +175,14 @@ requiring `Program(width)`.
 The safe valid-Python frontend. It reads a decorated Python function through a
 `PythonSourceProvider`, parses its AST, resolves only exact public marker identity,
 and produces immutable `LogicalProgram` values with deterministic source-derived
-identities, ranges, typed returns, inferred terminal observations, and unresolved
-`QuantumParameter` inputs. It never calls the function body or intrinsic markers.
+identities, ranges, typed returns, inferred terminal observations, unresolved
+`QuantumParameter` inputs, and explicit `LogicalCallOperation` values. Its
+`to_logical_module()` traversal captures a resolved acyclic call graph without
+executing any body. Callee parameters bind to caller logical values; calls are not
+textually substituted. A first callable callee is parameter-only, returns `None`,
+contains no observations, and declares no local `Qubit()`. The frontend has no
+persistent source-only capture cache, so relevant global rebinding cannot reuse
+stale semantics. It never calls the function body or intrinsic markers.
 Its dependencies are limited to `ariadion-core`, `ariadion-language`, and
 `ariadion-semantics`; it has no dependency on IR, Daidalon, runtime, simulator,
 Theonoe, CLI, or `ariadion-syntax`.
@@ -222,6 +231,11 @@ allocation.
 Validates resolved quantum programs, creates an explicit deterministic
 `LogicalSlotAllocationPlan` plus `ReadoutPlan`, and lowers current logical gate and
 Z-basis observation instructions plus typed logical rotations to semantic IR.
+`compile_logical_module()` allocates only the entry program for the initial
+composition slice, binds each callee parameter through explicit logical bindings,
+and recursively expands semantic calls during lowering. It retains the callee
+definition source on each generated operation and records invocation frames in IR
+provenance, with invocation-specific deterministic IR IDs.
 Lowered `MEASURE` operations carry declared result identity, basis, and reason as
 `ObservationMetadata`; `ReadoutPlan` retains structured returns rather than
 inferring output type or nesting from operation order. Typed rotations preserve
@@ -277,8 +291,11 @@ and inspection data without managing terminal interaction.
 Before lowering, runtime rejects a `LogicalProgram` with unresolved
 `QuantumParameter` inputs using `UnboundQuantumParameterError` (`P113`). This
 prevents the current standalone exact executor from silently initializing a captured
-input as a local $|0\rangle$ value; binding and composition remain frontend and
-semantic work.
+input as a local $|0\rangle$ value. `run_logical_module()` applies the same rule
+only to the module entry: composition binds callee parameters to caller values, not
+external runtime state. Trace steps can retain a callee source program different
+from the entry circuit and expose the matching invocation stack through debugger
+view models.
 
 ### `ariadion-cli`
 

@@ -198,7 +198,7 @@ class PythonFrontendTests(unittest.TestCase):
         self.assertEqual(captured.to_json(), program.to_json())
         self.assertEqual(len(result.returned_quantum_values), 1)
 
-    def test_function_metadata_and_source_based_capture_are_preserved(self) -> None:
+    def test_function_metadata_and_fresh_source_capture_are_preserved(self) -> None:
         self.assertEqual(_bell.__name__, "_bell")
         self.assertEqual(_bell.__qualname__, "_bell")
         self.assertEqual(_bell.__module__, __name__)
@@ -210,7 +210,7 @@ class PythonFrontendTests(unittest.TestCase):
         second = _bell.to_logical_program()
 
         self.assertEqual(first.to_json(), second.to_json())
-        self.assertIs(first, second)
+        self.assertIsNot(first, second)
         self.assertEqual(first.id, ProgramId(f"python:{__name__}:_bell"))
         self.assertNotEqual(first.qubits[0].id, first.qubits[1].id)
         self.assertIn("python:qubit-declaration", first.qubits[0].id)
@@ -538,7 +538,7 @@ class PythonFrontendTests(unittest.TestCase):
             second.to_logical_program().to_json(),
         )
 
-    def test_source_origin_is_part_of_the_capture_fingerprint(self) -> None:
+    def test_source_provider_is_reread_for_each_capture(self) -> None:
         text = (
             "def origin() -> Qubit:\n"
             "    target = Qubit()\n"

@@ -58,10 +58,17 @@ from ariadion_runtime import (
     TraceCaptureOptions,
     TraceStepViewModel,
     inspect_execution_trace,
+    run_logical_module,
     run_logical_program,
     run_program,
 )
-from ariadion_semantics import LogicalProgram, UnboundQuantumParameterError
+from ariadion_semantics import (
+    LogicalCallOperation,
+    LogicalModule,
+    LogicalProgram,
+    QuantumArgumentBinding,
+    UnboundQuantumParameterError,
+)
 
 __version__ = "0.1.0"
 
@@ -77,7 +84,7 @@ def run(
 
 @overload
 def run(
-    program: LogicalProgram | QuantumFunction,
+    program: LogicalProgram | LogicalModule | QuantumFunction,
     *,
     trace: TraceCaptureOptions | None = None,
 ) -> LogicalRunResult:
@@ -85,19 +92,23 @@ def run(
 
 
 def run(
-    program: Program | LogicalProgram | QuantumFunction,
+    program: Program | LogicalProgram | LogicalModule | QuantumFunction,
     *,
     trace: TraceCaptureOptions | None = None,
 ) -> RunResult | LogicalRunResult:
-    """Execute a width-based builder, logical program, or closed captured function."""
+    """Execute a builder, logical program, resolved module, or captured function."""
 
     if isinstance(program, Program):
         return run_program(program, trace=trace)
     if isinstance(program, LogicalProgram):
         return run_logical_program(program, trace=trace)
+    if isinstance(program, LogicalModule):
+        return run_logical_module(program, trace=trace)
     if isinstance(program, QuantumFunction):
-        return run_logical_program(program.to_logical_program(), trace=trace)
-    raise TypeError("ariadion.run expects Program, LogicalProgram, or QuantumFunction")
+        return run_logical_module(program.to_logical_module(), trace=trace)
+    raise TypeError(
+        "ariadion.run expects Program, LogicalProgram, LogicalModule, or QuantumFunction"
+    )
 
 
 __all__ = [
@@ -115,6 +126,8 @@ __all__ = [
     "InspectSourceProvider",
     "MeasurementBitOrder",
     "LogicalRunResult",
+    "LogicalCallOperation",
+    "LogicalModule",
     "LogicalProgram",
     "ObservationExecutionKind",
     "ProbabilityScope",
@@ -124,6 +137,7 @@ __all__ = [
     "PythonFunctionSource",
     "PythonSourceProvider",
     "Qubit",
+    "QuantumArgumentBinding",
     "QuantumFunction",
     "QuantumFunctionConfig",
     "RunResult",
@@ -154,6 +168,7 @@ __all__ = [
     "ry",
     "rz",
     "run",
+    "run_logical_module",
     "run_logical_program",
     "turns",
     "x",

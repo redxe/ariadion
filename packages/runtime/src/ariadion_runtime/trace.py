@@ -475,7 +475,25 @@ class ExecutionTrace:
             if step.before != previous:
                 raise ValueError("each trace step must begin at the previous trace state")
             if step.source is not None and step.source.program_id != self.circuit_id:
-                raise ValueError("trace operation source must belong to the trace circuit")
+                # A module-entry circuit can contain operations defined in a callee.
+                # Their source remains scoped to that callee program; invocation context
+                # is retained separately in OperationProvenance.call_stack.
+                call_stack = (
+                    step.provenance.call_stack if step.provenance is not None else ()
+                )
+                if (
+                    not call_stack
+                    or call_stack[0].caller_program_id != self.circuit_id
+                    or call_stack[-1].callee_program_id != step.source.program_id
+                    or any(
+                        outer.callee_program_id != inner.caller_program_id
+                        for outer, inner in zip(call_stack, call_stack[1:])
+                    )
+                ):
+                    raise ValueError(
+                        "trace operation source must belong to the trace circuit or "
+                        "a contiguous invocation call stack"
+                    )
             if (
                 self.metadata.mode is ExecutionMode.EXACT
                 and step.measurement is not None

@@ -13,6 +13,7 @@ from ariadion_core import (
 
 from .model import (
     AngleMetadata,
+    CallFrameProvenance,
     CircuitIR,
     ObservationMetadata,
     OpCode,
@@ -22,6 +23,7 @@ from .model import (
 
 __all__ = [
     "AngleMetadata",
+    "CallFrameProvenance",
     "ClassicalBitId",
     "CircuitIR",
     "IrOperationId",

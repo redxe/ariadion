@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from typing import Final
 
 from ariadion_core import IrOperationId, SourceRef, canonical_json
-from ariadion_ir import CircuitIR, Operation, OperationProvenance
+from ariadion_ir import CallFrameProvenance, CircuitIR, Operation, OperationProvenance
 from theonoe import (
     BasisStateChange,
     EntanglementTransition,
@@ -73,6 +73,12 @@ class TraceStepViewModel:
 
         return self.step_index + 1
 
+    @property
+    def call_stack(self) -> tuple[CallFrameProvenance, ...]:
+        """Return invocation provenance separately from the definition source."""
+
+        return self.provenance.call_stack if self.provenance is not None else ()
+
     def to_dict(self) -> dict[str, object]:
         return {
             "circuit_id": self.circuit.id,
@@ -81,6 +87,7 @@ class TraceStepViewModel:
             "step_count": self.step_count,
             "ir_operation_id": self.ir_operation_id,
             "operation": self.operation.to_dict(),
+            "call_stack": [frame.to_dict() for frame in self.call_stack],
             "before": self.before.to_dict(),
             "after": self.after.to_dict(),
             "basis_state_changes": [

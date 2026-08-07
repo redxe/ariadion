@@ -154,14 +154,9 @@ def _format_angle_value(value: float) -> str:
 def _render_source_and_provenance(view: TraceStepViewModel) -> list[str]:
     lines: list[str] = []
     if view.source is None:
-        lines.append("Source: unavailable")
+        lines.append("Defined at: unavailable")
     else:
-        location = view.source.file or "<unknown file>"
-        if view.source.line is not None:
-            location = f"{location}:{view.source.line}"
-        if view.source.column is not None:
-            location = f"{location}:{view.source.column}"
-        lines.append(f"Source: {location}")
+        lines.append(f"Defined at: {_format_source_location(view.source)}")
         lines.append(f"Source operation ID: {view.source.source_operation_id}")
         if view.source.source_node_id is not None:
             lines.append(f"Source node ID: {view.source.source_node_id}")
@@ -174,7 +169,29 @@ def _render_source_and_provenance(view: TraceStepViewModel) -> list[str]:
             parents = ", ".join(view.provenance.parent_source_ids)
             details.append(f"parents: {parents}")
         lines.append("Compiler provenance: " + "; ".join(details or ["available"]))
+    if view.call_stack:
+        lines.append("Called from:")
+        for frame in reversed(view.call_stack):
+            location = (
+                _format_source_location(frame.call_source)
+                if frame.call_source is not None
+                else "<unknown source>"
+            )
+            lines.append(
+                f"  {location} ({frame.caller_program_id} -> {frame.callee_program_id})"
+            )
     return lines
+
+
+def _format_source_location(source: object) -> str:
+    file = getattr(source, "file", None) or "<unknown file>"
+    line = getattr(source, "line", None)
+    column = getattr(source, "column", None)
+    if line is not None:
+        file = f"{file}:{line}"
+    if column is not None:
+        file = f"{file}:{column}"
+    return file
 
 
 def _render_state_report(

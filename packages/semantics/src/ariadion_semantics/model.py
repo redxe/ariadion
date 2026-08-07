@@ -402,7 +402,74 @@ class Observation:
         return canonical_json(self.to_dict())
 
 
-QuantumInstruction: TypeAlias = LogicalGateOperation | LogicalRotationOperation | Observation
+@dataclass(frozen=True, slots=True)
+class QuantumArgumentBinding:
+    """Bind one callee quantum parameter to a caller logical quantum value."""
+
+    parameter_id: LogicalQubitId
+    argument_id: LogicalQubitId
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(
+            self.parameter_id,
+            label="quantum argument binding parameter ID",
+        )
+        require_nonempty_identifier(
+            self.argument_id,
+            label="quantum argument binding argument ID",
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "parameter_id": self.parameter_id,
+            "argument_id": self.argument_id,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalCallOperation:
+    """A semantic quantum-function invocation before its callee is lowered."""
+
+    id: LogicalOperationId
+    callee_program_id: ProgramId
+    arguments: tuple[QuantumArgumentBinding, ...]
+    source: SemanticSourceRef | None = None
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.id, label="logical call operation ID")
+        require_nonempty_identifier(
+            self.callee_program_id,
+            label="logical call callee program ID",
+        )
+        _require_tuple(self.arguments, label="logical call arguments")
+        if not all(isinstance(argument, QuantumArgumentBinding) for argument in self.arguments):
+            raise ValueError("logical call arguments must contain QuantumArgumentBinding values")
+        parameter_ids = tuple(argument.parameter_id for argument in self.arguments)
+        _require_unique_identifiers(
+            parameter_ids,
+            label="logical call bound parameter IDs",
+        )
+        if self.source is not None and not isinstance(self.source, SourceRef):
+            raise ValueError("logical call source must be SourceRef")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "callee_program_id": self.callee_program_id,
+            "arguments": [argument.to_dict() for argument in self.arguments],
+            "source": self.source.to_dict() if self.source is not None else None,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+QuantumInstruction: TypeAlias = (
+    LogicalGateOperation | LogicalRotationOperation | Observation | LogicalCallOperation
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -493,7 +560,15 @@ class LogicalProgram:
         if not all(isinstance(parameter, QuantumParameter) for parameter in self.parameters):
             raise ValueError("logical program parameters must contain QuantumParameter values")
         if not all(
-            isinstance(instruction, (LogicalGateOperation, LogicalRotationOperation, Observation))
+            isinstance(
+                instruction,
+                (
+                    LogicalGateOperation,
+                    LogicalRotationOperation,
+                    Observation,
+                    LogicalCallOperation,
+                ),
+            )
             for instruction in self.instructions
         ):
             raise ValueError("logical program instructions must contain QuantumInstruction values")
@@ -552,6 +627,8 @@ class LogicalProgram:
                 referenced_qubits = instruction.controls + instruction.targets
             elif isinstance(instruction, LogicalRotationOperation):
                 referenced_qubits = (instruction.target,)
+            elif isinstance(instruction, LogicalCallOperation):
+                referenced_qubits = ()
             else:
                 referenced_qubits = (instruction.qubit_id,)
                 observed_qubit_ids.add(instruction.qubit_id)
@@ -635,6 +712,99 @@ class LogicalProgram:
             "classical_bits": [bit.to_dict() for bit in self.classical_bits],
             "return_shape": self.return_shape.to_dict(),
             "parameters": [parameter.to_dict() for parameter in self.parameters],
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalModule:
+    """A resolved, acyclic aggregate of logical quantum programs and calls."""
+
+    entry_program_id: ProgramId
+    programs: tuple[LogicalProgram, ...]
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.entry_program_id, label="logical module entry program ID")
+        _require_tuple(self.programs, label="logical module programs")
+        if not all(isinstance(program, LogicalProgram) for program in self.programs):
+            raise ValueError("logical module programs must contain LogicalProgram values")
+
+        program_ids = tuple(program.id for program in self.programs)
+        _require_unique_identifiers(program_ids, label="logical module program IDs")
+        programs_by_id = {program.id: program for program in self.programs}
+        if self.entry_program_id not in programs_by_id:
+            raise ValueError("logical module entry program must be declared in programs")
+
+        call_edges: dict[ProgramId, tuple[ProgramId, ...]] = {}
+        for caller in self.programs:
+            caller_qubit_ids = {qubit.id for qubit in caller.qubits}
+            callees: list[ProgramId] = []
+            for instruction in caller.instructions:
+                if not isinstance(instruction, LogicalCallOperation):
+                    continue
+                callee = programs_by_id.get(instruction.callee_program_id)
+                if callee is None:
+                    raise ValueError(
+                        "logical call references a program outside its logical module: "
+                        f"{instruction.callee_program_id}"
+                    )
+                callees.append(callee.id)
+                expected_parameter_ids = tuple(
+                    parameter.logical_qubit_id for parameter in callee.parameters
+                )
+                bindings = instruction.arguments
+                if len(bindings) != len(expected_parameter_ids):
+                    raise ValueError(
+                        "logical call arity must match the callee quantum parameter count"
+                    )
+                bound_parameter_ids = tuple(
+                    binding.parameter_id for binding in bindings
+                )
+                if bound_parameter_ids != expected_parameter_ids:
+                    raise ValueError(
+                        "logical call bindings must bind each callee parameter exactly once "
+                        "in declared position order"
+                    )
+                for binding in bindings:
+                    if binding.argument_id not in caller_qubit_ids:
+                        raise ValueError(
+                            "logical call argument must reference a logical value declared "
+                            f"by its caller: {binding.argument_id}"
+                        )
+            call_edges[caller.id] = tuple(callees)
+
+        visited: set[ProgramId] = set()
+        visiting: set[ProgramId] = set()
+
+        def visit(program_id: ProgramId) -> None:
+            if program_id in visiting:
+                raise ValueError("logical module quantum call graph must be acyclic")
+            if program_id in visited:
+                return
+            visiting.add(program_id)
+            for callee_program_id in call_edges[program_id]:
+                visit(callee_program_id)
+            visiting.remove(program_id)
+            visited.add(program_id)
+
+        for program_id in program_ids:
+            visit(program_id)
+
+    @property
+    def entry_program(self) -> LogicalProgram:
+        """Return the validated entry program without coupling it to a frontend."""
+
+        return next(program for program in self.programs if program.id == self.entry_program_id)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "entry_program_id": self.entry_program_id,
+            "programs": [
+                program.to_dict()
+                for program in sorted(self.programs, key=lambda program: str(program.id))
+            ],
         }
 
     def to_json(self) -> str:

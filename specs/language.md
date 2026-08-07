@@ -24,12 +24,13 @@ and the eventual mapping to simulator or hardware qubits.
 
 ## Status and compatibility
 
-The first valid-Python `@quantum` frontend is implemented. It captures a narrow,
-deliberately safe subset of a decorated function into `LogicalProgram`; it does
-not add function composition, bindings, classical computation, control flow, or a
-native `.ari` parser. `Program(width)` and its integer-target operations remain
-compatibility and migration mechanisms rather than the managed source-language
-model.
+The valid-Python `@quantum` frontend captures a narrow, deliberately safe subset
+of a decorated function into `LogicalProgram`. It also resolves a reachable,
+acyclic `LogicalModule` for explicit quantum-function calls. Classical computation,
+control flow, callable return values, callee-local ancillas, and a native `.ari`
+parser remain unsupported. `Program(width)` and its integer-target operations
+remain compatibility and migration mechanisms rather than the managed
+source-language model.
 
 ## Python-compatible quantum functions
 
@@ -108,7 +109,11 @@ return, not an observation:
 
 Annotations are read from their AST nodes rather than evaluated. The initial forms
 are exactly `Qubit`, `Bit`, `None`, and nested built-in `tuple[...]`; custom aliases
-and `typing` forms are intentionally rejected.
+and `typing` forms are intentionally rejected. Exact spelling is not enough:
+`Qubit` and `Bit` must resolve through the function's globals or builtins to the
+public Ariadion classes, and `tuple` must resolve to the built-in class. This keeps
+an unrelated global named `Qubit`, `Bit`, or `tuple` from receiving Ariadion
+semantics without using `eval`, `exec`, or `typing.get_type_hints`.
 
 ```python
 @quantum
@@ -132,7 +137,53 @@ def rotate_input(target: Qubit) -> Qubit:
 
 `run(rotate_input)` raises `UnboundQuantumParameterError` with code `P113`. This
 protects an input from being silently treated as a newly allocated $|0\rangle$
-value. Function composition and explicit input binding are later work.
+value. Composition can bind a *callee* parameter to an existing caller logical
+value, but it does not bind parameters of the module entry function to an external
+runtime state.
+
+## Quantum-function composition
+
+A quantum-function call is preserved as semantic structure. It is not textual
+substitution and does not execute either Python body:
+
+```python
+@quantum
+def entangle(left: Qubit, right: Qubit) -> None:
+   h(left)
+   cx(left, right)
+
+
+@quantum
+def bell() -> tuple[Bit, Bit]:
+   left = Qubit()
+   right = Qubit()
+   entangle(left, right)
+   return left, right
+```
+
+Capture resolves `entangle` from `bell`'s globals by `QuantumFunction` object
+identity, including imported or global aliases. It records a `LogicalCallOperation`
+with ordered `QuantumArgumentBinding` values from the callee parameter IDs to the
+caller logical values. `QuantumFunction.to_logical_program()` retains that
+unresolved semantic call; `to_logical_module()` recursively captures reachable
+callees into an acyclic `LogicalModule`.
+
+The first executable composition slice restricts every callable callee to a
+parameter-only transformation: it must take only `Qubit` parameters, return `None`,
+contain no observations, and declare no local `Qubit()` values. Nested calls are
+allowed when their transitively captured module satisfies the same rules. Quantum
+returns, classical returns, tuple results, assignment from calls, local ancillas,
+classical parameters, dynamic dispatch, and external quantum-state injection remain
+separate lifetime and ownership work.
+
+Capture has no persistent source-only program cache. Each public capture resolves
+the current relevant globals and annotations, so rebinding an intrinsic alias cannot
+return stale semantics. A future cache requires a deterministic capture-environment
+fingerprint rather than Python object IDs. Free-variable closures are rejected with
+`P114`, recursive call graphs with `P115`, and unsupported callable-callee shapes
+with `P116`. Distinct `QuantumFunction` wrappers cannot share a resolved
+`ProgramId` within one module capture and reject with `P117` rather than silently
+selecting one definition.
 
 No observation is inserted for `prepare_plus()` because its return type preserves a
 quantum value across the function boundary. Quantum parameters bind managed values
@@ -354,8 +405,9 @@ source-effect model has two defaults:
 function is compilable as quantum code. An unannotated `.ari` function may be
 inferred as classical, quantum, or hybrid. Imported ordinary Python functions
 remain classical unless explicitly supported. The initial `@quantum` capture subset
-does not support function composition, arbitrary classical calls, closures, or
-mutable captured state; it accepts only the documented intrinsic marker calls.
+supports documented intrinsic markers and resolved `QuantumFunction` calls.
+Arbitrary classical calls, closures, mutable captured state, dynamic dispatch, and
+classical computation remain unsupported.
 Imports, classes, exceptions, collections, and ordinary calls retain their normal
 Python behavior outside an explicit quantum boundary.
 
@@ -396,10 +448,13 @@ original source spans and must never silently redefine unmarked Python syntax.
 
 Python parser failures retain the parser's message and are surfaced as source-linked
 frontend diagnostics. Ariadion extension, capture, resolution, type, ownership,
-and resource failures likewise use exact original locations. The current frontend reports structured `P100`–
-`P112` diagnostics for unavailable source, unsupported syntax, marker resolution,
-argument shape, unresolved values, annotations, returns, and angle expressions;
-`P113` rejects standalone execution with an unbound quantum parameter.
+and resource failures likewise use exact original locations. The current frontend
+reports structured `P100`–`P112` diagnostics for unavailable source, unsupported
+syntax, marker resolution, argument shape, unresolved values, annotations, returns,
+and angle expressions; `P113` rejects standalone execution with an unbound quantum
+parameter, `P114` rejects closure capture, `P115` rejects recursion, and `P116`
+rejects a callee shape outside the first composition slice. `P117` rejects distinct
+quantum-function wrappers that collide on one resolved program ID in a module.
 `SyntaxDiagnostic` remains independent from semantic compiler diagnostics.
 
 The following identity behavior describes the width-based builder compatibility
@@ -462,7 +517,7 @@ plan and lowers the result into integer-target `CircuitIR`.
 
 ```text
 Python-compatible Ariadion source
-   -> Python AST capture into LogicalProgram
+   -> Python AST capture into LogicalProgram and resolved LogicalModule calls
    -> resolved logical values and typed return observations
    -> logical operation schedule
    -> reliability analysis
