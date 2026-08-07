@@ -36,8 +36,10 @@ from daidalon import (
 )
 from theonoe import StateReport, inspect_amplitudes, inspect_state, render_report
 from theonoe import (
+    NoiseImpactBaselineMode,
     NoiseImpactComparisonProvenance,
     NoiseImpactReport,
+    NoiseImpactScheduleSummary,
     build_noise_impact_report,
 )
 
@@ -338,6 +340,7 @@ class DensityMatrixLogicalRunResult:
 
     compilation: LogicalCompilationResult
     simulation: DensityMatrixResult
+    execution_request: DensityMatrixExecutionRequest
     physical_classical_output_distribution: ExactClassicalDistribution | None
     reported_classical_output_distribution: ExactClassicalDistribution | None
     returned_quantum_values: tuple[ReturnedQuantumValue, ...]
@@ -348,6 +351,11 @@ class DensityMatrixLogicalRunResult:
         if self.simulation.circuit != self.compilation.ir:
             raise ValueError(
                 "density-matrix logical simulation circuit must match compiled IR"
+            )
+        if not isinstance(self.execution_request, DensityMatrixExecutionRequest):
+            raise ValueError(
+                "density-matrix logical execution_request must be "
+                "DensityMatrixExecutionRequest"
             )
         if self.return_shape != self.compilation.readout.return_shape:
             raise ValueError("density-matrix logical return_shape must match compiled readout")
@@ -485,6 +493,7 @@ def _run_logical_compilation(
         return DensityMatrixLogicalRunResult(
             compilation=compilation,
             simulation=simulation,
+            execution_request=execution,
             physical_classical_output_distribution=physical_distribution,
             reported_classical_output_distribution=reported_distribution,
             returned_quantum_values=_returned_quantum_values(compilation),
@@ -547,19 +556,13 @@ def _run_logical_compilation(
 
 def build_density_noise_impact_report(
     run: DensityMatrixLogicalRunResult,
-    *,
-    execution: DensityMatrixExecutionRequest,
-    backend_id: str = "reference-density-matrix",
 ) -> NoiseImpactReport:
     """Build an inspectable ideal-vs-noisy-vs-reported density noise-impact report."""
 
     if not isinstance(run, DensityMatrixLogicalRunResult):
         raise ValueError("density noise-impact reporting requires DensityMatrixLogicalRunResult")
-    if not isinstance(execution, DensityMatrixExecutionRequest):
-        raise ValueError(
-            "density noise-impact reporting requires DensityMatrixExecutionRequest"
-        )
-    require_nonempty_identifier(backend_id, label="density noise-impact backend ID")
+
+    reference_backend_id = "reference-density-matrix"
 
     ideal_simulation = simulate_density_matrix(run.compilation.ir)
     ideal_physical_distribution, _ = _density_classical_output_distributions(
@@ -568,30 +571,49 @@ def build_density_noise_impact_report(
         readout_channel=None,
     )
 
-    ideal_probabilities = (
+    ideal_probabilities: tuple[float, ...] | None = (
         ideal_physical_distribution.probabilities
         if ideal_physical_distribution is not None
-        else ()
+        else None
     )
-    noisy_physical_probabilities = (
+    noisy_physical_probabilities: tuple[float, ...] | None = (
         run.physical_classical_output_distribution.probabilities
         if run.physical_classical_output_distribution is not None
-        else ()
+        else None
     )
-    reported_probabilities = (
+    reported_probabilities: tuple[float, ...] | None = (
         run.reported_classical_output_distribution.probabilities
         if run.reported_classical_output_distribution is not None
-        else ()
+        else None
+    )
+    schedule = run.execution_request.schedule
+    schedule_summary = (
+        NoiseImpactScheduleSummary(
+            program_id=schedule.program_id,
+            operation_fingerprint=schedule.operation_fingerprint,
+            peak_duration_ns=schedule.peak_duration_ns,
+        )
+        if schedule is not None
+        else None
     )
 
     return build_noise_impact_report(
         comparison=NoiseImpactComparisonProvenance(
             circuit_id=run.compilation.ir.id,
             representation="density_matrix",
-            backend_id=backend_id,
+            noisy_backend_id=reference_backend_id,
+            ideal_backend_id=reference_backend_id,
+            ideal_baseline_mode=NoiseImpactBaselineMode.IDEAL_NOISE_DISABLED_REPLAY,
+            noisy_schedule=schedule_summary,
+            noisy_idle_decoherence=(
+                run.execution_request.idle_decoherence.to_dict()
+                if run.execution_request.idle_decoherence is not None
+                else None
+            ),
             ideal_baseline_derivation=(
                 "ideal baseline re-executed on the same compiled circuit with "
-                "executable noise disabled"
+                "executable noise disabled; schedule-dependent idle decoherence is "
+                "not executed during ideal replay"
             ),
         ),
         ideal_density_matrix=ideal_simulation.density_matrix,
@@ -603,8 +625,8 @@ def build_density_noise_impact_report(
         idle_events=run.simulation.idle_decoherence_events,
         gate_events=run.simulation.gate_noise_events,
         readout_channel=(
-            execution.noise_model.readout_channel.to_dict()
-            if execution.noise_model.readout_channel is not None
+            run.execution_request.noise_model.readout_channel.to_dict()
+            if run.execution_request.noise_model.readout_channel is not None
             else None
         ),
     )

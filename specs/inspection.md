@@ -102,6 +102,12 @@ population TVD, l1 coherence values/deltas, purity values/deltas, physical outpu
 TVD, and readout-distortion TVD. Computational-basis population and l1 coherence
 metrics are explicitly basis dependent.
 
+Metric provenance describes how each numeric value was obtained (for the current
+report, numerical metrics are derived from reported states/distributions).
+Comparison provenance separately describes how the noisy and ideal baseline
+executions were obtained (backend identities, ideal-baseline mode, and noisy
+schedule context).
+
 The report also carries structured modeled-event findings from runtime/simulator
 artifacts:
 
@@ -113,3 +119,6 @@ These findings provide inspectable modeled evidence and parameters. They do not
 claim additive causal decomposition of total state deviation across events.
 Readout distortion is reported as a classical output effect and is not represented
 as quantum-state damage in the retained density matrix.
+
+When a program has no classical output distribution, output-distribution metrics
+are absent rather than encoded as zero-impact values.

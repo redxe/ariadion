@@ -30,6 +30,82 @@ class NoiseImpactEventKind(str, Enum):
     READOUT_DISTORTION = "readout_distortion"
 
 
+class NoiseImpactBaselineMode(str, Enum):
+    IDEAL_NOISE_DISABLED_REPLAY = "ideal_noise_disabled_replay"
+
+
+@dataclass(frozen=True, slots=True)
+class NoiseImpactScheduleSummary:
+    program_id: ProgramId
+    operation_fingerprint: tuple[
+        tuple[str, str, tuple[int, ...], tuple[int, ...], float | None],
+        ...,
+    ]
+    peak_duration_ns: float
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.program_id, label="noise impact schedule program ID")
+        if not isinstance(self.operation_fingerprint, tuple):
+            raise ValueError("noise impact schedule operation_fingerprint must be a tuple")
+        for entry in self.operation_fingerprint:
+            if (
+                not isinstance(entry, tuple)
+                or len(entry) != 5
+                or not isinstance(entry[0], str)
+                or not isinstance(entry[1], str)
+                or not isinstance(entry[2], tuple)
+                or not isinstance(entry[3], tuple)
+            ):
+                raise ValueError(
+                    "noise impact schedule operation_fingerprint must contain "
+                    "(operation_id, opcode, targets, controls, angle_radians) tuples"
+                )
+            if not all(isinstance(target, int) and target >= 0 for target in entry[2]):
+                raise ValueError(
+                    "noise impact schedule operation_fingerprint targets must be "
+                    "non-negative integers"
+                )
+            if not all(isinstance(control, int) and control >= 0 for control in entry[3]):
+                raise ValueError(
+                    "noise impact schedule operation_fingerprint controls must be "
+                    "non-negative integers"
+                )
+            if entry[4] is not None and (
+                isinstance(entry[4], bool)
+                or not isinstance(entry[4], (int, float))
+                or not isfinite(float(entry[4]))
+            ):
+                raise ValueError(
+                    "noise impact schedule operation_fingerprint angle_radians must be "
+                    "None or a finite number"
+                )
+        if (
+            isinstance(self.peak_duration_ns, bool)
+            or not isinstance(self.peak_duration_ns, (int, float))
+            or not isfinite(float(self.peak_duration_ns))
+            or self.peak_duration_ns < 0
+        ):
+            raise ValueError(
+                "noise impact schedule peak_duration_ns must be a non-negative finite number"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "program_id": self.program_id,
+            "operation_fingerprint": [
+                {
+                    "operation_id": operation_id,
+                    "opcode": opcode,
+                    "targets": list(targets),
+                    "controls": list(controls),
+                    "angle_radians": angle_radians,
+                }
+                for operation_id, opcode, targets, controls, angle_radians in self.operation_fingerprint
+            ],
+            "peak_duration_ns": float(self.peak_duration_ns),
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class DensityStateReport:
     qubit_count: int
@@ -69,6 +145,16 @@ class DensityStateReport:
         for value, label in ((self.purity, "purity"), (self.l1_coherence, "l1_coherence")):
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
                 raise ValueError(f"density state report {label} must be finite")
+        min_purity = 1.0 / self.dimension
+        if self.purity < min_purity - NOISE_IMPACT_ABS_TOLERANCE or self.purity > 1.0 + NOISE_IMPACT_ABS_TOLERANCE:
+            raise ValueError(
+                "density state report purity must be within physical bounds [1/d, 1] "
+                "within tolerance"
+            )
+        if self.l1_coherence < -NOISE_IMPACT_ABS_TOLERANCE:
+            raise ValueError(
+                "density state report l1_coherence must be non-negative within tolerance"
+            )
         if not isinstance(self.basis_dependent, bool):
             raise ValueError("density state report basis_dependent must be a boolean")
         require_nonempty_identifier(self.basis, label="density state report basis")
@@ -132,14 +218,51 @@ class NoiseImpactMetric:
 class NoiseImpactComparisonProvenance:
     circuit_id: ProgramId
     representation: str
-    backend_id: str
+    noisy_backend_id: str
+    ideal_backend_id: str
+    ideal_baseline_mode: NoiseImpactBaselineMode
+    noisy_schedule: NoiseImpactScheduleSummary | None
+    noisy_idle_decoherence: dict[str, float | None] | None
     ideal_baseline_derivation: str
     metric_tolerance: float = NOISE_IMPACT_ABS_TOLERANCE
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.circuit_id, label="noise impact circuit ID")
         require_nonempty_identifier(self.representation, label="noise impact representation")
-        require_nonempty_identifier(self.backend_id, label="noise impact backend ID")
+        require_nonempty_identifier(self.noisy_backend_id, label="noise impact noisy backend ID")
+        require_nonempty_identifier(self.ideal_backend_id, label="noise impact ideal backend ID")
+        if not isinstance(self.ideal_baseline_mode, NoiseImpactBaselineMode):
+            raise ValueError(
+                "noise impact ideal_baseline_mode must be NoiseImpactBaselineMode"
+            )
+        if self.noisy_schedule is not None and not isinstance(
+            self.noisy_schedule,
+            NoiseImpactScheduleSummary,
+        ):
+            raise ValueError(
+                "noise impact noisy_schedule must be NoiseImpactScheduleSummary or None"
+            )
+        if self.noisy_idle_decoherence is not None:
+            if not isinstance(self.noisy_idle_decoherence, dict):
+                raise ValueError(
+                    "noise impact noisy_idle_decoherence must be a dict or None"
+                )
+            expected_keys = {"t1_ns", "t2_ns"}
+            if set(self.noisy_idle_decoherence) != expected_keys:
+                raise ValueError(
+                    "noise impact noisy_idle_decoherence must contain exactly t1_ns and t2_ns"
+                )
+            for key in ("t1_ns", "t2_ns"):
+                value = self.noisy_idle_decoherence[key]
+                if value is not None and (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not isfinite(float(value))
+                    or value <= 0
+                ):
+                    raise ValueError(
+                        f"noise impact noisy_idle_decoherence {key} must be None or a positive finite number"
+                    )
         require_nonempty_identifier(
             self.ideal_baseline_derivation,
             label="noise impact ideal baseline derivation",
@@ -156,7 +279,13 @@ class NoiseImpactComparisonProvenance:
         return {
             "circuit_id": self.circuit_id,
             "representation": self.representation,
-            "backend_id": self.backend_id,
+            "noisy_backend_id": self.noisy_backend_id,
+            "ideal_backend_id": self.ideal_backend_id,
+            "ideal_baseline_mode": self.ideal_baseline_mode.value,
+            "noisy_schedule": (
+                self.noisy_schedule.to_dict() if self.noisy_schedule is not None else None
+            ),
+            "noisy_idle_decoherence": self.noisy_idle_decoherence,
             "ideal_baseline_derivation": self.ideal_baseline_derivation,
             "metric_tolerance": self.metric_tolerance,
         }
@@ -275,9 +404,9 @@ class NoiseImpactReport:
     ideal_state: DensityStateReport
     noisy_state: DensityStateReport
     metrics: tuple[NoiseImpactMetric, ...]
-    ideal_physical_distribution: tuple[float, ...]
-    noisy_physical_distribution: tuple[float, ...]
-    reported_distribution: tuple[float, ...]
+    ideal_physical_distribution: tuple[float, ...] | None
+    noisy_physical_distribution: tuple[float, ...] | None
+    reported_distribution: tuple[float, ...] | None
     event_findings: tuple[NoiseImpactEventFinding, ...]
     limitations: NoiseImpactLimitations
     schema_version: int = NOISE_IMPACT_SCHEMA_VERSION
@@ -294,6 +423,11 @@ class NoiseImpactReport:
             isinstance(finding, NoiseImpactEventFinding) for finding in self.event_findings
         ):
             raise ValueError("noise impact event_findings must contain NoiseImpactEventFinding values")
+        _validate_output_distribution_bundle(
+            ideal=self.ideal_physical_distribution,
+            noisy=self.noisy_physical_distribution,
+            reported=self.reported_distribution,
+        )
         if not isinstance(self.limitations, NoiseImpactLimitations):
             raise ValueError("noise impact limitations must be NoiseImpactLimitations")
         if (
@@ -310,9 +444,21 @@ class NoiseImpactReport:
             "ideal_state": self.ideal_state.to_dict(),
             "noisy_state": self.noisy_state.to_dict(),
             "metrics": [metric.to_dict() for metric in self.metrics],
-            "ideal_physical_distribution": list(self.ideal_physical_distribution),
-            "noisy_physical_distribution": list(self.noisy_physical_distribution),
-            "reported_distribution": list(self.reported_distribution),
+            "ideal_physical_distribution": (
+                list(self.ideal_physical_distribution)
+                if self.ideal_physical_distribution is not None
+                else None
+            ),
+            "noisy_physical_distribution": (
+                list(self.noisy_physical_distribution)
+                if self.noisy_physical_distribution is not None
+                else None
+            ),
+            "reported_distribution": (
+                list(self.reported_distribution)
+                if self.reported_distribution is not None
+                else None
+            ),
             "event_findings": [finding.to_dict() for finding in self.event_findings],
             "limitations": self.limitations.to_dict(),
         }
@@ -346,9 +492,9 @@ def build_noise_impact_report(
     ideal_density_matrix: tuple[tuple[complex, ...], ...],
     noisy_density_matrix: tuple[tuple[complex, ...], ...],
     qubit_count: int,
-    ideal_physical_distribution: tuple[float, ...],
-    noisy_physical_distribution: tuple[float, ...],
-    reported_distribution: tuple[float, ...],
+    ideal_physical_distribution: tuple[float, ...] | None,
+    noisy_physical_distribution: tuple[float, ...] | None,
+    reported_distribution: tuple[float, ...] | None,
     idle_events: tuple[IdleDecoherenceEvent, ...] = (),
     gate_events: tuple[GateNoiseApplicationEvent, ...] = (),
     readout_channel: dict[str, object] | None = None,
@@ -356,8 +502,11 @@ def build_noise_impact_report(
     ideal_state = inspect_density_state(ideal_density_matrix, qubit_count=qubit_count)
     noisy_state = inspect_density_state(noisy_density_matrix, qubit_count=qubit_count)
 
-    if len(ideal_physical_distribution) != len(noisy_physical_distribution) or len(noisy_physical_distribution) != len(reported_distribution):
-        raise ValueError("noise impact distributions must have matching lengths")
+    _validate_output_distribution_bundle(
+        ideal=ideal_physical_distribution,
+        noisy=noisy_physical_distribution,
+        reported=reported_distribution,
+    )
 
     hs_distance = _hilbert_schmidt_distance(noisy_density_matrix, ideal_density_matrix)
     population_tvd = _total_variation_distance(
@@ -367,8 +516,21 @@ def build_noise_impact_report(
     coherence_delta = noisy_state.l1_coherence - ideal_state.l1_coherence
     abs_coherence_mag_change = _off_diagonal_magnitude_delta(noisy_density_matrix, ideal_density_matrix)
     purity_delta = noisy_state.purity - ideal_state.purity
-    physical_output_tvd = _total_variation_distance(ideal_physical_distribution, noisy_physical_distribution)
-    readout_distortion_tvd = _total_variation_distance(noisy_physical_distribution, reported_distribution)
+    physical_output_tvd: float | None = None
+    readout_distortion_tvd: float | None = None
+    if (
+        ideal_physical_distribution is not None
+        and noisy_physical_distribution is not None
+        and reported_distribution is not None
+    ):
+        physical_output_tvd = _total_variation_distance(
+            ideal_physical_distribution,
+            noisy_physical_distribution,
+        )
+        readout_distortion_tvd = _total_variation_distance(
+            noisy_physical_distribution,
+            reported_distribution,
+        )
 
     metrics = (
         NoiseImpactMetric(
@@ -394,7 +556,7 @@ def build_noise_impact_report(
             value=ideal_state.l1_coherence,
             definition="C_l1(rho) = sum_(i != j) |rho[i,j]|",
             tolerance=comparison.metric_tolerance,
-            provenance=MetricProvenance.OBSERVED,
+            provenance=MetricProvenance.DERIVED,
             scope=NoiseImpactScope.STATE,
             basis_dependent=True,
             basis="computational",
@@ -404,7 +566,7 @@ def build_noise_impact_report(
             value=noisy_state.l1_coherence,
             definition="C_l1(rho) = sum_(i != j) |rho[i,j]|",
             tolerance=comparison.metric_tolerance,
-            provenance=MetricProvenance.OBSERVED,
+            provenance=MetricProvenance.DERIVED,
             scope=NoiseImpactScope.STATE,
             basis_dependent=True,
             basis="computational",
@@ -434,7 +596,7 @@ def build_noise_impact_report(
             value=ideal_state.purity,
             definition="Tr(rho_ideal^2)",
             tolerance=comparison.metric_tolerance,
-            provenance=MetricProvenance.OBSERVED,
+            provenance=MetricProvenance.DERIVED,
             scope=NoiseImpactScope.STATE,
         ),
         NoiseImpactMetric(
@@ -442,7 +604,7 @@ def build_noise_impact_report(
             value=noisy_state.purity,
             definition="Tr(rho_noisy^2)",
             tolerance=comparison.metric_tolerance,
-            provenance=MetricProvenance.OBSERVED,
+            provenance=MetricProvenance.DERIVED,
             scope=NoiseImpactScope.STATE,
         ),
         NoiseImpactMetric(
@@ -453,23 +615,29 @@ def build_noise_impact_report(
             provenance=MetricProvenance.DERIVED,
             scope=NoiseImpactScope.STATE,
         ),
-        NoiseImpactMetric(
-            name="physical_output_tvd",
-            value=physical_output_tvd,
-            definition="TVD(ideal physical distribution, noisy physical distribution)",
-            tolerance=comparison.metric_tolerance,
-            provenance=MetricProvenance.DERIVED,
-            scope=NoiseImpactScope.OUTPUT_DISTRIBUTION,
-        ),
-        NoiseImpactMetric(
-            name="readout_distortion_tvd",
-            value=readout_distortion_tvd,
-            definition="TVD(noisy physical distribution, reported/readout distribution)",
-            tolerance=comparison.metric_tolerance,
-            provenance=MetricProvenance.DERIVED,
-            scope=NoiseImpactScope.OUTPUT_DISTRIBUTION,
-        ),
     )
+    if physical_output_tvd is not None:
+        metrics += (
+            NoiseImpactMetric(
+                name="physical_output_tvd",
+                value=physical_output_tvd,
+                definition="TVD(ideal physical distribution, noisy physical distribution)",
+                tolerance=comparison.metric_tolerance,
+                provenance=MetricProvenance.DERIVED,
+                scope=NoiseImpactScope.OUTPUT_DISTRIBUTION,
+            ),
+        )
+    if readout_distortion_tvd is not None:
+        metrics += (
+            NoiseImpactMetric(
+                name="readout_distortion_tvd",
+                value=readout_distortion_tvd,
+                definition="TVD(noisy physical distribution, reported/readout distribution)",
+                tolerance=comparison.metric_tolerance,
+                provenance=MetricProvenance.DERIVED,
+                scope=NoiseImpactScope.OUTPUT_DISTRIBUTION,
+            ),
+        )
 
     findings: list[NoiseImpactEventFinding] = []
     for event in idle_events:
@@ -508,7 +676,7 @@ def build_noise_impact_report(
                 ),
             )
         )
-    if readout_channel is not None:
+    if readout_channel is not None and readout_distortion_tvd is not None:
         findings.append(
             NoiseImpactEventFinding(
                 kind=NoiseImpactEventKind.READOUT_DISTORTION,
@@ -608,19 +776,69 @@ def _validate_density_matrix_shape(
         if not isinstance(row, tuple) or len(row) != dimension:
             raise ValueError("density matrix rows must match matrix dimension")
         for value in row:
-            if not isinstance(value, complex) or not isfinite(value.real) or not isfinite(value.imag):
+            if not isinstance(value, (int, float, complex)) or isinstance(value, bool):
+                raise ValueError("density matrix entries must be numeric values")
+            complex_value = complex(value)
+            if not isfinite(complex_value.real) or not isfinite(complex_value.imag):
                 raise ValueError("density matrix entries must be finite complex values")
+
+
+def _validate_probability_distribution(
+    distribution: tuple[float, ...],
+    *,
+    label: str,
+) -> None:
+    if not isinstance(distribution, tuple) or not distribution:
+        raise ValueError(f"noise impact {label} distribution must be a non-empty tuple")
+    total = 0.0
+    for value in distribution:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
+            raise ValueError(f"noise impact {label} distribution entries must be finite numbers")
+        if value < -NOISE_IMPACT_ABS_TOLERANCE:
+            raise ValueError(
+                f"noise impact {label} distribution entries must be non-negative within tolerance"
+            )
+        total += float(value)
+    if not isclose(total, 1.0, rel_tol=0.0, abs_tol=NOISE_IMPACT_ABS_TOLERANCE):
+        raise ValueError(
+            f"noise impact {label} distribution entries must sum to one within tolerance"
+        )
+
+
+def _validate_output_distribution_bundle(
+    *,
+    ideal: tuple[float, ...] | None,
+    noisy: tuple[float, ...] | None,
+    reported: tuple[float, ...] | None,
+) -> None:
+    bundle = (ideal, noisy, reported)
+    if all(value is None for value in bundle):
+        return
+    if any(value is None for value in bundle):
+        raise ValueError(
+            "noise impact output distributions must be all present or all absent"
+        )
+    assert ideal is not None
+    assert noisy is not None
+    assert reported is not None
+    _validate_probability_distribution(ideal, label="ideal")
+    _validate_probability_distribution(noisy, label="noisy")
+    _validate_probability_distribution(reported, label="reported")
+    if len(ideal) != len(noisy) or len(noisy) != len(reported):
+        raise ValueError("noise impact distributions must have matching lengths")
 
 
 __all__ = [
     "DensityStateReport",
     "MetricProvenance",
+    "NoiseImpactBaselineMode",
     "NoiseImpactComparisonProvenance",
     "NoiseImpactEventFinding",
     "NoiseImpactEventKind",
     "NoiseImpactLimitations",
     "NoiseImpactMetric",
     "NoiseImpactReport",
+    "NoiseImpactScheduleSummary",
     "NoiseImpactScope",
     "NOISE_IMPACT_ABS_TOLERANCE",
     "NOISE_IMPACT_SCHEMA_VERSION",

@@ -119,11 +119,20 @@ records for what executable model applications were performed; they are not
 standalone causal attribution percentages.
 
 Runtime exposes `build_density_noise_impact_report(...)` as an explicit,
-read-only projection from a completed `DensityMatrixLogicalRunResult` plus its
-`DensityMatrixExecutionRequest`. It recomputes a matched ideal baseline by
-re-executing the same compiled circuit with executable noise disabled, then
-packages ideal/noisy/reported comparisons and modeled event evidence through
-Theonoe's density noise-impact contracts.
+read-only projection from a completed `DensityMatrixLogicalRunResult`.
+`DensityMatrixLogicalRunResult` now retains the
+`execution_request: DensityMatrixExecutionRequest` that produced its simulation
+and classical distributions, and the report helper derives noise/readout/schedule
+provenance from that run-owned request. Callers cannot attach an unrelated
+execution request or forge backend identity at report time.
+
+The helper recomputes an ideal baseline by re-executing the same compiled
+circuit with executable noise disabled. Under current semantics, schedule data
+drives idle-noise evolution only; ideal replay does not execute
+schedule-dependent idle decoherence. Comparison provenance therefore records
+both backend identities and the ideal-baseline mode, and preserves noisy
+schedule summary evidence (`program_id`, operation fingerprint, and
+`peak_duration_ns`) when a noisy schedule was used.
 
 ## Reset
 
