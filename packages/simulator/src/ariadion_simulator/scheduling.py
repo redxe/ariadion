@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from math import isfinite
 
-from ariadion_core import IrOperationId, canonical_json, require_nonempty_identifier
+from ariadion_core import IrOperationId, ProgramId, canonical_json, require_nonempty_identifier
 from ariadion_ir import CircuitIR
 
 
@@ -38,6 +38,10 @@ class OperationTimingError(ValueError):
 
 class SchedulingInvariantError(ValueError):
     """Raised when a scheduling invariant is violated during construction."""
+
+
+class ScheduleCircuitBindingError(ValueError):
+    """Raised when a schedule does not deterministically match a circuit."""
 
 
 class OperationTiming:
@@ -214,14 +218,16 @@ class ExecutionSchedule:
     (the end of the last operation across all slots).
     """
 
-    __slots__ = ("scheduled_operations", "idle_intervals", "peak_duration_ns")
+    __slots__ = ("program_id", "scheduled_operations", "idle_intervals", "peak_duration_ns")
 
     def __init__(
         self,
+        program_id: ProgramId,
         scheduled_operations: tuple[ScheduledOperation, ...],
         idle_intervals: tuple[IdleInterval, ...],
         peak_duration_ns: float,
     ) -> None:
+        require_nonempty_identifier(program_id, label="execution schedule program_id")
         if not isinstance(scheduled_operations, tuple):
             raise SchedulingInvariantError(
                 "execution schedule scheduled_operations must be a tuple"
@@ -245,9 +251,50 @@ class ExecutionSchedule:
             raise SchedulingInvariantError(
                 "execution schedule peak_duration_ns must be a non-negative finite number"
             )
+        peak = float(peak_duration_ns)
+
+        operation_ids = [op.operation_id for op in scheduled_operations]
+        duplicate_operation_ids = {
+            operation_id
+            for operation_id in operation_ids
+            if operation_ids.count(operation_id) > 1
+        }
+        if duplicate_operation_ids:
+            duplicates = ", ".join(sorted(duplicate_operation_ids))
+            raise SchedulingInvariantError(
+                "execution schedule scheduled_operations must not contain duplicate "
+                f"operation IDs (duplicates: {duplicates})"
+            )
+
+        for operation in scheduled_operations:
+            if operation.end_ns > peak:
+                raise SchedulingInvariantError(
+                    "execution schedule scheduled operation end_ns must be less than or "
+                    "equal to peak_duration_ns"
+                )
+
+        for interval in idle_intervals:
+            if interval.end_ns > peak:
+                raise SchedulingInvariantError(
+                    "execution schedule idle interval end_ns must be less than or equal "
+                    "to peak_duration_ns"
+                )
+
+        for slot in {interval.slot for interval in idle_intervals}:
+            intervals_for_slot = sorted(
+                (interval for interval in idle_intervals if interval.slot == slot),
+                key=lambda interval: interval.start_ns,
+            )
+            for prior, current in zip(intervals_for_slot, intervals_for_slot[1:], strict=False):
+                if current.start_ns < prior.end_ns:
+                    raise SchedulingInvariantError(
+                        "execution schedule idle intervals must not overlap for the same slot"
+                    )
+
+        self.program_id: ProgramId = program_id
         self.scheduled_operations: tuple[ScheduledOperation, ...] = scheduled_operations
         self.idle_intervals: tuple[IdleInterval, ...] = idle_intervals
-        self.peak_duration_ns: float = float(peak_duration_ns)
+        self.peak_duration_ns: float = peak
 
     def timing_for_operation(self, operation_id: IrOperationId) -> ScheduledOperation | None:
         """Return the scheduled timing for an operation, or ``None`` if not found."""
@@ -267,7 +314,8 @@ class ExecutionSchedule:
 
     def __repr__(self) -> str:
         return (
-            f"ExecutionSchedule(scheduled_operations={self.scheduled_operations!r}, "
+            f"ExecutionSchedule(program_id={self.program_id!r}, "
+            f"scheduled_operations={self.scheduled_operations!r}, "
             f"idle_intervals={self.idle_intervals!r}, "
             f"peak_duration_ns={self.peak_duration_ns!r})"
         )
@@ -276,16 +324,19 @@ class ExecutionSchedule:
         if not isinstance(other, ExecutionSchedule):
             return NotImplemented
         return (
+            self.program_id == other.program_id
+            and
             self.scheduled_operations == other.scheduled_operations
             and self.idle_intervals == other.idle_intervals
             and self.peak_duration_ns == other.peak_duration_ns
         )
 
     def __hash__(self) -> int:
-        return hash((self.scheduled_operations, self.idle_intervals, self.peak_duration_ns))
+        return hash((self.program_id, self.scheduled_operations, self.idle_intervals, self.peak_duration_ns))
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "program_id": self.program_id,
             "scheduled_operations": [op.to_dict() for op in self.scheduled_operations],
             "idle_intervals": [ii.to_dict() for ii in self.idle_intervals],
             "peak_duration_ns": self.peak_duration_ns,
@@ -378,10 +429,55 @@ def schedule_asap(
             )
 
     return ExecutionSchedule(
+        program_id=circuit.id,
         scheduled_operations=tuple(scheduled_operations),
         idle_intervals=tuple(idle_intervals),
         peak_duration_ns=peak_duration_ns,
     )
+
+
+def validate_schedule_for_circuit(circuit: CircuitIR, schedule: ExecutionSchedule) -> None:
+    """Validate deterministic one-to-one schedule coverage for one circuit.
+
+    Raises ``ScheduleCircuitBindingError`` when the schedule and circuit cannot be
+    safely paired for scheduled execution.
+    """
+
+    if not isinstance(circuit, CircuitIR):
+        raise ValueError("schedule validation circuit must be CircuitIR")
+    if not isinstance(schedule, ExecutionSchedule):
+        raise ValueError("schedule validation schedule must be ExecutionSchedule")
+    if schedule.program_id != circuit.id:
+        raise ScheduleCircuitBindingError(
+            "execution schedule program_id must match the circuit program ID"
+        )
+
+    circuit_operation_ids = [operation.id for operation in circuit.operations]
+    scheduled_operation_ids = [operation.operation_id for operation in schedule.scheduled_operations]
+
+    if len(scheduled_operation_ids) != len(set(scheduled_operation_ids)):
+        raise ScheduleCircuitBindingError(
+            "execution schedule contains duplicate scheduled operation IDs"
+        )
+
+    missing_operation_ids = sorted(set(circuit_operation_ids) - set(scheduled_operation_ids))
+    extra_operation_ids = sorted(set(scheduled_operation_ids) - set(circuit_operation_ids))
+    if missing_operation_ids or extra_operation_ids:
+        messages: list[str] = []
+        if missing_operation_ids:
+            messages.append("missing IDs: " + ", ".join(missing_operation_ids))
+        if extra_operation_ids:
+            messages.append("extra IDs: " + ", ".join(extra_operation_ids))
+        raise ScheduleCircuitBindingError(
+            "execution schedule and circuit operation coverage mismatch ("
+            + "; ".join(messages)
+            + ")"
+        )
+
+    if scheduled_operation_ids != circuit_operation_ids:
+        raise ScheduleCircuitBindingError(
+            "execution schedule operation order must exactly match circuit operation order"
+        )
 
 
 __all__ = [
@@ -390,7 +486,9 @@ __all__ = [
     "MissingOperationTimingError",
     "OperationTiming",
     "OperationTimingError",
+    "ScheduleCircuitBindingError",
     "ScheduledOperation",
     "SchedulingInvariantError",
     "schedule_asap",
+    "validate_schedule_for_circuit",
 ]

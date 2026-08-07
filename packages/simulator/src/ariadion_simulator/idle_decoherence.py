@@ -34,6 +34,7 @@ damping is applied.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import exp
 
 from ariadion_core import canonical_json
@@ -42,10 +43,53 @@ from ariadion_noise import AmplitudeDampingChannel, IdleDecoherenceProfile, Phas
 from .scheduling import IdleInterval
 
 
+@dataclass(frozen=True, slots=True)
+class IdleDecoherenceProvenance:
+    """Structured derivation evidence for one idle-decoherence decision."""
+
+    mode: str
+    t1_ns: float | None
+    t2_ns: float | None
+    tphi_inverse_per_ns: float | None
+
+    def __post_init__(self) -> None:
+        valid_modes = {
+            "identity",
+            "t1_only",
+            "t2_only",
+            "t1_t2_combined",
+            "t1_t2_boundary",
+        }
+        if self.mode not in valid_modes:
+            raise ValueError("idle decoherence provenance mode is not recognized")
+        for value, label in (
+            (self.t1_ns, "t1_ns"),
+            (self.t2_ns, "t2_ns"),
+            (self.tphi_inverse_per_ns, "tphi_inverse_per_ns"),
+        ):
+            if value is not None and value < 0:
+                raise ValueError(f"idle decoherence provenance {label} must be non-negative")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mode": self.mode,
+            "t1_ns": self.t1_ns,
+            "t2_ns": self.t2_ns,
+            "tphi_inverse_per_ns": self.tphi_inverse_per_ns,
+        }
+
+
 def idle_decoherence_channels_for_duration(
     duration_ns: float,
     profile: IdleDecoherenceProfile,
-) -> tuple[AmplitudeDampingChannel | None, PhaseDampingChannel | None, float, float, tuple[str, ...]]:
+) -> tuple[
+    AmplitudeDampingChannel | None,
+    PhaseDampingChannel | None,
+    float,
+    float,
+    tuple[str, ...],
+    IdleDecoherenceProvenance,
+]:
     """Compute the idle decoherence channels for ``duration_ns`` nanoseconds.
 
     Returns ``(amp_channel, phase_channel, gamma1, p_phi, assumptions)`` where:
@@ -73,15 +117,31 @@ def idle_decoherence_channels_for_duration(
     t2 = profile.t2_ns
 
     if t == 0.0:
-        return None, None, 0.0, 0.0, ("zero idle duration: identity evolution",)
+        return (
+            None,
+            None,
+            0.0,
+            0.0,
+            ("zero idle duration: identity evolution",),
+            IdleDecoherenceProvenance(
+                mode="identity",
+                t1_ns=t1,
+                t2_ns=t2,
+                tphi_inverse_per_ns=None,
+            ),
+        )
 
     assumptions: list[str] = []
     gamma1 = 0.0
     p_phi = 0.0
 
+    mode = "identity"
+    tphi_inverse_per_ns: float | None = None
+
     if t1 is not None:
         gamma1 = 1.0 - exp(-t / t1)
         assumptions.append(f"T1={t1}ns amplitude damping gamma1={gamma1:.6g}")
+        mode = "t1_only"
 
     if t2 is not None:
         if t1 is not None:
@@ -90,18 +150,23 @@ def idle_decoherence_channels_for_duration(
             t_phi_inv = 1.0 / t2 - 0.5 / t1
             if t_phi_inv > 0:
                 p_phi = 1.0 - exp(-2.0 * t * t_phi_inv)
+                tphi_inverse_per_ns = t_phi_inv
+                mode = "t1_t2_combined"
                 assumptions.append(
                     f"T2={t2}ns combined with T1: "
                     f"additional phase damping p_phi={p_phi:.6g}"
                 )
             else:
                 # T2 == 2*T1: amplitude damping alone gives the correct coherence decay.
+                mode = "t1_t2_boundary"
+                tphi_inverse_per_ns = 0.0
                 assumptions.append(
                     f"T2={t2}ns equals 2*T1: amplitude damping provides full coherence decay"
                 )
         else:
             # Only T2: pure phase damping.
             p_phi = 1.0 - exp(-2.0 * t / t2)
+            mode = "t2_only"
             assumptions.append(f"T2={t2}ns pure phase damping p_phi={p_phi:.6g}")
     elif t1 is not None:
         assumptions.append(f"T1={t1}ns only: amplitude damping, no additional phase damping")
@@ -109,7 +174,19 @@ def idle_decoherence_channels_for_duration(
     amp_channel = AmplitudeDampingChannel(gamma1) if gamma1 > 0.0 else None
     phase_channel = PhaseDampingChannel(p_phi) if p_phi > 0.0 else None
 
-    return amp_channel, phase_channel, gamma1, p_phi, tuple(assumptions)
+    return (
+        amp_channel,
+        phase_channel,
+        gamma1,
+        p_phi,
+        tuple(assumptions),
+        IdleDecoherenceProvenance(
+            mode=mode,
+            t1_ns=t1,
+            t2_ns=t2,
+            tphi_inverse_per_ns=tphi_inverse_per_ns,
+        ),
+    )
 
 
 class IdleDecoherenceEvent:
@@ -132,6 +209,7 @@ class IdleDecoherenceEvent:
         "amplitude_damping_probability",
         "phase_damping_probability",
         "assumptions",
+        "provenance",
     )
 
     def __init__(
@@ -141,6 +219,7 @@ class IdleDecoherenceEvent:
         amplitude_damping_probability: float,
         phase_damping_probability: float,
         assumptions: tuple[str, ...],
+        provenance: IdleDecoherenceProvenance,
     ) -> None:
         if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0:
             raise ValueError("idle decoherence event slot must be a non-negative integer")
@@ -168,11 +247,16 @@ class IdleDecoherenceEvent:
             raise ValueError(
                 "idle decoherence event assumptions must be a tuple of strings"
             )
+        if not isinstance(provenance, IdleDecoherenceProvenance):
+            raise ValueError(
+                "idle decoherence event provenance must be IdleDecoherenceProvenance"
+            )
         self.slot: int = slot
         self.interval: IdleInterval = interval
         self.amplitude_damping_probability: float = float(amplitude_damping_probability)
         self.phase_damping_probability: float = float(phase_damping_probability)
         self.assumptions: tuple[str, ...] = assumptions
+        self.provenance: IdleDecoherenceProvenance = provenance
 
     def __repr__(self) -> str:
         return (
@@ -190,6 +274,7 @@ class IdleDecoherenceEvent:
             and self.amplitude_damping_probability == other.amplitude_damping_probability
             and self.phase_damping_probability == other.phase_damping_probability
             and self.assumptions == other.assumptions
+            and self.provenance == other.provenance
         )
 
     def __hash__(self) -> int:
@@ -199,6 +284,7 @@ class IdleDecoherenceEvent:
             self.amplitude_damping_probability,
             self.phase_damping_probability,
             self.assumptions,
+            self.provenance,
         ))
 
     def to_dict(self) -> dict[str, object]:
@@ -208,6 +294,7 @@ class IdleDecoherenceEvent:
             "amplitude_damping_probability": self.amplitude_damping_probability,
             "phase_damping_probability": self.phase_damping_probability,
             "assumptions": list(self.assumptions),
+            "provenance": self.provenance.to_dict(),
         }
 
     def to_json(self) -> str:
@@ -216,5 +303,6 @@ class IdleDecoherenceEvent:
 
 __all__ = [
     "IdleDecoherenceEvent",
+    "IdleDecoherenceProvenance",
     "idle_decoherence_channels_for_duration",
 ]

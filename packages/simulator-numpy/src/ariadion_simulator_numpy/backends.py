@@ -38,6 +38,7 @@ from ariadion_simulator import (
     build_simulation_plan,
     idle_decoherence_channels_for_duration,
     kernel_metadata_for_operation,
+    validate_schedule_for_circuit,
 )
 from ariadion_noise import NoiseFeature
 
@@ -177,6 +178,8 @@ class NumpyDensityMatrixBackend:
         self.plan(circuit, query=query)
         request = options if options is not None else DensityMatrixExecutionRequest()
         validate_executable_noise_model(request.noise_model)
+        if request.schedule is not None:
+            validate_schedule_for_circuit(circuit, request.schedule)
 
         dimension = 1 << circuit.qubit_count
         density = np.zeros((dimension, dimension), dtype=NUMPY_COMPLEX_DTYPE)
@@ -217,7 +220,7 @@ class NumpyDensityMatrixBackend:
                             interval = IdleInterval(
                                 slot=slot, start_ns=idle_start, end_ns=idle_end
                             )
-                            amp_ch, phase_ch, gamma1, p_phi, assumptions = (
+                            amp_ch, phase_ch, gamma1, p_phi, assumptions, provenance = (
                                 idle_decoherence_channels_for_duration(
                                     interval.duration_ns, request.idle_decoherence
                                 )
@@ -243,6 +246,7 @@ class NumpyDensityMatrixBackend:
                                     amplitude_damping_probability=gamma1,
                                     phase_damping_probability=p_phi,
                                     assumptions=assumptions,
+                                    provenance=provenance,
                                 )
                             )
                         slot_last_end[slot] = op_end_ns
@@ -288,7 +292,7 @@ class NumpyDensityMatrixBackend:
                 idle_start = slot_last_end[slot]
                 if peak > idle_start:
                     interval = IdleInterval(slot=slot, start_ns=idle_start, end_ns=peak)
-                    amp_ch, phase_ch, gamma1, p_phi, assumptions = (
+                    amp_ch, phase_ch, gamma1, p_phi, assumptions, provenance = (
                         idle_decoherence_channels_for_duration(
                             interval.duration_ns, request.idle_decoherence
                         )
@@ -314,6 +318,7 @@ class NumpyDensityMatrixBackend:
                             amplitude_damping_probability=gamma1,
                             phase_damping_probability=p_phi,
                             assumptions=assumptions,
+                            provenance=provenance,
                         )
                     )
 
@@ -321,7 +326,11 @@ class NumpyDensityMatrixBackend:
             tuple(complex(value) for value in row)
             for row in density
         )
-        return DensityMatrixResult(circuit, matrix, tuple(decoherence_events))
+        return DensityMatrixResult._from_trusted_execution(
+            circuit=circuit,
+            density_matrix=matrix,
+            idle_decoherence_events=tuple(decoherence_events),
+        )
 
 
 def _apply_statevector_operation(

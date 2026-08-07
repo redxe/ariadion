@@ -14,19 +14,17 @@ from typing import Final, TypeAlias
 
 from ariadion_ir import CircuitIR, IrOperationId, OpCode, Operation
 from ariadion_noise import (
-    AmplitudeDampingChannel,
     ExecutableNoiseModel,
     IdleDecoherenceProfile,
     KrausOperator,
     OneQubitGate,
-    PhaseDampingChannel,
     QuantumChannel,
     validate_executable_noise_model,
     validate_quantum_channel,
 )
 
 from .idle_decoherence import IdleDecoherenceEvent, idle_decoherence_channels_for_duration
-from .scheduling import ExecutionSchedule, IdleInterval
+from .scheduling import ExecutionSchedule, IdleInterval, validate_schedule_for_circuit
 
 DENSITY_MATRIX_ABS_TOLERANCE: Final = 1e-12
 """Absolute tolerance for Hermiticity and trace-one validation."""
@@ -102,6 +100,11 @@ class DensityMatrixExecutionRequest:
             raise ValueError(
                 "density-matrix execution idle_decoherence must be an IdleDecoherenceProfile"
             )
+        if (self.schedule is None) != (self.idle_decoherence is None):
+            raise ValueError(
+                "density-matrix execution schedule and idle_decoherence must be supplied "
+                "together, or both omitted"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +137,41 @@ class DensityMatrixResult:
 
         return tuple(value.real for value in _matrix_diagonal(self.density_matrix))
 
+    @classmethod
+    def _from_trusted_execution(
+        cls,
+        *,
+        circuit: CircuitIR,
+        density_matrix: DensityMatrix,
+        idle_decoherence_events: tuple[IdleDecoherenceEvent, ...] = (),
+    ) -> DensityMatrixResult:
+        """Construct a result from trusted simulator evolution without PSD audit.
+
+        This internal path is only for states produced entirely by validated
+        unitary and CPTP execution kernels.
+        """
+
+        if not isinstance(circuit, CircuitIR):
+            raise DensityMatrixInvariantError("density-matrix result circuit must be CircuitIR")
+        if not isinstance(density_matrix, tuple) or not all(
+            isinstance(row, tuple) for row in density_matrix
+        ):
+            raise DensityMatrixInvariantError("density matrix must be an immutable tuple of rows")
+        _validate_density_matrix_invariants(density_matrix, qubit_count=circuit.qubit_count)
+        if not isinstance(idle_decoherence_events, tuple) or not all(
+            isinstance(event, IdleDecoherenceEvent) for event in idle_decoherence_events
+        ):
+            raise DensityMatrixInvariantError(
+                "density-matrix result idle_decoherence_events must be a tuple of "
+                "IdleDecoherenceEvent values"
+            )
+
+        result = object.__new__(cls)
+        object.__setattr__(result, "circuit", circuit)
+        object.__setattr__(result, "density_matrix", density_matrix)
+        object.__setattr__(result, "idle_decoherence_events", idle_decoherence_events)
+        return result
+
 
 def simulate_density_matrix(
     circuit: CircuitIR,
@@ -162,6 +200,8 @@ def simulate_density_matrix(
             "density-matrix simulation execution must be DensityMatrixExecutionRequest"
         )
     validate_executable_noise_model(request.noise_model)
+    if request.schedule is not None:
+        validate_schedule_for_circuit(circuit, request.schedule)
 
     dimension = 1 << circuit.qubit_count
     density = _zero_density_matrix(dimension)
@@ -202,7 +242,7 @@ def simulate_density_matrix(
                         interval = IdleInterval(
                             slot=slot, start_ns=idle_start, end_ns=idle_end
                         )
-                        amp_ch, phase_ch, gamma1, p_phi, assumptions = (
+                        amp_ch, phase_ch, gamma1, p_phi, assumptions, provenance = (
                             idle_decoherence_channels_for_duration(
                                 interval.duration_ns, request.idle_decoherence
                             )
@@ -222,6 +262,7 @@ def simulate_density_matrix(
                                 amplitude_damping_probability=gamma1,
                                 phase_damping_probability=p_phi,
                                 assumptions=assumptions,
+                                provenance=provenance,
                             )
                         )
                     slot_last_end[slot] = op_end_ns
@@ -252,7 +293,7 @@ def simulate_density_matrix(
             idle_start = slot_last_end[slot]
             if peak > idle_start:
                 interval = IdleInterval(slot=slot, start_ns=idle_start, end_ns=peak)
-                amp_ch, phase_ch, gamma1, p_phi, assumptions = (
+                amp_ch, phase_ch, gamma1, p_phi, assumptions, provenance = (
                     idle_decoherence_channels_for_duration(
                         interval.duration_ns, request.idle_decoherence
                     )
@@ -268,10 +309,11 @@ def simulate_density_matrix(
                         amplitude_damping_probability=gamma1,
                         phase_damping_probability=p_phi,
                         assumptions=assumptions,
+                        provenance=provenance,
                     )
                 )
 
-    return DensityMatrixResult(
+    return DensityMatrixResult._from_trusted_execution(
         circuit=circuit,
         density_matrix=tuple(tuple(row) for row in density),
         idle_decoherence_events=tuple(decoherence_events),

@@ -22,6 +22,7 @@ from .density_matrix import (
 )
 from .idle_decoherence import (
 	IdleDecoherenceEvent,
+	IdleDecoherenceProvenance,
 	idle_decoherence_channels_for_duration,
 )
 from .kernels import KernelMetadata, OperatorStructure, kernel_metadata_for_operation
@@ -36,9 +37,11 @@ from .scheduling import (
 	MissingOperationTimingError,
 	OperationTiming,
 	OperationTimingError,
+	ScheduleCircuitBindingError,
 	ScheduledOperation,
 	SchedulingInvariantError,
 	schedule_asap,
+	validate_schedule_for_circuit,
 )
 from .statevector import (
 	EXPECTED_STATE_VECTOR_NORM,
@@ -74,10 +77,12 @@ __all__ = [
 	"ExactTerminalObservationError",
 	"ExecutionSchedule",
 	"IdleDecoherenceEvent",
+	"IdleDecoherenceProvenance",
 	"IdleInterval",
 	"MissingOperationTimingError",
 	"OperationTiming",
 	"OperationTimingError",
+	"ScheduleCircuitBindingError",
 	"SampledExecutionRequest",
 	"SampledSimulationResult",
 	"SampledSimulationShot",
@@ -98,6 +103,7 @@ __all__ = [
 	"schedule_asap",
 	"simulate",
 	"simulate_density_matrix",
+	"validate_schedule_for_circuit",
 	"validate_density_matrix",
 	"KernelMetadata",
 	"OperatorStructure",

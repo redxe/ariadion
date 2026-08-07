@@ -148,6 +148,17 @@ layout, or physical-source-`Qubit` mapping.
 > schedule and elapsed duration are required before they become executable
 > decoherence channels.
 
+### Scheduling evidence placement decision
+
+Current implementation keeps `ExecutionSchedule`, `ScheduledOperation`,
+`IdleInterval`, and `schedule_asap` in `ariadion-simulator` to limit this
+correctness-hardening milestone to behavior fixes. This is a temporary placement
+decision, not a layer claim: scheduling is physical-realization evidence that
+will be shared by simulation, reliability planning, protection planning, and
+future provider execution. Before those non-simulator layers take a dependency,
+extract scheduling contracts into a neutral package so dependency direction
+remains one-way and inspectable.
+
 The future planner's decision process is intentionally model-dependent:
 
 1. Compile and schedule the logical algorithm.
