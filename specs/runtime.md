@@ -127,6 +127,44 @@ The tensor placement follows the backend's qubit ordering. This makes explicit w
 resetting one member of an entangled state disturbs its correlations with live
 values.
 
+## Executable noise contracts (not yet executed)
+
+`NoiseProfile` remains descriptive planning metadata. Its `GateNoise.channel`
+strings are not executable instructions and the current simulators never infer a
+channel from them. `ExecutableNoiseModel` is a separate, provider-neutral boundary
+for future noisy engines. It contains typed `BitFlipChannel`, `PhaseFlipChannel`,
+`DepolarizingChannel`, `AmplitudeDampingChannel`, and `PhaseDampingChannel` values.
+Each supplies an ordered, trace-preserving set of one-qubit Kraus operators for
+
+$$
+\mathcal{E}(\rho) = \sum_k K_k \rho K_k^\dagger.
+$$
+
+`GateChannelBinding` binds one such channel to a lowered one-qubit `OpCode`, not a
+Python marker name. `CX` is intentionally rejected until a correct multi-qubit
+channel representation exists. `BinaryReadoutChannel` instead models the classical
+outcome probabilities $P(\widetilde{b}=1\mid b=0)$ and
+$P(\widetilde{b}=0\mid b=1)$; it binds only to `MEASURE` and is not a
+density-matrix gate channel.
+
+> A noise profile describes assumptions. An executable noise model defines
+> mathematical channels that a simulator can apply.
+
+`NoiseBindingResult` records a typed executable model, assumptions, and all
+unsupported `NoiseFeature` values. It is evidence for a future compiler/runtime
+binding pass; it does not select a backend or cause the current state-vector
+simulator to apply any channel.
+
+> T1/T2 constants are not themselves per-operation error probabilities; a
+> schedule and elapsed duration are required before they become executable
+> decoherence channels.
+
+`IdleNoise(t1_ns, t2_ns)` therefore remains descriptive. No scheduling or
+time-derived amplitude/phase-damping conversion exists in this slice. A
+`SimulationRequest` distinguishes ideal `NONE` execution, `DECLARED` typed model
+or reference provenance, and future `DEVICE_PROFILE` reference provenance. It
+rejects a model/reference for `NONE` and a `DECLARED` request with neither.
+
 ### Measurement bit order
 
 Measurement data uses the fixed `targets_lsb_first` convention. For a target

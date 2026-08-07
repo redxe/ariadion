@@ -13,6 +13,8 @@ from math import isfinite
 
 from ariadion_core import canonical_json, require_nonempty_identifier
 
+from .executable_noise import ExecutableNoiseModel
+
 
 class EvolutionModel(str, Enum):
     """The numerical evolution representation requested of a future simulator."""
@@ -348,17 +350,21 @@ class ProtectionPlan:
 
 @dataclass(frozen=True, slots=True)
 class SimulationRequest:
-    """Composable intent for a future simulator without selecting an executor.
+    """Composable simulator intent with explicit noise-model provenance.
 
     Numerical evolution, noise provenance, noise features, and a protected
-    realization are independent dimensions. This request does not run simulation
-    or imply that an engine for every combination exists.
+    realization remain independent dimensions. Declared noise must name either a
+    typed executable model or a non-empty reference; ``NONE`` carries neither.
+    This request does not run simulation or imply that an engine for every
+    combination exists.
     """
 
     evolution_model: EvolutionModel
     noise_model_origin: NoiseModelOrigin
     noise_features: tuple[NoiseFeature, ...] = ()
     protection_plan: ProtectionPlan | None = None
+    noise_model: ExecutableNoiseModel | None = None
+    noise_model_reference: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.evolution_model, EvolutionModel):
@@ -372,8 +378,33 @@ class SimulationRequest:
             raise ValueError("simulation request noise_features must contain NoiseFeature values")
         if len(self.noise_features) != len(set(self.noise_features)):
             raise ValueError("simulation request noise_features must be unique")
-        if self.noise_model_origin is NoiseModelOrigin.NONE and self.noise_features:
-            raise ValueError("noise model origin NONE cannot select noise features")
+        if self.noise_model is not None and not isinstance(
+            self.noise_model,
+            ExecutableNoiseModel,
+        ):
+            raise ValueError("simulation request noise_model must be ExecutableNoiseModel")
+        if self.noise_model_reference is not None:
+            require_nonempty_identifier(
+                self.noise_model_reference,
+                label="simulation request noise_model_reference",
+            )
+        if self.noise_model_origin is NoiseModelOrigin.NONE:
+            if self.noise_features:
+                raise ValueError("noise model origin NONE cannot select noise features")
+            if self.noise_model is not None or self.noise_model_reference is not None:
+                raise ValueError("noise model origin NONE cannot carry a noise model")
+        elif self.noise_model_origin is NoiseModelOrigin.DECLARED and (
+            self.noise_model is None and self.noise_model_reference is None
+        ):
+            raise ValueError(
+                "noise model origin DECLARED requires a noise_model or noise_model_reference"
+            )
+        elif self.noise_model_origin is NoiseModelOrigin.DEVICE_PROFILE and (
+            self.noise_model_reference is None
+        ):
+            raise ValueError(
+                "noise model origin DEVICE_PROFILE requires a noise_model_reference"
+            )
         if self.protection_plan is not None and not isinstance(
             self.protection_plan,
             ProtectionPlan,
@@ -385,6 +416,10 @@ class SimulationRequest:
             "evolution_model": self.evolution_model.value,
             "noise_model_origin": self.noise_model_origin.value,
             "noise_features": [feature.value for feature in self.noise_features],
+            "noise_model": (
+                self.noise_model.to_dict() if self.noise_model is not None else None
+            ),
+            "noise_model_reference": self.noise_model_reference,
             "protection_plan": (
                 self.protection_plan.to_dict() if self.protection_plan is not None else None
             ),

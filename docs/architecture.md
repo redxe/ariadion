@@ -124,10 +124,21 @@ protected. Those are compiler-plan facts, not source-value representations.
 ## Reliability planning and protection boundaries
 
 `ariadion-semantics` contains immutable contracts for a `ReliabilityGoal`, a
-layered `NoiseProfile`, a composable `SimulationRequest`, and a descriptive
-`ProtectionPlan`. They freeze future compiler inputs and outputs only: they do not
-simulate channels, ingest backend calibration, select a code distance, lay out a
-surface code, or map a source `Qubit` to physical qubits.
+layered `NoiseProfile`, a typed `ExecutableNoiseModel`, a composable
+`SimulationRequest`, and a descriptive `ProtectionPlan`. `NoiseProfile` remains
+planning/input metadata: its named channel strings are never interpreted by a
+simulator. `ExecutableNoiseModel` is separate provider-neutral data made of typed
+single-qubit Kraus channels bound to lowered `OpCode` values plus classical binary
+readout channels. Neither contract runs noise today; there is no density-matrix
+simulator, device-calibration ingestion, scheduling, code-distance selection,
+surface-code layout, or physical-source-`Qubit` mapping yet.
+
+> A noise profile describes assumptions. An executable noise model defines
+> mathematical channels that a simulator can apply.
+
+> T1/T2 constants are not themselves per-operation error probabilities; a
+> schedule and elapsed duration are required before they become executable
+> decoherence channels.
 
 The future planner's decision process is intentionally model-dependent:
 
@@ -157,7 +168,7 @@ separate rather than compressing them into one fidelity label:
 | Dimension | Contract | Examples |
 | --- | --- | --- |
 | Numerical evolution | `EvolutionModel` | State vector, density matrix, stochastic trajectories, stabilizer methods. |
-| Noise provenance | `NoiseModelOrigin` | No noise model, declared assumptions, device-profile-derived assumptions. |
+| Noise provenance | `NoiseModelOrigin` plus a model/reference | No noise model, declared executable noise, device-profile-derived noise. |
 | Noise capabilities | `NoiseFeature` tuple | Gate channels, idle decoherence, readout errors, leakage, correlations. |
 | Protected realization | optional `ProtectionPlan` | Bare, mitigated, error-detected, or fault-tolerant planning result. |
 
@@ -167,7 +178,10 @@ trajectories for larger noisy circuits, stabilizer-specialized simulation for
 compatible QEC circuits, and dedicated encoded-QEC simulation for syndrome rounds
 and decoders. Only the dependency-free ideal state-vector reference simulator
 exists today; neither noisy nor protected execution is implemented by these
-contracts.
+contracts. `SimulationRequest` accepts no model/reference for `NONE`, requires a
+typed model or non-empty reference for `DECLARED`, and requires a reference for
+future `DEVICE_PROFILE` provenance. Compiler/runtime binding evidence records
+unsupported `NoiseFeature` values explicitly rather than silently dropping them.
 
 ## Object model
 

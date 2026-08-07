@@ -188,6 +188,7 @@ class ReliabilityContractTests(unittest.TestCase):
                 physical_qubit_count=17,
                 assumptions=("synthetic_fixture",),
             ),
+            noise_model_reference="test:declared-noise",
         )
 
         self.assertEqual(
@@ -196,6 +197,8 @@ class ReliabilityContractTests(unittest.TestCase):
                 "evolution_model": "density_matrix",
                 "noise_model_origin": "declared",
                 "noise_features": ["gate_channels", "readout_errors"],
+                "noise_model": None,
+                "noise_model_reference": "test:declared-noise",
                 "protection_plan": {
                     "strategy": "error_detected",
                     "code_name": "synthetic_test_code",

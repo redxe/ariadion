@@ -33,12 +33,11 @@
 
 The next implementation work must preserve this order:
 
-1. Define noise-channel contracts and bind them to simulation requests.
-2. Add a small density-matrix noisy simulator.
-3. Add scheduling and T1/T2 idle decoherence.
-4. Add reliability goals and bare-execution estimates.
-5. Add pluggable protection-planning interfaces.
-6. Add encoded-QEC simulation and decoder integration later.
+1. Add a small density-matrix noisy simulator.
+2. Add scheduling and T1/T2 idle decoherence.
+3. Add reliability goals and bare-execution estimates.
+4. Add pluggable protection-planning interfaces.
+5. Add encoded-QEC simulation and decoder integration later.
 
 After the noise-channel and density-matrix work establishes a clean execution
 model, return to classical feedback, branching, and conditional gates.
@@ -115,11 +114,28 @@ model, return to classical feedback, branching, and conditional gates.
 - defer `Bit` branching, feedback, arithmetic, conditional gates, slot reuse, and
 	density-matrix execution
 
+## Milestone 4.7 — executable noise channel contracts — complete
+
+- keep descriptive `NoiseProfile` metadata separate from typed,
+	provider-neutral `ExecutableNoiseModel` channel data
+- define one-qubit bit-flip, phase-flip, depolarizing, amplitude-damping, and
+	phase-damping Kraus-channel contracts without changing current simulation
+- bind channels to lowered single-qubit `OpCode` values and reject `CX` until a
+	multi-qubit channel representation exists
+- model asymmetric classical readout with `BinaryReadoutChannel`, independent of
+	density-matrix gate evolution
+- preserve `IdleNoise(t1_ns, t2_ns)` as schedule-dependent descriptive input
+- require `SimulationRequest` provenance to distinguish ideal, declared typed
+	noise, and future device-profile references
+- record assumptions and unsupported `NoiseFeature` values in `NoiseBindingResult`
+- defer density-matrix execution, timing/scheduling, calibration ingestion,
+	leakage, correlations, QEC, and automatic reliability planning
+
 ## Milestone 5 — staged noisy simulation and reliability planning
 
-- define channel, leakage, correlation, and device-profile contracts
 - add a small density-matrix noisy simulator
 - schedule operations and model T1/T2 idle decoherence
+- define leakage, correlation, and device-profile ingestion contracts
 - estimate bare-execution failure against reliability goals
 - add pluggable protection-planning interfaces and Pareto resource reporting
 - add encoded-QEC simulation and decoder integration only after these earlier slices

@@ -18,12 +18,16 @@ separate assumptions, not one universal error scalar.
 **Ariadion decision:** `NoiseProfile` groups `GateNoise`, `IdleNoise`,
 `ReadoutNoise`, `LeakageModel`, and `CorrelationModel` without giving a source
 `Qubit` a physical address. A `GateNoise` names a gate/channel assumption; the
-profile owns their composition and later backend-specific interpretation.
+profile owns their composition and later backend-specific interpretation. A
+separate `ExecutableNoiseModel` contains typed, provider-neutral mathematical
+channels bound to lowered opcodes. It never interprets arbitrary descriptive
+`GateNoise.channel` strings.
 
-**Limitations:** this contract does not prescribe a channel representation,
-calibration schema, target selector, composition order, or a conversion from any
-specific provider's backend object. Those require a future backend-ingestion and
-simulation vertical slice.
+**Limitations:** the executable contract currently covers only one-qubit channels
+and classical binary readout. It does not provide calibration ingestion, a target
+selector, two-qubit/correlated/leakage channels, composition beyond one channel per
+opcode, or a conversion from any provider's backend object. Those require future
+backend-ingestion and simulation vertical slices.
 
 ## Engineering claim: decoherence depends on time and scheduling
 
@@ -36,6 +40,10 @@ constants, including the condition when both are supplied. A future compiler mus
 produce a logical operation schedule before it can estimate gate-time or idle-time
 decoherence. Reliability analysis therefore belongs after scheduling and before
 protection/allocation planning.
+
+> T1/T2 constants are not themselves per-operation error probabilities; a
+> schedule and elapsed duration are required before they become executable
+> decoherence channels.
 
 **Limitations:** a pair of time constants is not a complete device model. It does
 not capture temperature, frequency, non-Markovian behavior, pulse shape, drift, or
@@ -50,10 +58,12 @@ describes channel operations through Kraus operators, including the standard
 trace-preserving condition $\sum_k A_k^\dagger A_k = I$ and state evolution
 $\rho \mapsto \sum_k A_k \rho A_k^\dagger$.
 
-**Ariadion decision:** channel assumptions are modeled separately from the ideal
+**Ariadion decision:** executable channels are modeled separately from the ideal
 state-vector reference simulator. A composable `SimulationRequest` separates the
-numerical `EvolutionModel`, `NoiseModelOrigin`, selected `NoiseFeature` values, and
-an optional `ProtectionPlan`. A future exact small noisy-circuit path can use
+numerical `EvolutionModel`, `NoiseModelOrigin`, selected `NoiseFeature` values, an
+optional typed executable model/reference, and an optional `ProtectionPlan`.
+`NoiseBindingResult` records assumptions and unsupported features alongside a model
+instead of silently dropping them. A future exact small noisy-circuit path can use
 density matrices; larger models may need trajectories, stabilizer-specialized
 methods, or dedicated encoded-QEC simulation instead.
 
@@ -69,6 +79,9 @@ or that one simulator engine can cover every requested dimension combination.
   actual idle durations.
 - `ReadoutNoise` is independent from gate errors because observation is its own
   semantic boundary.
+- `BinaryReadoutChannel` is separately executable classical post-observation data;
+  it has asymmetric $P(1\mid0)$ and $P(0\mid1)$ parameters rather than acting as a
+  density-matrix gate channel.
 - `LeakageModel` and `CorrelationModel` are explicit optional components rather
   than silently folded into independent computational-basis channels.
 - `SimulationRequest` records independent modeling dimensions; it is not evidence

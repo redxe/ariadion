@@ -194,6 +194,13 @@ contracts owned by the semantic layer. They describe requested bounds, assumptio
 and a future planner's result; they do not mutate a source `Qubit`, allocate a
 physical slot, or implement a decoder.
 
+`ExecutableNoiseModel` is a separate immutable semantic boundary for future noisy
+execution. It owns typed, provider-neutral one-qubit channel bindings keyed by
+lowered `OpCode` values and separate classical binary readout bindings. It does not
+reinterpret descriptive `NoiseProfile` strings or run a simulator. A
+`NoiseBindingResult` owns the executable model, binding assumptions, and every
+unsupported `NoiseFeature`, making omissions inspectable rather than silent.
+
 ## Identity across layers
 
 Layers link through stable identifiers, never Python object identity. A source
