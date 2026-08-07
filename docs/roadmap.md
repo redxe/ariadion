@@ -193,6 +193,10 @@ model, return to classical feedback, branching, and conditional gates.
 - reduced density matrices
 - phase and interference explanations
 - entanglement provenance
+- deferred research: persistent computation artifacts for streamed/lazy traces,
+  checkpoints, and distributed durability are documented in
+  [persistent-computation-artifacts.md](research/persistent-computation-artifacts.md),
+  associated mainly with Milestones 6 and 8, not Release Foundations scope.
 
 ## Milestone 7 — Studio
 
