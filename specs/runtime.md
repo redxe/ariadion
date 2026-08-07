@@ -39,9 +39,10 @@ is the explicit name for that final analytical snapshot.
 ## Exact state and sampled measurements
 
 `StateSnapshot` currently supports the explicit `state_vector` representation.
-Its amplitudes are exact simulation data, not sampled counts. The representation
-field reserves room for future density-matrix and reduced-state contracts.
-Every amplitude component must be finite; `NaN` and infinities are invalid.
+Its amplitudes are exact simulation data, not sampled counts. Density execution
+uses a separate `DensityMatrixResult` instead of pretending its matrix is an
+amplitude snapshot. Every amplitude component must be finite; `NaN` and infinities
+are invalid.
 
 `ExecutionMetadata.mode` labels a complete trace as `exact` or `sampled`.
 `MeasurementEvent` makes exact probabilities and sampled outcomes mutually
@@ -100,6 +101,17 @@ cannot expose a single retained quantum handle, including for one shot: the publ
 result shape remains trajectory-oriented and does not vary with shot count, while
 multiple shots do not share one physical final state vector.
 
+`DensityMatrixLogicalRunResult` is deliberately distinct from both state-vector
+result types. It retains the `DensityMatrixResult`, returned quantum slot handles,
+and—when classical leaves exist—both
+`physical_classical_output_distribution` and
+`reported_classical_output_distribution`. The physical distribution is projected
+from density diagonal elements. The reported distribution applies a configured
+binary readout channel independently to each distinct observation before repeated
+return aliases are projected, so one physical result is never independently
+noisified twice. Without readout noise the two distributions are equal. Readout
+noise never changes the retained density matrix.
+
 ## Reset
 
 `RESET` is a non-unitary IR operation with one uncontrolled target. Exact
@@ -117,7 +129,7 @@ to $|0\rangle$; it does not create a new `Qubit`. It is valid inside a composed
 `None`-returning helper, but it does not make the value's slot reusable under the
 current dense no-reuse allocation policy.
 
-For a future density-matrix backend, the exact reset channel is
+Exact density-matrix execution implements the reset channel
 
 $$
 \rho \longmapsto \operatorname{Tr}_q(\rho) \otimes |0\rangle\langle0|_q.
@@ -127,12 +139,12 @@ The tensor placement follows the backend's qubit ordering. This makes explicit w
 resetting one member of an entangled state disturbs its correlations with live
 values.
 
-## Executable noise contracts (not yet executed)
+## Executable one-qubit noise contracts
 
 `NoiseProfile` remains descriptive planning metadata. Its `GateNoise.channel`
-strings are not executable instructions and the current simulators never infer a
-channel from them. `ExecutableNoiseModel` is a separate, provider-neutral boundary
-for future noisy engines. It contains typed `BitFlipChannel`, `PhaseFlipChannel`,
+strings are not executable instructions and simulators never infer a channel from
+them. `ExecutableNoiseModel` is a separate `ariadion-noise`, provider-neutral
+boundary. It contains typed `BitFlipChannel`, `PhaseFlipChannel`,
 `DepolarizingChannel`, `AmplitudeDampingChannel`, and `PhaseDampingChannel` values.
 Each supplies an ordered, trace-preserving set of one-qubit Kraus operators for
 
@@ -140,20 +152,28 @@ $$
 \mathcal{E}(\rho) = \sum_k K_k \rho K_k^\dagger.
 $$
 
-`GateChannelBinding` binds one such channel to a lowered one-qubit `OpCode`, not a
-Python marker name. `CX` is intentionally rejected until a correct multi-qubit
+`GateChannelBinding` binds one such channel to public `OneQubitGate`, not a Python
+marker name or allocated `OpCode`. The density backend locally maps ideal `X`, `H`,
+`Z`, `RX`, `RY`, and `RZ` operations to those categories, runs the ideal gate, then
+applies its channel. `CX` is intentionally ideal-only until a correct multi-qubit
 channel representation exists. `BinaryReadoutChannel` instead models the classical
 outcome probabilities $P(\widetilde{b}=1\mid b=0)$ and
-$P(\widetilde{b}=0\mid b=1)$; it binds only to `MEASURE` and is not a
+$P(\widetilde{b}=0\mid b=1)$; it is model-level post-observation data, not a
 density-matrix gate channel.
 
 > A noise profile describes assumptions. An executable noise model defines
 > mathematical channels that a simulator can apply.
 
 `NoiseBindingResult` records a typed executable model, assumptions, and all
-unsupported `NoiseFeature` values. It is evidence for a future compiler/runtime
-binding pass; it does not select a backend or cause the current state-vector
-simulator to apply any channel.
+unsupported `NoiseFeature` values. Every custom channel is validated for a finite
+2×2 Kraus representation and $\sum_k K_k^\dagger K_k=I$ before density execution.
+It does not select a backend or cause the state-vector simulator to apply a channel.
+
+Density observations are terminal analytical projections, as in exact
+state-vector execution. Exact density reset is supported even for entangled
+targets. Current traces are amplitude-only; enabled `TraceCaptureOptions` with a
+`DensityMatrixExecutionRequest` is rejected with `A205` until a density-trace
+contract exists.
 
 > T1/T2 constants are not themselves per-operation error probabilities; a
 > schedule and elapsed duration are required before they become executable

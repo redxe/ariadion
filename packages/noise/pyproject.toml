@@ -1,0 +1,13 @@
+[project]
+name = "ariadion-noise"
+version = "0.1.0"
+description = "Provider-neutral executable noise-channel contracts for Ariadion"
+requires-python = ">=3.11"
+dependencies = ["ariadion-core"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

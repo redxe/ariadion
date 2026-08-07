@@ -1,3 +1,13 @@
+from .density_matrix import (
+	DENSITY_MATRIX_ABS_TOLERANCE,
+	DensityMatrix,
+	DensityMatrixExecutionRequest,
+	DensityMatrixInvariantError,
+	DensityMatrixResult,
+	DensityMatrixTerminalObservationError,
+	measurement_probabilities,
+	simulate_density_matrix,
+)
 from .statevector import (
 	EXPECTED_STATE_VECTOR_NORM,
 	ExactResetUnsupportedError,
@@ -19,6 +29,12 @@ from .statevector import (
 )
 
 __all__ = [
+	"DENSITY_MATRIX_ABS_TOLERANCE",
+	"DensityMatrix",
+	"DensityMatrixExecutionRequest",
+	"DensityMatrixInvariantError",
+	"DensityMatrixResult",
+	"DensityMatrixTerminalObservationError",
 	"EXPECTED_STATE_VECTOR_NORM",
 	"ExactResetUnsupportedError",
 	"ExactTerminalObservationError",
@@ -35,5 +51,7 @@ __all__ = [
 	"SimulationTrace",
 	"SimulationTraceStep",
 	"apply_operation",
+	"measurement_probabilities",
 	"simulate",
+	"simulate_density_matrix",
 ]

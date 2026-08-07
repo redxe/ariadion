@@ -124,14 +124,22 @@ protected. Those are compiler-plan facts, not source-value representations.
 ## Reliability planning and protection boundaries
 
 `ariadion-semantics` contains immutable contracts for a `ReliabilityGoal`, a
-layered `NoiseProfile`, a typed `ExecutableNoiseModel`, a composable
-`SimulationRequest`, and a descriptive `ProtectionPlan`. `NoiseProfile` remains
-planning/input metadata: its named channel strings are never interpreted by a
-simulator. `ExecutableNoiseModel` is separate provider-neutral data made of typed
-single-qubit Kraus channels bound to lowered `OpCode` values plus classical binary
-readout channels. Neither contract runs noise today; there is no density-matrix
-simulator, device-calibration ingestion, scheduling, code-distance selection,
-surface-code layout, or physical-source-`Qubit` mapping yet.
+layered `NoiseProfile`, a composable `SimulationRequest`, and a descriptive
+`ProtectionPlan`. `ariadion-noise` owns the separate provider-neutral
+`ExecutableNoiseModel`: typed one-qubit Kraus channels are bound to public
+`OneQubitGate` categories, never allocated `OpCode` values. It also owns the
+optional model-level `BinaryReadoutChannel`. This keeps pre-allocation semantics
+independent of allocated IR while simulator execution resolves neutral gate
+categories locally. `NoiseProfile` remains planning/input metadata: its named
+channel strings are never interpreted by a simulator.
+
+`ariadion-simulator` now provides a deliberately small exact density-matrix
+backend. `DensityMatrixExecutionRequest` accepts an actual
+`ExecutableNoiseModel`, validates every custom one-qubit Kraus channel before
+execution, applies the ideal `X`, `H`, `Z`, `RX`, `RY`, or `RZ` operation before
+its matched channel, and executes ideal `CX`. It has no two-qubit noise,
+device-calibration ingestion, scheduling, code-distance selection, surface-code
+layout, or physical-source-`Qubit` mapping.
 
 > A noise profile describes assumptions. An executable noise model defines
 > mathematical channels that a simulator can apply.
@@ -176,11 +184,14 @@ Likely implementations differ by requested dimensions: state vectors for ideal p
 states, density matrices for exact small mixed-state circuits, stochastic
 trajectories for larger noisy circuits, stabilizer-specialized simulation for
 compatible QEC circuits, and dedicated encoded-QEC simulation for syndrome rounds
-and decoders. Only the dependency-free ideal state-vector reference simulator
-exists today; neither noisy nor protected execution is implemented by these
-contracts. `SimulationRequest` accepts no model/reference for `NONE`, requires a
-typed model or non-empty reference for `DECLARED`, and requires a reference for
-future `DEVICE_PROFILE` provenance. Compiler/runtime binding evidence records
+and decoders. The current reference backends are ideal state-vector execution and
+small exact density-matrix execution with typed one-qubit channels. The latter
+accepts only an actual `ExecutableNoiseModel`, never an unresolved model
+reference. `SimulationRequest` remains a planning contract: it accepts no
+model/reference for `NONE`, requires a typed model or non-empty reference for
+`DECLARED`, and requires a reference for future `DEVICE_PROFILE` provenance. When
+it carries a typed model, its executable `noise_features` are derived from the
+model or must match it exactly. Compiler/runtime binding evidence records
 unsupported `NoiseFeature` values explicitly rather than silently dropping them.
 
 ## Object model
@@ -289,17 +300,28 @@ lowering.
 
 ### `ariadion-simulator`
 
-A dependency-free state-vector reference backend. It favors clarity and correctness
-over performance, including standard allocated-IR `RX`, `RY`, and `RZ` matrices over
-canonical radians. Exact logical execution permits only terminal observations and
-retains the analytical amplitude state while runtime calculates a distribution; it
-does not sample or collapse the state and rejects general `RESET` with `A203`.
-Explicit `SampledExecutionRequest` execution runs independent seeded trajectories:
-`MEASURE` samples and collapses the vector, later gates are allowed, and IR `RESET`
-uses an internal collapse plus conditional `X` to establish $|0\rangle$. A sampled
-trace is exactly one trajectory; multiple-shot trace capture rejects with `A204`.
-When explicitly enabled, the backend retains raw immutable amplitude transitions,
-but it does not depend on runtime trace contracts or interpret those states.
+A dependency-free reference package with separate state-vector and exact
+density-matrix backends. The state-vector path favors clarity and correctness over
+performance, including standard allocated-IR `RX`, `RY`, and `RZ` matrices over
+canonical radians. Exact logical state-vector execution permits only terminal
+observations and retains the analytical amplitude state while runtime calculates a
+distribution; it does not sample or collapse the state and rejects general `RESET`
+with `A203`. Explicit `SampledExecutionRequest` execution runs independent seeded
+trajectories: `MEASURE` samples and collapses the vector, later gates are allowed,
+and IR `RESET` uses an internal collapse plus conditional `X` to establish
+$|0\rangle$. A sampled trace is exactly one trajectory; multiple-shot trace capture
+rejects with `A204`. When explicitly enabled, the state-vector backend retains raw
+immutable amplitude transitions, but it does not depend on runtime trace contracts
+or interpret those states.
+
+`DensityMatrixExecutionRequest` selects exact mixed-state execution. It begins in
+$|0\ldots0\rangle\langle0\ldots0|$, supports ideal `X`, `H`, `Z`, `RX`, `RY`,
+`RZ`, and `CX`, then applies a matching typed one-qubit channel after each ideal
+single-qubit gate. Density observations are terminal analytical projections;
+`RESET` implements the exact trace-and-reprepare channel, including on entangled
+targets. Current traces are amplitude snapshots, so requesting enabled trace capture
+for density execution is rejected with `A205` rather than serializing fake
+amplitudes.
 
 The intended execution-model boundary is explicit:
 
@@ -307,9 +329,9 @@ The intended execution-model boundary is explicit:
 | --- | --- | --- |
 | Exact state vector | Analytical terminal probability only; amplitudes remain retained | Unsupported (`A203`) |
 | Sampled state-vector trajectory | Sample one outcome and collapse | Collapse internally, conditionally apply `X`, yield $|0\rangle$ |
-| Future density matrix | Exact or sampled policy | Exact CPTP reset channel |
+| Exact density matrix | Analytical terminal probability only; density remains retained | Exact CPTP trace-and-reprepare channel |
 
-For the future density-matrix case, reset has the channel semantics
+For exact density-matrix execution, reset has the channel semantics
 $\rho \mapsto \operatorname{Tr}_q(\rho) \otimes |0\rangle\langle0|_q$ (with
 the target tensor placement chosen by the backend). It is not a unitary and can
 destroy correlations between the reset target and live values.
@@ -367,8 +389,8 @@ Studio can reuse those models without scraping CLI text.
 
 ```text
 capture safe Python AST or hand-build -> validate -> expand calls -> analyze lifetimes
--> release safety -> logical slots/readout -> lower -> exact or sampled simulate
--> trace -> inspect
+-> release safety -> logical slots/readout -> lower -> state-vector, sampled, or density execute
+-> amplitude trace/inspection when supported
 ```
 
 A change is considered vertically complete only when it can be exercised from the SDK and covered by a runtime-level test.
@@ -377,15 +399,16 @@ For the exact terminal-observation path, the runtime calculates a joint classica
 distribution without sampling or mutating the retained analytical state. This is
 not physical post-measurement state evolution. The explicit sampled path instead
 collapses each trajectory in operation order and can run later gates. It remains
-separate from unsupported classical branching, density-matrix evolution, noise,
-scheduling, and QEC.
+separate from unsupported classical branching, scheduling, calibration ingestion,
+multi-qubit noise, leakage, correlations, and QEC.
 
 Inferred observation handles ordinary classical returns. Explicit `observe()`
 exists when observation timing itself is part of the algorithm. Source `reset(q)`
 changes the state of the existing managed quantum value to $|0\rangle$; it does not
 create a new `Qubit`. Both markers are captured from AST and require an explicit
-`SampledExecutionRequest` for collapse/reset execution; they never cause a hidden
-switch from exact execution.
+`SampledExecutionRequest` for trajectory collapse/reset execution. Exact
+density-matrix execution instead implements reset analytically; neither mode causes
+a hidden switch from the default exact state-vector path.
 
 A function return is a structured semantic artifact, not merely an ordered list of
 identifiers. Classical observation results and returned quantum values may coexist,

@@ -2,10 +2,10 @@
 
 **Documentation consulted:** 2026-08-06.
 
-This record grounds Ariadion's future noise-modeling and mixed-state simulation
-interfaces. It defines architectural evidence only; Ariadion does not yet ingest
-backend calibrations, simulate noise channels, evolve density matrices, or execute
-stochastic trajectories.
+This record grounds Ariadion's noise-modeling and mixed-state simulation
+interfaces. Ariadion now has a small exact density-matrix backend for typed
+one-qubit Kraus channels. It does not ingest backend calibrations, schedule
+operations, model idle-time decoherence, or execute noisy trajectories.
 
 ## Engineering claim: separate device profiles from individual channels
 
@@ -19,15 +19,16 @@ separate assumptions, not one universal error scalar.
 `ReadoutNoise`, `LeakageModel`, and `CorrelationModel` without giving a source
 `Qubit` a physical address. A `GateNoise` names a gate/channel assumption; the
 profile owns their composition and later backend-specific interpretation. A
-separate `ExecutableNoiseModel` contains typed, provider-neutral mathematical
-channels bound to lowered opcodes. It never interprets arbitrary descriptive
-`GateNoise.channel` strings.
+separate `ariadion-noise` `ExecutableNoiseModel` contains typed, provider-neutral
+mathematical channels bound to public `OneQubitGate` categories. Runtime resolves
+those categories to allocated operations locally; the model never interprets
+arbitrary descriptive `GateNoise.channel` strings.
 
 **Limitations:** the executable contract currently covers only one-qubit channels
 and classical binary readout. It does not provide calibration ingestion, a target
 selector, two-qubit/correlated/leakage channels, composition beyond one channel per
-opcode, or a conversion from any provider's backend object. Those require future
-backend-ingestion and simulation vertical slices.
+gate category, or a conversion from any provider's backend object. Those require
+future backend-ingestion and simulation vertical slices.
 
 ## Engineering claim: decoherence depends on time and scheduling
 
@@ -59,17 +60,20 @@ trace-preserving condition $\sum_k A_k^\dagger A_k = I$ and state evolution
 $\rho \mapsto \sum_k A_k \rho A_k^\dagger$.
 
 **Ariadion decision:** executable channels are modeled separately from the ideal
-state-vector reference simulator. A composable `SimulationRequest` separates the
-numerical `EvolutionModel`, `NoiseModelOrigin`, selected `NoiseFeature` values, an
-optional typed executable model/reference, and an optional `ProtectionPlan`.
-`NoiseBindingResult` records assumptions and unsupported features alongside a model
-instead of silently dropping them. A future exact small noisy-circuit path can use
-density matrices; larger models may need trajectories, stabilizer-specialized
-methods, or dedicated encoded-QEC simulation instead.
+state-vector reference simulator. `DensityMatrixExecutionRequest` accepts an actual
+typed `ExecutableNoiseModel`, validates its channels before execution, and evolves
+small exact density matrices. The supported ideal one-qubit gate runs first, then
+its matched channel; `CX` remains ideal-only. A composable `SimulationRequest`
+separates the numerical `EvolutionModel`, `NoiseModelOrigin`, selected
+`NoiseFeature` values, an optional typed executable model/reference, and an optional
+`ProtectionPlan`. `NoiseBindingResult` records assumptions and unsupported features
+alongside a model instead of silently dropping them. Larger models may need
+trajectories, stabilizer-specialized methods, or dedicated encoded-QEC simulation.
 
-**Limitations:** the contracts do not imply that every noise profile has a Kraus
-form that is practical to evaluate, that density matrices scale to large circuits,
-or that one simulator engine can cover every requested dimension combination.
+**Limitations:** the first backend supports only exact small-circuit one-qubit
+channels, terminal observations, ideal `CX`, and exact reset. It does not imply
+that every noise profile has a practical Kraus form, that density matrices scale to
+large circuits, or that one simulator engine can cover every requested dimension.
 
 ## Contract implications
 
@@ -81,11 +85,13 @@ or that one simulator engine can cover every requested dimension combination.
   semantic boundary.
 - `BinaryReadoutChannel` is separately executable classical post-observation data;
   it has asymmetric $P(1\mid0)$ and $P(0\mid1)$ parameters rather than acting as a
-  density-matrix gate channel.
+  density-matrix gate channel. It changes reported distributions only; physical
+  density diagonals remain unchanged.
 - `LeakageModel` and `CorrelationModel` are explicit optional components rather
   than silently folded into independent computational-basis channels.
-- `SimulationRequest` records independent modeling dimensions; it is not evidence
-  that the requested engine or protected realization is available.
+- `SimulationRequest` records independent planning dimensions; a typed model's
+  executable feature tuple is derived from or must match the model. Density
+  execution itself never resolves a model reference.
 
 ## References
 

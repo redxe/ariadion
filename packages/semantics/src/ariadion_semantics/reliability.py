@@ -12,8 +12,7 @@ from enum import Enum
 from math import isfinite
 
 from ariadion_core import canonical_json, require_nonempty_identifier
-
-from .executable_noise import ExecutableNoiseModel
+from ariadion_noise import ExecutableNoiseModel, NoiseFeature
 
 
 class EvolutionModel(str, Enum):
@@ -31,16 +30,6 @@ class NoiseModelOrigin(str, Enum):
     NONE = "none"
     DECLARED = "declared"
     DEVICE_PROFILE = "device_profile"
-
-
-class NoiseFeature(str, Enum):
-    """An independently selected feature of a future noise model."""
-
-    GATE_CHANNELS = "gate_channels"
-    IDLE_DECOHERENCE = "idle_decoherence"
-    READOUT_ERRORS = "readout_errors"
-    LEAKAGE = "leakage"
-    CORRELATIONS = "correlations"
 
 
 class ProtectionStrategy(str, Enum):
@@ -389,10 +378,10 @@ class SimulationRequest:
                 label="simulation request noise_model_reference",
             )
         if self.noise_model_origin is NoiseModelOrigin.NONE:
-            if self.noise_features:
-                raise ValueError("noise model origin NONE cannot select noise features")
             if self.noise_model is not None or self.noise_model_reference is not None:
                 raise ValueError("noise model origin NONE cannot carry a noise model")
+            if self.noise_features:
+                raise ValueError("noise model origin NONE cannot select noise features")
         elif self.noise_model_origin is NoiseModelOrigin.DECLARED and (
             self.noise_model is None and self.noise_model_reference is None
         ):
@@ -405,6 +394,13 @@ class SimulationRequest:
             raise ValueError(
                 "noise model origin DEVICE_PROFILE requires a noise_model_reference"
             )
+        if self.noise_model is not None:
+            model_features = self.noise_model.features
+            if self.noise_features and set(self.noise_features) != set(model_features):
+                raise ValueError(
+                    "simulation request noise_features must match the declared noise_model"
+                )
+            object.__setattr__(self, "noise_features", model_features)
         if self.protection_plan is not None and not isinstance(
             self.protection_plan,
             ProtectionPlan,

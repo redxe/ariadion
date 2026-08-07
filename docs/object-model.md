@@ -194,10 +194,11 @@ contracts owned by the semantic layer. They describe requested bounds, assumptio
 and a future planner's result; they do not mutate a source `Qubit`, allocate a
 physical slot, or implement a decoder.
 
-`ExecutableNoiseModel` is a separate immutable semantic boundary for future noisy
-execution. It owns typed, provider-neutral one-qubit channel bindings keyed by
-lowered `OpCode` values and separate classical binary readout bindings. It does not
-reinterpret descriptive `NoiseProfile` strings or run a simulator. A
+`ExecutableNoiseModel` is a separate immutable `ariadion-noise` boundary, not a
+semantic or allocated-IR object. It owns typed, provider-neutral one-qubit channel
+bindings keyed by public `OneQubitGate` categories plus one optional classical
+`BinaryReadoutChannel`. Runtime maps the neutral categories to allocated IR only
+at execution time. The model never reinterprets descriptive `NoiseProfile` strings.
 `NoiseBindingResult` owns the executable model, binding assumptions, and every
 unsupported `NoiseFeature`, making omissions inspectable rather than silent.
 
@@ -319,11 +320,15 @@ empirical counts to `LogicalRunResult`.
 `RESET` is likewise split by execution model. Exact pure-state-vector execution
 rejects it with `A203`; a sampled trajectory internally collapses the target and
 conditionally applies `X` to establish $|0\rangle$, recording `ResetEvent`
-evidence rather than a user-visible measurement result. A future density-matrix
-backend can model the exact channel
-$\rho \mapsto \operatorname{Tr}_q(\rho) \otimes |0\rangle\langle0|_q$. Reset of
-an entangled value can disturb live correlations, so neither reset evidence nor a
-semantic lifetime endpoint implies reusable allocation capacity.
+evidence rather than a user-visible measurement result. Exact density-matrix
+execution models the channel
+$\rho \mapsto \operatorname{Tr}_q(\rho) \otimes |0\rangle\langle0|_q$ and can
+therefore reset an entangled target exactly. `DensityMatrixLogicalRunResult`
+keeps the physical and readout-reported `ExactClassicalDistribution` values
+separate; it does not invent a state-vector `StateSnapshot` or amplitude
+inspection. Reset of an entangled value can disturb live correlations, so neither
+reset evidence nor a semantic lifetime endpoint implies reusable allocation
+capacity.
 
 ## Ports and substitution boundaries
 

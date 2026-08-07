@@ -6,7 +6,8 @@ Ariadion is an early-stage, basis-aware quantum programming platform designed to
 
 1. capture a safe subset of a Python quantum function or describe a compatibility builder program;
 2. lower it through the **Daidalon** compiler into semantic circuit IR;
-3. execute it with the reference exact state-vector or sampled-trajectory simulator;
+3. execute it with reference exact state-vector, sampled-trajectory, or small
+  density-matrix simulation;
 4. inspect amplitudes, probabilities, phase, and entanglement hints with **Theonoe**;
 5. render a synchronized ASCII circuit view.
 
@@ -103,7 +104,7 @@ cannot execute as ordinary Python.
 
 ## Exact analysis and sampled trajectories
 
-`run()` remains exact by default. Exact state-vector execution reports analytical
+`run()` remains exact state-vector execution by default. It reports analytical
 terminal measurement probabilities and preserves its retained analytical state; it
 does not collapse a measurement and rejects a later gate with `A202`. General
 `RESET` is rejected in exact pure-state-vector mode with `A203` because an
@@ -130,8 +131,55 @@ sampled trace describes exactly one trajectory, so trace capture with more than
 one shot is rejected with `A204`.
 
 The source markers do not choose execution mode. Running `observe_then_reset`
-requires an explicit `SampledExecutionRequest`; exact execution raises `A203` for
-the reset, and an exact quantum operation after `observe()` raises `A202`.
+with default exact state-vector execution raises `A203` for reset, and an exact
+quantum operation after `observe()` raises `A202`.
+
+## Exact noisy density matrices
+
+Use `DensityMatrixExecutionRequest` with provider-neutral `OneQubitGate` channel
+bindings to execute a small exact mixed-state circuit. The ideal supported gate
+runs first, then its matched one-qubit Kraus channel. `CX` is ideal-only in this
+first slice.
+
+```python
+from ariadion import (
+  Bit,
+  BitFlipChannel,
+  DensityMatrixExecutionRequest,
+  ExecutableNoiseModel,
+  GateChannelBinding,
+  OneQubitGate,
+  Qubit,
+  quantum,
+  run,
+  x,
+)
+
+
+@quantum
+def noisy_one() -> Bit:
+  value = Qubit()
+  x(value)
+  return value
+
+
+execution = DensityMatrixExecutionRequest(
+  ExecutableNoiseModel(
+    gate_channels=(
+      GateChannelBinding(OneQubitGate.X, BitFlipChannel(0.1)),
+    ),
+  )
+)
+result = run(noisy_one, execution=execution)
+```
+
+For logical classical returns, density results expose both
+`physical_classical_output_distribution` and
+`reported_classical_output_distribution`. A model-level `BinaryReadoutChannel`
+changes only the reported distribution, never `result.simulation.density_matrix`.
+Exact density observations remain terminal. Density execution supports exact reset,
+including entangled targets, but currently rejects enabled amplitude trace capture
+with `A205` rather than fabricating state-vector snapshots.
 
 Captured quantum functions can now compose through explicit logical bindings:
 
@@ -283,13 +331,14 @@ packages/
   sdk/             Ariadion public facade
   core/            shared identity and source-location contracts
   language/        Python-first program model
+  noise/           neutral typed executable noise-channel contracts
   semantics/       pre-allocation logical quantum-value contracts
   frontend-python/ safe valid-Python AST capture into logical semantics
   syntax/          immutable Python-extension source and compatibility AST contracts
   ir/              semantic circuit IR
   daidalon/        compiler and validation passes
   runtime/         orchestration layer
-  simulator/       dependency-free state-vector reference simulator
+  simulator/       dependency-free state-vector and exact density-matrix simulators
   theonoe/         debugger and state inspector
   visualization/   circuit/state renderers
 apps/

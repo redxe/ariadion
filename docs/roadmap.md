@@ -28,18 +28,19 @@
 - explicit quantum ownership and release-safety evidence separate from liveness
 - seeded sampled state-vector trajectories with collapse, empirical counts, and one-shot traces
 - sampled source/IR reset through collapse plus conditional `X`; exact reset rejection with `A203`
+- exact density-matrix execution with typed one-qubit Kraus channels, exact reset,
+  and physical versus readout-reported distributions
 
 ## Next sequence
 
 The next implementation work must preserve this order:
 
-1. Add a small density-matrix noisy simulator.
-2. Add scheduling and T1/T2 idle decoherence.
-3. Add reliability goals and bare-execution estimates.
-4. Add pluggable protection-planning interfaces.
-5. Add encoded-QEC simulation and decoder integration later.
+1. Add scheduling and T1/T2 idle decoherence.
+2. Add reliability goals and bare-execution estimates.
+3. Add pluggable protection-planning interfaces.
+4. Add encoded-QEC simulation and decoder integration later.
 
-After the noise-channel and density-matrix work establishes a clean execution
+After the noise-channel and density-matrix work has established a clean execution
 model, return to classical feedback, branching, and conditional gates.
 
 ## Milestone 1 — value, effect, and observation contracts
@@ -112,28 +113,46 @@ model, return to classical feedback, branching, and conditional gates.
 - enforce `A202` and `A203` only at exact execution; sampled behavior still
 	requires explicit `SampledExecutionRequest`
 - defer `Bit` branching, feedback, arithmetic, conditional gates, slot reuse, and
-	density-matrix execution
+	scheduling and idle decoherence
 
 ## Milestone 4.7 — executable noise channel contracts — complete
 
 - keep descriptive `NoiseProfile` metadata separate from typed,
 	provider-neutral `ExecutableNoiseModel` channel data
 - define one-qubit bit-flip, phase-flip, depolarizing, amplitude-damping, and
-	phase-damping Kraus-channel contracts without changing current simulation
-- bind channels to lowered single-qubit `OpCode` values and reject `CX` until a
-	multi-qubit channel representation exists
+	phase-damping Kraus-channel contracts in neutral `ariadion-noise`
+- bind channels to public `OneQubitGate` categories, never public allocated
+	`OpCode` values, and reject `CX` until a multi-qubit channel representation exists
 - model asymmetric classical readout with `BinaryReadoutChannel`, independent of
 	density-matrix gate evolution
 - preserve `IdleNoise(t1_ns, t2_ns)` as schedule-dependent descriptive input
 - require `SimulationRequest` provenance to distinguish ideal, declared typed
 	noise, and future device-profile references
 - record assumptions and unsupported `NoiseFeature` values in `NoiseBindingResult`
-- defer density-matrix execution, timing/scheduling, calibration ingestion,
-	leakage, correlations, QEC, and automatic reliability planning
+- defer timing/scheduling, calibration ingestion, leakage, correlations, QEC, and
+	automatic reliability planning
 
-## Milestone 5 — staged noisy simulation and reliability planning
+## Milestone 4.8 — exact density-matrix noisy execution — complete
 
-- add a small density-matrix noisy simulator
+- expose `DensityMatrixExecutionRequest` and dedicated density result types through
+	  simulator, runtime, and SDK APIs
+- evolve exact $2^n\times2^n$ density matrices for ideal `X`, `H`, `Z`, `RX`,
+	  `RY`, `RZ`, and `CX`
+- validate every custom one-qubit Kraus channel before execution, then apply its
+	  matched channel after the ideal single-qubit gate
+- preserve terminal exact observations and derive `ExactClassicalDistribution`
+	  values from density diagonals
+- distinguish physical classical distributions from independently readout-noised
+	  reported distributions, including repeated result aliases
+- execute exact trace-and-reprepare reset on entangled targets while preserving the
+	  existing state-vector `A203` reset behavior
+- reject amplitude-only trace capture for density execution (`A205`) instead of
+	  fabricating amplitude snapshots
+- defer two-qubit noise, timing/T1/T2 execution, calibration ingestion, sampling,
+	  feedback, leakage, correlations, QEC, and slot reuse
+
+## Milestone 5 — scheduling and reliability planning
+
 - schedule operations and model T1/T2 idle decoherence
 - define leakage, correlation, and device-profile ingestion contracts
 - estimate bare-execution failure against reliability goals

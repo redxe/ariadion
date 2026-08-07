@@ -109,14 +109,17 @@ it does not create a replacement `Qubit`. The width-based `Program` compatibilit
 builder has no reset method, and no compiler allocation policy uses reset to recycle
 a logical execution slot.
 
-`ExecutableNoiseModel` is separate from `CircuitIR` and is not consumed by the
-current state-vector simulator. It binds typed one-qubit Kraus channels to lowered
-single-qubit `OpCode` values, so `h` source spelling and provider-specific channel
-strings never select simulator behavior. `CX` bindings are rejected until an
-explicit multi-qubit channel contract exists. A `ReadoutChannelBinding` applies a
-classical `BinaryReadoutChannel` only to lowered `MEASURE`; readout error is not a
-quantum gate channel. `NoiseBindingResult` carries the model plus explicit
-unsupported features as future compiler/runtime evidence.
+`ExecutableNoiseModel` is separate from `CircuitIR` and lives in neutral
+`ariadion-noise`. It binds typed one-qubit Kraus channels to public
+`OneQubitGate` categories rather than lowered `OpCode` values, so source spelling,
+provider-specific channel strings, and allocation do not select simulator behavior.
+The density-matrix backend maps supported allocated `X`, `H`, `Z`, `RX`, `RY`, and
+`RZ` operations to those categories locally, executes the ideal operation first,
+then applies its matched channel. `CX` remains ideal-only until an explicit
+multi-qubit channel contract exists. The model-level `BinaryReadoutChannel` changes
+only reported classical probabilities after terminal observation, never the density
+matrix. `NoiseBindingResult` carries the model plus explicit unsupported features as
+compiler/runtime evidence.
 
 `RX`, `RY`, and `RZ` require a finite `angle_radians` value. Direct IR producers
 can omit `AngleMetadata`, but Daidalon preserves source `source_value` and

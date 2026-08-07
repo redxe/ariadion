@@ -1,9 +1,9 @@
 [project]
 name = "ariadion-simulator"
 version = "0.1.0"
-description = "Reference state-vector simulator for Ariadion"
+description = "Reference state-vector and exact density-matrix simulators for Ariadion"
 requires-python = ">=3.11"
-dependencies = ["ariadion-ir"]
+dependencies = ["ariadion-ir", "ariadion-noise"]
 
 [build-system]
 requires = ["setuptools>=68"]

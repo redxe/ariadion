@@ -30,7 +30,7 @@ from .model import (
     UnboundQuantumParameterError,
     return_value_refs,
 )
-from .executable_noise import (
+from ariadion_noise import (
     AmplitudeDampingChannel,
     BinaryReadoutChannel,
     BitFlipChannel,
@@ -40,10 +40,14 @@ from .executable_noise import (
     KrausOperator,
     KrausOperators,
     NoiseBindingResult,
+    NoiseFeature,
+    OneQubitGate,
     PhaseDampingChannel,
     PhaseFlipChannel,
     QuantumChannel,
-    ReadoutChannelBinding,
+    QuantumChannelValidationError,
+    validate_executable_noise_model,
+    validate_quantum_channel,
 )
 from .reliability import (
     CorrelationModel,
@@ -51,7 +55,6 @@ from .reliability import (
     GateNoise,
     IdleNoise,
     LeakageModel,
-    NoiseFeature,
     NoiseModelOrigin,
     NoiseProfile,
     ProtectionPlan,
@@ -94,6 +97,7 @@ __all__ = [
     "Observation",
     "ObservationResultValue",
     "ObservationReason",
+    "OneQubitGate",
     "PhaseDampingChannel",
     "PhaseFlipChannel",
     "ProtectionPlan",
@@ -101,9 +105,9 @@ __all__ = [
     "QuantumArgumentBinding",
     "QuantumCallResult",
     "QuantumChannel",
+    "QuantumChannelValidationError",
     "QuantumInstruction",
     "QuantumParameter",
-    "ReadoutChannelBinding",
     "ReadoutNoise",
     "ReliabilityGoal",
     "ReturnShape",
@@ -118,4 +122,6 @@ __all__ = [
     "TupleReturn",
     "UnboundQuantumParameterError",
     "return_value_refs",
+    "validate_executable_noise_model",
+    "validate_quantum_channel",
 ]

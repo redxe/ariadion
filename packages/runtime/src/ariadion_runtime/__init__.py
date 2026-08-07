@@ -1,4 +1,7 @@
 from .runtime import (
+	DensityMatrixLogicalRunResult,
+	DensityMatrixRunResult,
+	DensityMatrixTraceUnsupportedError,
 	LogicalRunResult,
 	ReturnedQuantumValue,
 	RunResult,
@@ -40,7 +43,7 @@ from .trace import (
 	TraceCaptureOptions,
 	TraceStep,
 )
-from ariadion_simulator import SampledExecutionRequest
+from ariadion_simulator import DensityMatrixExecutionRequest, SampledExecutionRequest
 from theonoe import (
 	RotationAxis,
 	RotationEffect,
@@ -54,6 +57,10 @@ __all__ = [
 	"ExecutionMode",
 	"ExecutionTrace",
 	"ExactClassicalDistribution",
+	"DensityMatrixExecutionRequest",
+	"DensityMatrixLogicalRunResult",
+	"DensityMatrixRunResult",
+	"DensityMatrixTraceUnsupportedError",
 	"INSPECTION_SCHEMA_VERSION",
 	"MeasurementBitOrder",
 	"MeasurementEvent",

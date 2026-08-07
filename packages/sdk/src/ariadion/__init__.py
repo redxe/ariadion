@@ -38,8 +38,26 @@ from ariadion_language import (
     x,
     z,
 )
-from ariadion_ir import OpCode
+from ariadion_noise import (
+    AmplitudeDampingChannel,
+    BinaryReadoutChannel,
+    BitFlipChannel,
+    DepolarizingChannel,
+    ExecutableNoiseModel,
+    GateChannelBinding,
+    NoiseBindingResult,
+    NoiseFeature,
+    OneQubitGate,
+    PhaseDampingChannel,
+    PhaseFlipChannel,
+    QuantumChannel,
+    QuantumChannelValidationError,
+)
 from ariadion_runtime import (
+    DensityMatrixExecutionRequest,
+    DensityMatrixLogicalRunResult,
+    DensityMatrixRunResult,
+    DensityMatrixTraceUnsupportedError,
     ExecutionTrace,
     ExactClassicalDistribution,
     INSPECTION_SCHEMA_VERSION,
@@ -72,25 +90,13 @@ from ariadion_runtime import (
     run_program,
 )
 from ariadion_semantics import (
-    AmplitudeDampingChannel,
-    BinaryReadoutChannel,
-    BitFlipChannel,
-    DepolarizingChannel,
     EvolutionModel,
-    ExecutableNoiseModel,
-    GateChannelBinding,
     LogicalCallOperation,
     LogicalModule,
     LogicalProgram,
-    NoiseBindingResult,
-    NoiseFeature,
     NoiseModelOrigin,
-    PhaseDampingChannel,
-    PhaseFlipChannel,
-    QuantumChannel,
     QuantumArgumentBinding,
     QuantumCallResult,
-    ReadoutChannelBinding,
     SimulationRequest,
     UnboundQuantumParameterError,
 )
@@ -138,12 +144,39 @@ def run(
     ...
 
 
+@overload
+def run(
+    program: Program,
+    *,
+    trace: TraceCaptureOptions | None = None,
+    execution: DensityMatrixExecutionRequest,
+) -> DensityMatrixRunResult:
+    ...
+
+
+@overload
+def run(
+    program: LogicalProgram | LogicalModule | QuantumFunction,
+    *,
+    trace: TraceCaptureOptions | None = None,
+    execution: DensityMatrixExecutionRequest,
+) -> DensityMatrixLogicalRunResult:
+    ...
+
+
 def run(
     program: Program | LogicalProgram | LogicalModule | QuantumFunction,
     *,
     trace: TraceCaptureOptions | None = None,
-    execution: SampledExecutionRequest | None = None,
-) -> RunResult | LogicalRunResult | SampledRunResult | SampledLogicalRunResult:
+    execution: SampledExecutionRequest | DensityMatrixExecutionRequest | None = None,
+) -> (
+    RunResult
+    | LogicalRunResult
+    | SampledRunResult
+    | SampledLogicalRunResult
+    | DensityMatrixRunResult
+    | DensityMatrixLogicalRunResult
+):
     """Execute a builder, logical program, resolved module, or captured function."""
 
     if isinstance(program, Program):
@@ -173,6 +206,10 @@ __all__ = [
     "Bit",
     "BitFlipChannel",
     "DepolarizingChannel",
+    "DensityMatrixExecutionRequest",
+    "DensityMatrixLogicalRunResult",
+    "DensityMatrixRunResult",
+    "DensityMatrixTraceUnsupportedError",
     "EvolutionModel",
     "ExecutableNoiseModel",
     "ExplicitSourceProvider",
@@ -192,7 +229,7 @@ __all__ = [
     "NoiseBindingResult",
     "NoiseFeature",
     "NoiseModelOrigin",
-    "OpCode",
+    "OneQubitGate",
     "PhaseDampingChannel",
     "PhaseFlipChannel",
     "ProbabilityScope",
@@ -204,6 +241,7 @@ __all__ = [
     "Qubit",
     "QuantumArgumentBinding",
     "QuantumChannel",
+    "QuantumChannelValidationError",
     "QuantumCallResult",
     "QuantumFunction",
     "QuantumFunctionConfig",
@@ -219,7 +257,6 @@ __all__ = [
     "RotationExplanation",
     "RotationSourceAngle",
     "ReturnedQuantumValue",
-    "ReadoutChannelBinding",
     "ResetEvent",
     "SourceNodeId",
     "SourceRange",

@@ -7,6 +7,7 @@ dependencies = [
   "ariadion-core",
   "ariadion-ir",
   "ariadion-language",
+  "ariadion-noise",
   "ariadion-semantics",
   "daidalon",
   "ariadion-simulator",

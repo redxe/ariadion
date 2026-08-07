@@ -1,48 +1,59 @@
 """Provider-neutral executable quantum-noise channel contracts.
 
-These immutable values are intentionally distinct from ``NoiseProfile``. A
-profile describes planning assumptions, while this module defines small,
-mathematically specified channels that a future noisy simulator can apply after
-lowering. Defining Kraus operators here does not add density-matrix evolution to
-the current state-vector simulator.
+These immutable values deliberately do not depend on source semantics or allocated
+IR. A future execution backend resolves ``OneQubitGate`` values to its own lowered
+operations before applying the mathematical channels defined here.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from math import isfinite, sqrt
-from typing import TYPE_CHECKING, ClassVar, TypeAlias
+from enum import Enum
+from math import isclose, isfinite, sqrt
+from typing import ClassVar, TypeAlias
 
 from ariadion_core import canonical_json, require_nonempty_identifier
-from ariadion_ir import OpCode
-
-if TYPE_CHECKING:
-    from .reliability import NoiseFeature
 
 
-# Each nested tuple is indexed as ``operator[row][column]`` in computational basis order.
+KRAUS_COMPLETENESS_ABS_TOLERANCE = 1e-12
+
+# Each nested tuple is indexed as ``operator[row][column]`` in computational-basis order.
 KrausOperator: TypeAlias = tuple[tuple[complex, complex], tuple[complex, complex]]
 KrausOperators: TypeAlias = tuple[KrausOperator, ...]
 
-_SINGLE_QUBIT_GATE_OPCODES = frozenset(
-    {
-        OpCode.X,
-        OpCode.H,
-        OpCode.Z,
-        OpCode.RX,
-        OpCode.RY,
-        OpCode.RZ,
-    }
-)
+
+class NoiseFeature(str, Enum):
+    """Executable and descriptive noise capabilities tracked independently."""
+
+    GATE_CHANNELS = "gate_channels"
+    IDLE_DECOHERENCE = "idle_decoherence"
+    READOUT_ERRORS = "readout_errors"
+    LEAKAGE = "leakage"
+    CORRELATIONS = "correlations"
+
+
+class OneQubitGate(str, Enum):
+    """Public one-qubit gate categories supported by the first channel model."""
+
+    X = "x"
+    H = "h"
+    Z = "z"
+    RX = "rx"
+    RY = "ry"
+    RZ = "rz"
+
+
+class QuantumChannelValidationError(ValueError):
+    """Raised when a custom one-qubit Kraus channel is not executable."""
 
 
 class QuantumChannel(ABC):
-    r"""A provider-neutral quantum channel represented by Kraus operators.
+    r"""A provider-neutral one-qubit channel represented by Kraus operators.
 
-    The operators define $\mathcal{E}(\rho) = \sum_k K_k\rho K_k^\dagger$.
-    They are channel data only: applying them remains the responsibility of a
-    future density-matrix or trajectory backend.
+    The ordered operators define
+    $\mathcal{E}(\rho) = \sum_k K_k \rho K_k^\dagger$. A simulator validates
+    their shape, finite entries, and completeness before execution.
     """
 
     __slots__ = ()
@@ -51,7 +62,7 @@ class QuantumChannel(ABC):
 
     @abstractmethod
     def kraus_operators(self) -> KrausOperators:
-        """Return the channel's ordered, trace-preserving Kraus operators."""
+        """Return this channel's ordered Kraus operators."""
 
     @abstractmethod
     def to_dict(self) -> dict[str, object]:
@@ -196,8 +207,8 @@ class BinaryReadoutChannel:
     r"""A classical binary readout channel with independent directional errors.
 
     ``p_one_given_zero`` is $P(\widetilde{b}=1\mid b=0)$ and
-    ``p_zero_given_one`` is $P(\widetilde{b}=0\mid b=1)$. This channel changes
-    recorded outcomes after observation; it is not a quantum gate channel.
+    ``p_zero_given_one`` is $P(\widetilde{b}=0\mid b=1)$. It changes reported
+    outcomes after physical measurement; it is never a quantum gate channel.
     """
 
     p_one_given_zero: float
@@ -243,50 +254,21 @@ class BinaryReadoutChannel:
 
 @dataclass(frozen=True, slots=True)
 class GateChannelBinding:
-    """Bind one single-qubit executable channel to a lowered single-qubit gate opcode."""
+    """Bind a typed one-qubit channel to a neutral public gate category."""
 
-    opcode: OpCode
+    gate: OneQubitGate
     channel: QuantumChannel
 
     def __post_init__(self) -> None:
-        if not isinstance(self.opcode, OpCode):
-            raise ValueError("gate channel binding opcode must be an OpCode")
-        if self.opcode not in _SINGLE_QUBIT_GATE_OPCODES:
-            raise ValueError(
-                "gate channel bindings support only single-qubit gate opcodes; "
-                "multi-qubit, measurement, and reset opcodes are unsupported"
-            )
+        if not isinstance(self.gate, OneQubitGate):
+            raise ValueError("gate channel binding gate must be a OneQubitGate")
         if not isinstance(self.channel, QuantumChannel):
             raise ValueError("gate channel binding channel must be a QuantumChannel")
         if self.channel.qubit_count != 1:
             raise ValueError("gate channel bindings require single-qubit channels")
 
     def to_dict(self) -> dict[str, object]:
-        return {"opcode": self.opcode.value, "channel": self.channel.to_dict()}
-
-    def to_json(self) -> str:
-        return canonical_json(self.to_dict())
-
-
-@dataclass(frozen=True, slots=True)
-class ReadoutChannelBinding:
-    """Bind a classical readout channel to lowered ``MEASURE`` operations."""
-
-    opcode: OpCode
-    channel: BinaryReadoutChannel
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.opcode, OpCode):
-            raise ValueError("readout channel binding opcode must be an OpCode")
-        if self.opcode is not OpCode.MEASURE:
-            raise ValueError("readout channel bindings require the MEASURE opcode")
-        if not isinstance(self.channel, BinaryReadoutChannel):
-            raise ValueError(
-                "readout channel binding channel must be a BinaryReadoutChannel"
-            )
-
-    def to_dict(self) -> dict[str, object]:
-        return {"opcode": self.opcode.value, "channel": self.channel.to_dict()}
+        return {"gate": self.gate.value, "channel": self.channel.to_dict()}
 
     def to_json(self) -> str:
         return canonical_json(self.to_dict())
@@ -294,51 +276,59 @@ class ReadoutChannelBinding:
 
 @dataclass(frozen=True, slots=True)
 class ExecutableNoiseModel:
-    """Typed executable channel bindings for a future noisy simulator.
+    """Typed provider-neutral channels for a future noisy execution backend.
 
-    Bindings are keyed by lowered ``OpCode`` values, never by Python source
-    spelling. The current model supports only single-qubit gate channels and
-    classical readout channels; it intentionally has no two-qubit, leakage,
-    correlated, or timing-derived idle channel representation.
+    Gate channels are keyed by public single-qubit gate categories. A configured
+    binary readout channel applies independently to each distinct terminal
+    observation; runtime maps this neutral model to allocated operations.
     """
 
     gate_channels: tuple[GateChannelBinding, ...] = ()
-    readout_channels: tuple[ReadoutChannelBinding, ...] = ()
+    readout_channel: BinaryReadoutChannel | None = None
 
     def __post_init__(self) -> None:
         _require_tuple(self.gate_channels, label="executable noise model gate_channels")
-        _require_tuple(
-            self.readout_channels,
-            label="executable noise model readout_channels",
-        )
         if not all(isinstance(binding, GateChannelBinding) for binding in self.gate_channels):
             raise ValueError(
                 "executable noise model gate_channels must contain GateChannelBinding values"
             )
-        if not all(
-            isinstance(binding, ReadoutChannelBinding) for binding in self.readout_channels
+        gates = tuple(binding.gate for binding in self.gate_channels)
+        if len(gates) != len(set(gates)):
+            raise ValueError("executable noise model gate channel bindings must be unique")
+        if self.readout_channel is not None and not isinstance(
+            self.readout_channel,
+            BinaryReadoutChannel,
         ):
             raise ValueError(
-                "executable noise model readout_channels must contain "
-                "ReadoutChannelBinding values"
+                "executable noise model readout_channel must be BinaryReadoutChannel"
             )
-        _require_unique_opcodes(self.gate_channels, label="gate")
-        _require_unique_opcodes(self.readout_channels, label="readout")
         object.__setattr__(
             self,
             "gate_channels",
-            tuple(sorted(self.gate_channels, key=lambda binding: binding.opcode.value)),
+            tuple(sorted(self.gate_channels, key=lambda binding: binding.gate.value)),
         )
-        object.__setattr__(
-            self,
-            "readout_channels",
-            tuple(sorted(self.readout_channels, key=lambda binding: binding.opcode.value)),
-        )
+
+    @property
+    def features(self) -> tuple[NoiseFeature, ...]:
+        features: list[NoiseFeature] = []
+        if self.gate_channels:
+            features.append(NoiseFeature.GATE_CHANNELS)
+        if self.readout_channel is not None:
+            features.append(NoiseFeature.READOUT_ERRORS)
+        return tuple(features)
+
+    def channel_for_gate(self, gate: OneQubitGate) -> QuantumChannel | None:
+        for binding in self.gate_channels:
+            if binding.gate is gate:
+                return binding.channel
+        return None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "gate_channels": [binding.to_dict() for binding in self.gate_channels],
-            "readout_channels": [binding.to_dict() for binding in self.readout_channels],
+            "readout_channel": (
+                self.readout_channel.to_dict() if self.readout_channel is not None else None
+            ),
         }
 
     def to_json(self) -> str:
@@ -347,20 +337,13 @@ class ExecutableNoiseModel:
 
 @dataclass(frozen=True, slots=True)
 class NoiseBindingResult:
-    """Inspectable executable binding evidence with explicit unsupported features.
-
-    A compiler or runtime can retain this result beside an execution request. It
-    records assumptions and every unsupported descriptive feature rather than
-    silently treating omitted features as executable channels.
-    """
+    """Inspectable executable binding evidence with explicit unsupported features."""
 
     model: ExecutableNoiseModel
     assumptions: tuple[str, ...] = ()
     unsupported_features: tuple[NoiseFeature, ...] = ()
 
     def __post_init__(self) -> None:
-        from .reliability import NoiseFeature
-
         if not isinstance(self.model, ExecutableNoiseModel):
             raise ValueError("noise binding result model must be an ExecutableNoiseModel")
         _require_tuple(self.assumptions, label="noise binding result assumptions")
@@ -394,6 +377,71 @@ class NoiseBindingResult:
         return canonical_json(self.to_dict())
 
 
+def validate_quantum_channel(channel: QuantumChannel) -> KrausOperators:
+    """Validate and return one executable one-qubit Kraus channel.
+
+    This deliberately validates runtime behavior instead of trusting a custom
+    ``QuantumChannel`` implementation's annotations or serialization metadata.
+    """
+
+    if not isinstance(channel, QuantumChannel):
+        raise QuantumChannelValidationError("quantum channel must be a QuantumChannel")
+    if channel.qubit_count != 1:
+        raise QuantumChannelValidationError("only one-qubit quantum channels are supported")
+    operators = channel.kraus_operators()
+    if not isinstance(operators, tuple) or not operators:
+        raise QuantumChannelValidationError("quantum channel Kraus operators must be non-empty")
+    for operator in operators:
+        if not isinstance(operator, tuple) or len(operator) != 2:
+            raise QuantumChannelValidationError("quantum channel Kraus operators must be 2x2")
+        for row in operator:
+            if not isinstance(row, tuple) or len(row) != 2:
+                raise QuantumChannelValidationError("quantum channel Kraus operators must be 2x2")
+            for value in row:
+                if not isinstance(value, complex) or not (
+                    isfinite(value.real) and isfinite(value.imag)
+                ):
+                    raise QuantumChannelValidationError(
+                        "quantum channel Kraus entries must be finite complex values"
+                    )
+
+    completeness = [[0j, 0j], [0j, 0j]]
+    for operator in operators:
+        for row in range(2):
+            for column in range(2):
+                completeness[row][column] += sum(
+                    operator[index][row].conjugate() * operator[index][column]
+                    for index in range(2)
+                )
+    for row in range(2):
+        for column in range(2):
+            expected = 1 if row == column else 0
+            if not isclose(
+                completeness[row][column].real,
+                expected,
+                rel_tol=0.0,
+                abs_tol=KRAUS_COMPLETENESS_ABS_TOLERANCE,
+            ) or not isclose(
+                completeness[row][column].imag,
+                0.0,
+                rel_tol=0.0,
+                abs_tol=KRAUS_COMPLETENESS_ABS_TOLERANCE,
+            ):
+                raise QuantumChannelValidationError(
+                    "quantum channel Kraus operators must satisfy sum(K†K) = I"
+                )
+    return operators
+
+
+def validate_executable_noise_model(model: ExecutableNoiseModel) -> None:
+    """Validate every configured channel before a backend applies the model."""
+
+    if not isinstance(model, ExecutableNoiseModel):
+        raise ValueError("executable noise model must be an ExecutableNoiseModel")
+    for binding in model.gate_channels:
+        validate_quantum_channel(binding.channel)
+
+
 def _normalize_probability(value: object, *, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{label} must be numeric")
@@ -415,16 +463,6 @@ def _require_tuple(value: object, *, label: str) -> None:
         raise ValueError(f"{label} must be a tuple")
 
 
-def _require_unique_opcodes(
-    bindings: tuple[GateChannelBinding, ...] | tuple[ReadoutChannelBinding, ...],
-    *,
-    label: str,
-) -> None:
-    opcodes = tuple(binding.opcode for binding in bindings)
-    if len(opcodes) != len(set(opcodes)):
-        raise ValueError(f"executable noise model {label} channel bindings must be unique")
-
-
 __all__ = [
     "AmplitudeDampingChannel",
     "BinaryReadoutChannel",
@@ -432,11 +470,16 @@ __all__ = [
     "DepolarizingChannel",
     "ExecutableNoiseModel",
     "GateChannelBinding",
+    "KRAUS_COMPLETENESS_ABS_TOLERANCE",
     "KrausOperator",
     "KrausOperators",
     "NoiseBindingResult",
+    "NoiseFeature",
+    "OneQubitGate",
     "PhaseDampingChannel",
     "PhaseFlipChannel",
     "QuantumChannel",
-    "ReadoutChannelBinding",
+    "QuantumChannelValidationError",
+    "validate_executable_noise_model",
+    "validate_quantum_channel",
 ]

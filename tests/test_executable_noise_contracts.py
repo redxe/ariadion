@@ -6,24 +6,26 @@ from math import sqrt
 
 from ariadion_core import IrOperationId, ProgramId
 from ariadion_ir import CircuitIR, OpCode, Operation
-from ariadion_semantics import (
+from ariadion_noise import (
     AmplitudeDampingChannel,
     BinaryReadoutChannel,
     BitFlipChannel,
     DepolarizingChannel,
-    EvolutionModel,
     ExecutableNoiseModel,
     GateChannelBinding,
-    GateNoise,
-    IdleNoise,
     NoiseBindingResult,
     NoiseFeature,
-    NoiseModelOrigin,
-    NoiseProfile,
+    OneQubitGate,
     PhaseDampingChannel,
     PhaseFlipChannel,
     QuantumChannel,
-    ReadoutChannelBinding,
+)
+from ariadion_semantics import (
+    EvolutionModel,
+    GateNoise,
+    IdleNoise,
+    NoiseModelOrigin,
+    NoiseProfile,
     SimulationRequest,
 )
 from ariadion_simulator import SampledExecutionRequest, simulate
@@ -42,11 +44,10 @@ class ExecutableNoiseContractTests(unittest.TestCase):
             NoiseBindingResult as SdkNoiseBindingResult,
             NoiseFeature as SdkNoiseFeature,
             NoiseModelOrigin as SdkNoiseModelOrigin,
-            OpCode as SdkOpCode,
+            OneQubitGate as SdkOneQubitGate,
             PhaseDampingChannel as SdkPhaseDampingChannel,
             PhaseFlipChannel as SdkPhaseFlipChannel,
             QuantumChannel as SdkQuantumChannel,
-            ReadoutChannelBinding as SdkReadoutChannelBinding,
             SimulationRequest as SdkSimulationRequest,
         )
 
@@ -60,11 +61,10 @@ class ExecutableNoiseContractTests(unittest.TestCase):
         self.assertIs(SdkNoiseBindingResult, NoiseBindingResult)
         self.assertIs(SdkNoiseFeature, NoiseFeature)
         self.assertIs(SdkNoiseModelOrigin, NoiseModelOrigin)
-        self.assertIs(SdkOpCode, OpCode)
+        self.assertIs(SdkOneQubitGate, OneQubitGate)
         self.assertIs(SdkPhaseDampingChannel, PhaseDampingChannel)
         self.assertIs(SdkPhaseFlipChannel, PhaseFlipChannel)
         self.assertIs(SdkQuantumChannel, QuantumChannel)
-        self.assertIs(SdkReadoutChannelBinding, ReadoutChannelBinding)
         self.assertIs(SdkSimulationRequest, SimulationRequest)
 
     def test_typed_channels_validate_probabilities_and_serialize_deterministically(self) -> None:
@@ -142,7 +142,7 @@ class ExecutableNoiseContractTests(unittest.TestCase):
             idle_noise=IdleNoise(t1_ns=20_000, t2_ns=30_000),
         )
         model = ExecutableNoiseModel(
-            gate_channels=(GateChannelBinding(OpCode.H, BitFlipChannel(0.01)),),
+            gate_channels=(GateChannelBinding(OneQubitGate.H, BitFlipChannel(0.01)),),
         )
 
         self.assertEqual(
@@ -188,56 +188,49 @@ class ExecutableNoiseContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "observed_bit"):
             channel.probability(observed_bit=True, actual_bit=0)
 
-    def test_gate_channels_bind_to_typed_lowered_single_qubit_opcodes(self) -> None:
-        binding = GateChannelBinding(OpCode.H, BitFlipChannel(0.02))
+    def test_gate_channels_bind_to_neutral_single_qubit_gate_categories(self) -> None:
+        binding = GateChannelBinding(OneQubitGate.H, BitFlipChannel(0.02))
 
         self.assertEqual(
             binding.to_dict(),
             {
-                "opcode": "H",
+                "gate": "h",
                 "channel": {"kind": "bit_flip", "probability": 0.02},
             },
         )
-        with self.assertRaisesRegex(ValueError, "OpCode"):
+        with self.assertRaisesRegex(ValueError, "OneQubitGate"):
             GateChannelBinding("H", BitFlipChannel(0.02))  # type: ignore[arg-type]
-        with self.assertRaisesRegex(ValueError, "multi-qubit"):
-            GateChannelBinding(OpCode.CX, BitFlipChannel(0.02))
-        with self.assertRaisesRegex(ValueError, "single-qubit"):
-            GateChannelBinding(OpCode.MEASURE, BitFlipChannel(0.02))
 
     def test_executable_model_canonicalizes_bindings_and_keeps_readout_classical(self) -> None:
         model = ExecutableNoiseModel(
             gate_channels=(
-                GateChannelBinding(OpCode.Z, PhaseFlipChannel(0.03)),
-                GateChannelBinding(OpCode.H, BitFlipChannel(0.02)),
+                GateChannelBinding(OneQubitGate.Z, PhaseFlipChannel(0.03)),
+                GateChannelBinding(OneQubitGate.H, BitFlipChannel(0.02)),
             ),
-            readout_channels=(
-                ReadoutChannelBinding(
-                    OpCode.MEASURE,
-                    BinaryReadoutChannel(0.1, 0.2),
-                ),
-            ),
+            readout_channel=BinaryReadoutChannel(0.1, 0.2),
         )
 
         self.assertEqual(
-            tuple(binding.opcode for binding in model.gate_channels),
-            (OpCode.H, OpCode.Z),
+            tuple(binding.gate for binding in model.gate_channels),
+            (OneQubitGate.H, OneQubitGate.Z),
+        )
+        self.assertEqual(
+            model.features,
+            (NoiseFeature.GATE_CHANNELS, NoiseFeature.READOUT_ERRORS),
         )
         self.assertEqual(model.to_json(), model.to_json())
         self.assertEqual(json.loads(model.to_json()), model.to_dict())
-        with self.assertRaisesRegex(ValueError, "MEASURE opcode"):
-            ReadoutChannelBinding(OpCode.H, BinaryReadoutChannel(0.1, 0.2))
         with self.assertRaisesRegex(ValueError, "must be unique"):
             ExecutableNoiseModel(
                 gate_channels=(
-                    GateChannelBinding(OpCode.H, BitFlipChannel(0.01)),
-                    GateChannelBinding(OpCode.H, PhaseFlipChannel(0.01)),
+                    GateChannelBinding(OneQubitGate.H, BitFlipChannel(0.01)),
+                    GateChannelBinding(OneQubitGate.H, PhaseFlipChannel(0.01)),
                 ),
             )
 
     def test_noise_binding_result_keeps_unsupported_features_visible(self) -> None:
         model = ExecutableNoiseModel(
-            gate_channels=(GateChannelBinding(OpCode.X, BitFlipChannel(0.01)),),
+            gate_channels=(GateChannelBinding(OneQubitGate.X, BitFlipChannel(0.01)),),
         )
         result = NoiseBindingResult(
             model=model,
@@ -262,7 +255,7 @@ class ExecutableNoiseContractTests(unittest.TestCase):
 
     def test_simulation_request_requires_consistent_noise_provenance(self) -> None:
         model = ExecutableNoiseModel(
-            gate_channels=(GateChannelBinding(OpCode.X, BitFlipChannel(0.01)),),
+            gate_channels=(GateChannelBinding(OneQubitGate.X, BitFlipChannel(0.01)),),
         )
 
         ideal = SimulationRequest(EvolutionModel.STATE_VECTOR, NoiseModelOrigin.NONE)
@@ -285,10 +278,17 @@ class ExecutableNoiseContractTests(unittest.TestCase):
         declared = SimulationRequest(
             EvolutionModel.DENSITY_MATRIX,
             NoiseModelOrigin.DECLARED,
-            (NoiseFeature.GATE_CHANNELS,),
             noise_model=model,
         )
         self.assertEqual(declared.noise_model, model)
+        self.assertEqual(declared.noise_features, (NoiseFeature.GATE_CHANNELS,))
+        with self.assertRaisesRegex(ValueError, "must match"):
+            SimulationRequest(
+                EvolutionModel.DENSITY_MATRIX,
+                NoiseModelOrigin.DECLARED,
+                (NoiseFeature.READOUT_ERRORS,),
+                noise_model=model,
+            )
         declared_reference = SimulationRequest(
             EvolutionModel.DENSITY_MATRIX,
             NoiseModelOrigin.DECLARED,

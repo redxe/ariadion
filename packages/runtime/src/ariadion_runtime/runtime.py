@@ -10,6 +10,7 @@ from ariadion_core import (
 )
 from ariadion_ir import CircuitIR
 from ariadion_language import Program
+from ariadion_noise import BinaryReadoutChannel
 from ariadion_semantics import (
     LogicalModule,
     LogicalProgram,
@@ -17,11 +18,14 @@ from ariadion_semantics import (
     UnboundQuantumParameterError,
 )
 from ariadion_simulator import (
+    DensityMatrixExecutionRequest,
+    DensityMatrixResult,
     SampledExecutionRequest,
     SampledSimulationResult,
     SimulationExecution,
     SimulationResult,
     simulate,
+    simulate_density_matrix,
 )
 from ariadion_visualization import render_circuit
 from daidalon import (
@@ -70,6 +74,30 @@ class SampledRunResult:
                 raise ValueError("sampled run trace must match compiled IR")
             if self.trace.metadata.mode is not ExecutionMode.SAMPLED:
                 raise ValueError("sampled run trace must use sampled execution mode")
+
+
+class DensityMatrixTraceUnsupportedError(ValueError):
+    """Raised when amplitude-only trace capture is requested for a density state."""
+
+    code = "A205"
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"{self.code}: density-matrix execution does not support amplitude trace capture"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DensityMatrixRunResult:
+    """Exact mixed-state builder-program execution without state-vector inspection."""
+
+    ir: CircuitIR
+    simulation: DensityMatrixResult
+    circuit: str
+
+    def __post_init__(self) -> None:
+        if self.simulation.circuit != self.ir:
+            raise ValueError("density-matrix run simulation circuit must match compiled IR")
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,13 +327,78 @@ class SampledLogicalRunResult:
                 raise ValueError("sampled logical trace must retain the executed trajectory state")
 
 
+@dataclass(frozen=True, slots=True)
+class DensityMatrixLogicalRunResult:
+    """Exact mixed-state logical execution with physical and reported readout laws."""
+
+    compilation: LogicalCompilationResult
+    simulation: DensityMatrixResult
+    physical_classical_output_distribution: ExactClassicalDistribution | None
+    reported_classical_output_distribution: ExactClassicalDistribution | None
+    returned_quantum_values: tuple[ReturnedQuantumValue, ...]
+    return_shape: ReturnShape
+    circuit: str
+
+    def __post_init__(self) -> None:
+        if self.simulation.circuit != self.compilation.ir:
+            raise ValueError(
+                "density-matrix logical simulation circuit must match compiled IR"
+            )
+        if self.return_shape != self.compilation.readout.return_shape:
+            raise ValueError("density-matrix logical return_shape must match compiled readout")
+        if not isinstance(self.returned_quantum_values, tuple) or not all(
+            isinstance(value, ReturnedQuantumValue) for value in self.returned_quantum_values
+        ):
+            raise ValueError(
+                "density-matrix logical returned_quantum_values must contain "
+                "ReturnedQuantumValue values"
+            )
+        classical_return_ids = self.compilation.readout.classical_return_ids()
+        distributions = (
+            self.physical_classical_output_distribution,
+            self.reported_classical_output_distribution,
+        )
+        if classical_return_ids:
+            if any(distribution is None for distribution in distributions):
+                raise ValueError(
+                    "density-matrix logical classical returns require physical and "
+                    "reported distributions"
+                )
+            if any(
+                distribution is not None and distribution.result_ids != classical_return_ids
+                for distribution in distributions
+            ):
+                raise ValueError(
+                    "density-matrix logical distribution IDs must match classical return leaves"
+                )
+        elif any(distribution is not None for distribution in distributions):
+            raise ValueError(
+                "density-matrix logical runs without classical returns cannot expose "
+                "classical distributions"
+            )
+        quantum_return_ids = self.compilation.readout.quantum_return_ids()
+        if tuple(value.logical_qubit_id for value in self.returned_quantum_values) != (
+            quantum_return_ids
+        ):
+            raise ValueError(
+                "density-matrix logical quantum handles must match quantum return leaves"
+            )
+
+
 def run_program(
     program: Program,
     *,
     trace: TraceCaptureOptions | None = None,
-    execution: SampledExecutionRequest | None = None,
-) -> RunResult | SampledRunResult:
+    execution: SampledExecutionRequest | DensityMatrixExecutionRequest | None = None,
+) -> RunResult | SampledRunResult | DensityMatrixRunResult:
     ir = compile_program(program)
+    if isinstance(execution, DensityMatrixExecutionRequest):
+        _reject_density_trace(trace)
+        return DensityMatrixRunResult(
+            ir=ir,
+            simulation=simulate_density_matrix(ir, execution=execution),
+            circuit=render_circuit(ir),
+        )
     if execution is not None:
         simulation, execution_trace = _sampled_simulation(
             ir,
@@ -344,8 +437,8 @@ def run_logical_program(
     program: LogicalProgram,
     *,
     trace: TraceCaptureOptions | None = None,
-    execution: SampledExecutionRequest | None = None,
-) -> LogicalRunResult | SampledLogicalRunResult:
+    execution: SampledExecutionRequest | DensityMatrixExecutionRequest | None = None,
+) -> LogicalRunResult | SampledLogicalRunResult | DensityMatrixLogicalRunResult:
     """Compile and execute logical observations in exact or sampled mode."""
 
     if program.parameters:
@@ -358,8 +451,8 @@ def run_logical_module(
     module: LogicalModule,
     *,
     trace: TraceCaptureOptions | None = None,
-    execution: SampledExecutionRequest | None = None,
-) -> LogicalRunResult | SampledLogicalRunResult:
+    execution: SampledExecutionRequest | DensityMatrixExecutionRequest | None = None,
+) -> LogicalRunResult | SampledLogicalRunResult | DensityMatrixLogicalRunResult:
     """Compile and execute a call-resolved module without binding root parameters."""
 
     if module.entry_program.parameters:
@@ -372,9 +465,27 @@ def _run_logical_compilation(
     compilation: LogicalCompilationResult,
     *,
     trace: TraceCaptureOptions | None,
-    execution: SampledExecutionRequest | None,
-) -> LogicalRunResult | SampledLogicalRunResult:
+    execution: SampledExecutionRequest | DensityMatrixExecutionRequest | None,
+) -> LogicalRunResult | SampledLogicalRunResult | DensityMatrixLogicalRunResult:
     """Execute one already allocated logical compilation result."""
+
+    if isinstance(execution, DensityMatrixExecutionRequest):
+        _reject_density_trace(trace)
+        simulation = simulate_density_matrix(compilation.ir, execution=execution)
+        physical_distribution, reported_distribution = _density_classical_output_distributions(
+            compilation,
+            simulation,
+            readout_channel=execution.noise_model.readout_channel,
+        )
+        return DensityMatrixLogicalRunResult(
+            compilation=compilation,
+            simulation=simulation,
+            physical_classical_output_distribution=physical_distribution,
+            reported_classical_output_distribution=reported_distribution,
+            returned_quantum_values=_returned_quantum_values(compilation),
+            return_shape=compilation.readout.return_shape,
+            circuit=render_circuit(compilation.ir),
+        )
 
     if execution is not None:
         if compilation.readout.quantum_return_ids():
@@ -500,6 +611,105 @@ def _sampled_classical_output(
         counts=tuple(counts),
         seed=simulation.seed,
     )
+
+
+def _reject_density_trace(trace: TraceCaptureOptions | None) -> None:
+    if trace is not None and trace.enabled:
+        raise DensityMatrixTraceUnsupportedError()
+
+
+def _density_classical_output_distributions(
+    compilation: LogicalCompilationResult,
+    simulation: DensityMatrixResult,
+    *,
+    readout_channel: BinaryReadoutChannel | None,
+) -> tuple[ExactClassicalDistribution | None, ExactClassicalDistribution | None]:
+    """Project density diagonals and apply readout once per distinct observation."""
+
+    result_ids = compilation.readout.classical_return_ids()
+    if not result_ids:
+        return None, None
+    observations_by_result = {
+        observation.result_id: observation for observation in compilation.readout.observations
+    }
+    unique_result_ids = tuple(dict.fromkeys(result_ids))
+    slots: list[int] = []
+    for result_id in unique_result_ids:
+        observation = observations_by_result.get(result_id)
+        if observation is None:
+            raise RuntimeError(
+                "compiled readout has a classical return without a lowered observation: "
+                f"{result_id}"
+            )
+        slots.append(observation.allocated_slot)
+
+    unique_probabilities = _density_joint_probabilities(simulation, tuple(slots))
+    leaf_indexes = tuple(unique_result_ids.index(result_id) for result_id in result_ids)
+    physical = ExactClassicalDistribution(
+        result_ids,
+        _project_unique_probabilities(unique_probabilities, leaf_indexes),
+    )
+    if readout_channel is None:
+        return physical, physical
+    reported_unique_probabilities = _apply_binary_readout(
+        unique_probabilities,
+        bit_count=len(unique_result_ids),
+        readout_channel=readout_channel,
+    )
+    reported = ExactClassicalDistribution(
+        result_ids,
+        _project_unique_probabilities(reported_unique_probabilities, leaf_indexes),
+    )
+    return physical, reported
+
+
+def _density_joint_probabilities(
+    simulation: DensityMatrixResult,
+    slots: tuple[int, ...],
+) -> tuple[float, ...]:
+    probabilities = [0.0] * (1 << len(slots))
+    for basis_index, value in enumerate(simulation.probabilities):
+        outcome = 0
+        for outcome_bit, slot in enumerate(slots):
+            if basis_index & (1 << slot):
+                outcome |= 1 << outcome_bit
+        probabilities[outcome] += value
+    return tuple(probabilities)
+
+
+def _project_unique_probabilities(
+    unique_probabilities: tuple[float, ...],
+    leaf_indexes: tuple[int, ...],
+) -> tuple[float, ...]:
+    probabilities = [0.0] * (1 << len(leaf_indexes))
+    for unique_outcome, probability in enumerate(unique_probabilities):
+        leaf_outcome = 0
+        for leaf_bit, unique_bit in enumerate(leaf_indexes):
+            if unique_outcome & (1 << unique_bit):
+                leaf_outcome |= 1 << leaf_bit
+        probabilities[leaf_outcome] += probability
+    return tuple(probabilities)
+
+
+def _apply_binary_readout(
+    probabilities: tuple[float, ...],
+    *,
+    bit_count: int,
+    readout_channel: BinaryReadoutChannel,
+) -> tuple[float, ...]:
+    reported = [0.0] * len(probabilities)
+    for actual_outcome, actual_probability in enumerate(probabilities):
+        for reported_outcome in range(len(probabilities)):
+            conditional_probability = 1.0
+            for bit_index in range(bit_count):
+                actual_bit = (actual_outcome >> bit_index) & 1
+                reported_bit = (reported_outcome >> bit_index) & 1
+                conditional_probability *= readout_channel.probability(
+                    reported_bit,
+                    actual_bit,
+                )
+            reported[reported_outcome] += actual_probability * conditional_probability
+    return tuple(reported)
 
 
 def _exact_classical_output_distribution(
