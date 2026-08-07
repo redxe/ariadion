@@ -10,3 +10,7 @@ dist/
 .DS_Store
 .vscode/
 .idea/
+.github/agents/*.agent.md
+.github/prompts/*.prompt.md
+.github/instructions/*.instructions.md
+.github/copilot-instructions.md
