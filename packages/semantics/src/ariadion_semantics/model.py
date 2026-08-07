@@ -244,8 +244,8 @@ class TupleReturn:
 
     def __post_init__(self) -> None:
         _require_tuple(self.items, label="tuple return items")
-        if not all(isinstance(item, (ScalarReturn, TupleReturn, NoReturn)) for item in self.items):
-            raise ValueError("tuple return items must contain ReturnShape values")
+        if not all(isinstance(item, (ScalarReturn, TupleReturn)) for item in self.items):
+            raise ValueError("tuple return items must contain scalar or tuple return values")
 
     def to_dict(self) -> dict[str, object]:
         return {"kind": "tuple", "items": [item.to_dict() for item in self.items]}
@@ -255,8 +255,12 @@ class TupleReturn:
 
 
 @dataclass(frozen=True, slots=True)
-class NoReturn:
-    """The explicit semantic representation of a Python ``None`` return."""
+class NoneReturn:
+    """The whole-function return contract for ``def function() -> None``.
+
+    This is not ``typing.NoReturn`` and cannot appear inside a tuple return. A
+    future scalar-``None`` value would require its own tagged return leaf.
+    """
 
     def to_dict(self) -> dict[str, str]:
         return {"kind": "none"}
@@ -265,13 +269,17 @@ class NoReturn:
         return canonical_json(self.to_dict())
 
 
-ReturnShape: TypeAlias = ScalarReturn | TupleReturn | NoReturn
+NoReturn = NoneReturn
+"""Compatibility alias for :class:`NoneReturn`."""
+
+
+ReturnShape: TypeAlias = ScalarReturn | TupleReturn | NoneReturn
 
 
 def return_value_refs(return_shape: ReturnShape) -> tuple[ReturnValueRef, ...]:
     """Flatten tagged scalar leaves in deterministic left-to-right tree order."""
 
-    if isinstance(return_shape, NoReturn):
+    if isinstance(return_shape, NoneReturn):
         return ()
     if isinstance(return_shape, ScalarReturn):
         return (return_shape.value,)
@@ -398,6 +406,64 @@ QuantumInstruction: TypeAlias = LogicalGateOperation | LogicalRotationOperation 
 
 
 @dataclass(frozen=True, slots=True)
+class QuantumParameter:
+    """One unbound source-level quantum input to a logical program."""
+
+    name: str
+    position: int
+    logical_qubit_id: LogicalQubitId
+    source: SemanticSourceRef | None = None
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.name, label="quantum parameter name")
+        if isinstance(self.position, bool) or not isinstance(self.position, int):
+            raise ValueError("quantum parameter position must be an integer")
+        if self.position < 0:
+            raise ValueError("quantum parameter position must be non-negative")
+        require_nonempty_identifier(
+            self.logical_qubit_id,
+            label="quantum parameter logical qubit ID",
+        )
+        if self.source is not None and not isinstance(self.source, SourceRef):
+            raise ValueError("quantum parameter source must be SourceRef")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "position": self.position,
+            "logical_qubit_id": self.logical_qubit_id,
+            "source": self.source.to_dict() if self.source is not None else None,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+class UnboundQuantumParameterError(ValueError):
+    """Raised when standalone execution would initialize an unresolved quantum input."""
+
+    code = "P113"
+
+    def __init__(self, parameters: tuple[QuantumParameter, ...]) -> None:
+        self.parameters = parameters
+        self.program_id = (
+            parameters[0].source.program_id
+            if parameters and parameters[0].source is not None
+            else None
+        )
+        self.source_range = (
+            parameters[0].source.source_range
+            if parameters and parameters[0].source is not None
+            else None
+        )
+        names = ", ".join(parameter.name for parameter in parameters)
+        super().__init__(
+            f"{self.code} unbound quantum parameter(s): {names}. "
+            "Quantum functions with parameters cannot run independently."
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class LogicalProgram:
     """An ordered pre-allocation quantum program over logical value identities."""
 
@@ -406,7 +472,8 @@ class LogicalProgram:
     qubits: tuple[LogicalQubitValue, ...]
     instructions: tuple[QuantumInstruction, ...]
     classical_bits: tuple[ObservationResultValue, ...] = ()
-    return_shape: ReturnShape = NoReturn()
+    return_shape: ReturnShape = NoneReturn()
+    parameters: tuple[QuantumParameter, ...] = ()
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.id, label="logical program ID")
@@ -414,7 +481,8 @@ class LogicalProgram:
         _require_tuple(self.qubits, label="logical program qubits")
         _require_tuple(self.instructions, label="logical program instructions")
         _require_tuple(self.classical_bits, label="logical program classical_bits")
-        if not isinstance(self.return_shape, (ScalarReturn, TupleReturn, NoReturn)):
+        _require_tuple(self.parameters, label="logical program parameters")
+        if not isinstance(self.return_shape, (ScalarReturn, TupleReturn, NoneReturn)):
             raise ValueError("logical program return_shape must be a ReturnShape")
         if not all(isinstance(qubit, LogicalQubitValue) for qubit in self.qubits):
             raise ValueError("logical program qubits must contain LogicalQubitValue values")
@@ -422,6 +490,8 @@ class LogicalProgram:
             raise ValueError(
                 "logical program classical_bits must contain ObservationResultValue values"
             )
+        if not all(isinstance(parameter, QuantumParameter) for parameter in self.parameters):
+            raise ValueError("logical program parameters must contain QuantumParameter values")
         if not all(
             isinstance(instruction, (LogicalGateOperation, LogicalRotationOperation, Observation))
             for instruction in self.instructions
@@ -433,6 +503,25 @@ class LogicalProgram:
         known_qubit_ids = set(qubit_ids)
         for qubit in self.qubits:
             _validate_source_program(qubit.source, self.id, label="logical qubit")
+
+        parameter_names = tuple(parameter.name for parameter in self.parameters)
+        _require_unique_identifiers(parameter_names, label="logical program parameter names")
+        parameter_ids = tuple(parameter.logical_qubit_id for parameter in self.parameters)
+        _require_unique_identifiers(
+            parameter_ids,
+            label="logical program parameter logical qubit IDs",
+        )
+        if tuple(parameter.position for parameter in self.parameters) != tuple(
+            range(len(self.parameters))
+        ):
+            raise ValueError("logical program parameter positions must be contiguous from zero")
+        for parameter in self.parameters:
+            _validate_source_program(parameter.source, self.id, label="quantum parameter")
+            if parameter.logical_qubit_id not in known_qubit_ids:
+                raise ValueError(
+                    "quantum parameter must reference a declared logical qubit: "
+                    f"{parameter.logical_qubit_id}"
+                )
 
         classical_bit_ids = tuple(bit.id for bit in self.classical_bits)
         _require_unique_identifiers(
@@ -545,6 +634,7 @@ class LogicalProgram:
             "instructions": [instruction.to_dict() for instruction in self.instructions],
             "classical_bits": [bit.to_dict() for bit in self.classical_bits],
             "return_shape": self.return_shape.to_dict(),
+            "parameters": [parameter.to_dict() for parameter in self.parameters],
         }
 
     def to_json(self) -> str:

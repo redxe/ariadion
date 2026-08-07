@@ -33,7 +33,7 @@ from ariadion_semantics import (
     LogicalGateOperation,
     LogicalProgram,
     LogicalRotationOperation,
-    NoReturn,
+    NoneReturn,
     Observation,
     ObservationReason,
     ReturnShape,
@@ -276,7 +276,7 @@ class ReadoutPlan:
         operation_ids = tuple(item.logical_operation_id for item in self.observations)
         if len(operation_ids) != len(set(operation_ids)):
             raise ValueError("readout plan logical operation IDs must be unique")
-        if not isinstance(self.return_shape, (ScalarReturn, TupleReturn, NoReturn)):
+        if not isinstance(self.return_shape, (ScalarReturn, TupleReturn, NoneReturn)):
             raise ValueError("readout plan return_shape must be a ReturnShape")
         known_result_ids = set(result_ids)
         for result_id in self.classical_return_ids():

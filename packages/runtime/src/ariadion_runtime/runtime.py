@@ -9,7 +9,11 @@ from ariadion_core import (
 )
 from ariadion_ir import CircuitIR
 from ariadion_language import Program
-from ariadion_semantics import LogicalProgram, ReturnShape
+from ariadion_semantics import (
+    LogicalProgram,
+    ReturnShape,
+    UnboundQuantumParameterError,
+)
 from ariadion_simulator import (
     SimulationExecution,
     SimulationResult,
@@ -169,6 +173,8 @@ def run_logical_program(
 ) -> LogicalRunResult:
     """Compile and execute terminal logical observations without sampled collapse."""
 
+    if program.parameters:
+        raise UnboundQuantumParameterError(program.parameters)
     compilation = compile_logical_program(program)
     execution_trace = None
     if trace is not None and trace.enabled:

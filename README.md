@@ -4,7 +4,7 @@
 
 Ariadion is an early-stage, basis-aware quantum programming platform designed to make quantum programs visible, understandable, and playable. The repository contains a small but working vertical slice:
 
-1. describe a quantum program with a Python-first API;
+1. capture a safe subset of a Python quantum function or describe a compatibility builder program;
 2. lower it through the **Daidalon** compiler into semantic circuit IR;
 3. execute it with the reference state-vector simulator;
 4. inspect amplitudes, probabilities, phase, and entanglement hints with **Theonoe**;
@@ -54,6 +54,65 @@ program.rz(2, turns(0.25))
 Bare numeric rotation values are rejected by the compiler so Ariadion never has
 to guess their unit.
 
+## Captured quantum functions
+
+Ariadion reads the Python AST of a quantum function. It does not execute the
+function body to construct the program. The initial `@quantum` frontend supports
+local `Qubit()` declarations, aliases, the built-in gate markers, explicit-unit
+rotations, and typed terminal returns:
+
+```python
+from ariadion import Bit, Qubit, basis, cx, h, quantum, run
+
+
+@quantum(basis=basis.z)
+def bell() -> tuple[Bit, Bit]:
+    left = Qubit()
+    right = Qubit()
+    h(left)
+    cx(left, right)
+    return left, right
+
+
+result = run(bell)
+```
+
+`result.classical_output_distribution` retains the exact joint Bell distribution:
+$00 \,\mapsto\, 0.5$, $01 \,\mapsto\, 0$, $10 \,\mapsto\, 0$, and
+$11 \,\mapsto\, 0.5$.
+
+Rotations retain their written unit and lower to canonical radians without calling
+the angle helper as ordinary Python:
+
+```python
+from ariadion import Qubit, deg, quantum, run, rx
+
+
+@quantum
+def rotate() -> Qubit:
+    target = Qubit()
+    rx(target, deg(190))
+    return target
+
+
+result = run(rotate)
+```
+
+Quantum parameters are captured as unresolved logical inputs. They are not
+silently initialized to $|0\rangle$, so an independently executed function with a
+parameter fails with diagnostic code `P113` until a later composition and binding
+feature supplies that value:
+
+```python
+from ariadion import Qubit, deg, quantum, rx
+
+
+@quantum
+def rotate_input(target: Qubit) -> Qubit:
+    rx(target, deg(190))
+    return target
+```
+
 When a trace is inspected, rotation steps also carry a structured explanation:
 exact probability, relative-phase, and global-phase facts are separate from a
 clearly labeled educational Bloch-sphere interpretation. The CLI renders both
@@ -95,6 +154,7 @@ packages/
   core/            shared identity and source-location contracts
   language/        Python-first program model
   semantics/       pre-allocation logical quantum-value contracts
+  frontend-python/ safe valid-Python AST capture into logical semantics
   syntax/          immutable Python-extension source and compatibility AST contracts
   ir/              semantic circuit IR
   daidalon/        compiler and validation passes

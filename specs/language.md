@@ -24,20 +24,21 @@ and the eventual mapping to simulator or hardware qubits.
 
 ## Status and compatibility
 
-This document defines the target public language; the current runtime still
-executes the width-based Python builder described below. `Program(width)` and its
-integer-target operations are compatibility and migration mechanisms, not the
-future source-language model. A hand-built `LogicalProgram` now proves the first
-logical-value lowering slice, but AST capture and public quantum-function lowering
-remain future work.
+The first valid-Python `@quantum` frontend is implemented. It captures a narrow,
+deliberately safe subset of a decorated function into `LogicalProgram`; it does
+not add function composition, bindings, classical computation, control flow, or a
+native `.ari` parser. `Program(width)` and its integer-target operations remain
+compatibility and migration mechanisms rather than the managed source-language
+model.
 
 ## Python-compatible quantum functions
 
-The first executable frontend must use valid Python and Python's parser. This is a
-target contract, not an implemented API yet:
+Ariadion reads the Python AST of a quantum function. It does not execute the
+function body to construct the program. The implemented frontend uses valid Python
+and Python's parser:
 
 ```python
-from ariadion import Bit, Qubit, basis, cx, h, quantum
+from ariadion import Bit, Qubit, basis, cx, h, quantum, run
 
 
 @quantum(basis=basis.z)
@@ -49,19 +50,23 @@ def bell() -> tuple[Bit, Bit]:
    cx(left, right)
 
    return left, right
+
+
+result = run(bell)
 ```
 
 `Qubit` is the public source-level managed quantum-value type. A source-level
 `Qubit` is logical by definition; it has no second construction mode, wrapper, or
-flag. `left` and `right` are neither simulator indexes nor hardware addresses, and
-the decorator captures supported code for compilation rather than executing quantum
-operations as ordinary Python calls.
+flag. `left` and `right` are neither simulator indexes nor hardware addresses. The
+decorator resolves only supported AST nodes for compilation; it never executes the
+function body, `Qubit()` declarations, gate markers, or angle helpers as ordinary
+Python calls.
 
-Each `Qubit()` call creates a distinct managed value with an internal
-`LogicalQubitId` before allocation. Assignment aliases that value; it never clones
-quantum state. In the example, `left` and `right` have overlapping lifetimes, so
-Daidalon will eventually infer a peak allocation of two slots even though neither
-source value contains a target, index, or address.
+Each captured `Qubit()` declaration creates a distinct semantic value with an
+internal `LogicalQubitId` before allocation. Assignment aliases that value; it
+never clones quantum state. In the example, `left` and `right` have overlapping
+lifetimes, so the current declaration-order allocation produces two slots even
+though neither source value contains a target, index, or address.
 
 The `tuple[Bit, Bit]` return annotation requires two structured classical result
 leaves. Returning the two `Qubit` values creates visible compiler-inserted terminal
@@ -96,8 +101,14 @@ ProtectedRealization
 would collide with the source-semantic meaning. See the object-model guide for the
 cross-layer identity rules.
 
-Quantum function parameters receive logical values without knowing a global qubit
-count. Returning a quantum value remains a quantum return, not an observation:
+The implemented subset accepts flat positional parameters annotated with `Qubit`.
+Capture declares each as a `QuantumParameter` and a corresponding logical value
+without knowing a global qubit count. Returning a quantum value remains a quantum
+return, not an observation:
+
+Annotations are read from their AST nodes rather than evaluated. The initial forms
+are exactly `Qubit`, `Bit`, `None`, and nested built-in `tuple[...]`; custom aliases
+and `typing` forms are intentionally rejected.
 
 ```python
 @quantum
@@ -107,17 +118,33 @@ def prepare_plus() -> Qubit:
    return value
 ```
 
+For example, this function captures successfully but cannot run independently:
+
+```python
+from ariadion import Qubit, deg, quantum, rx
+
+
+@quantum
+def rotate_input(target: Qubit) -> Qubit:
+   rx(target, deg(190))
+   return target
+```
+
+`run(rotate_input)` raises `UnboundQuantumParameterError` with code `P113`. This
+protects an input from being silently treated as a newly allocated $|0\rangle$
+value. Function composition and explicit input binding are later work.
+
 No observation is inserted for `prepare_plus()` because its return type preserves a
 quantum value across the function boundary. Quantum parameters bind managed values
 rather than physical slots. A return value may be a classical observation result or
 a quantum value whose lifetime escapes the function; neither parameter nor return
 type exposes simulator or hardware indexes.
 
-The semantic model will define ownership, aliasing, escaping values, reset, and
-measurement consumption before allocation is implemented. Until then, no frontend
-may imply that a Python assignment copies a quantum state or silently changes
-quantum ownership. Measurement produces a classical result value; the precise
-ownership effect on the measured logical value must be explicit in the later
+The semantic model will later define ownership, escaping values, reset, and
+measurement consumption. The current frontend already preserves source-level alias
+identity, but it must not imply that an assignment copies a quantum state or
+silently changes quantum ownership. Measurement produces a classical result value;
+the precise ownership effect on the measured logical value remains a later
 semantic contract.
 
 The initial conversion policy is:
@@ -156,9 +183,9 @@ operation.
 
 Each `Qubit()` creation receives a logical identity. Resolved quantum operations
 target those identities, and a future lifetime analysis will determine the peak
-simultaneously live set. The current hand-built logical slice instead allocates one
-dense slot per declared logical value in declaration order, then lowers to
-`CircuitIR`.
+simultaneously live set. The current captured and hand-built logical slice instead
+allocates one dense slot per declared logical value in declaration order, then
+lowers to `CircuitIR`.
 
 ```text
 logical values and lifetimes
@@ -188,9 +215,11 @@ identifiers. Classical observation results and returned quantum values may coexi
 and their Python tuple structure is preserved independently of allocation or
 measurement order.
 
-`ReturnShape` supports only `NoReturn` for `None`, a tagged `ScalarReturn`, and
-recursively nested `TupleReturn` nodes. Every scalar leaf is a `ReturnValueRef`
-whose `ReturnValueKind` is explicitly `classical_bit` or `quantum_value`. This tag
+`ReturnShape` supports only `NoneReturn` for a whole-function `None` return, a
+tagged `ScalarReturn`, and recursively nested `TupleReturn` nodes. `NoReturn`
+remains a compatibility alias for `NoneReturn`; it is not `typing.NoReturn` and
+cannot occur inside a tuple. Every scalar leaf is a `ReturnValueRef` whose
+`ReturnValueKind` is explicitly `classical_bit` or `quantum_value`. This tag
 remains serialized even though the currently declared ID sets do not overlap, so
 IDE clients never infer output type from identifier spelling. A one-element tuple
 is a `TupleReturn` with one item, not a scalar return. Lists, mappings, arbitrary
@@ -218,7 +247,8 @@ individual outcomes, collapse, feedback, reset, and trace granularity.
 
 ## Current compatibility surface
 
-The working builder currently appends operations to a preallocated program:
+The width-based builder remains a working compatibility API that appends operations
+to a preallocated program:
 
 ```python
 program = Program(2, name="bell")
@@ -233,8 +263,8 @@ builder prototype is the next migration step.
 
 ## Angles and rotations
 
-Rotations require an explicit unit-bearing `Angle`. The valid-Python frontend uses
-`deg()`, `rad()`, or `turns()`:
+Rotations require an explicit unit-bearing `Angle`. The valid-Python frontend
+captures only `deg()`, `rad()`, or `turns()` around one finite numeric literal:
 
 ```python
 @quantum
@@ -253,13 +283,13 @@ degrees, radians, or turns.
 The current `LogicalGateOperation` deliberately contains no parameterless `RX`,
 `RY`, or `RZ` members. `LogicalRotationOperation` instead owns one typed
 `SemanticAngle` with source value, source unit, and validated canonical radians.
-It is constructed by explicitly converting a public `Angle`, never from an
-untyped bare numeric value. Daidalon lowers `RotationAxis.X`, `.Y`, and `.Z` to
-allocated `RX`, `RY`, and `RZ` operations while preserving both canonical radians
-and original display metadata.
+It is constructed from an explicit public `Angle` or the frontend's explicit
+angle-call AST, never from an untyped bare numeric value. Daidalon lowers
+`RotationAxis.X`, `.Y`, and `.Z` to allocated `RX`, `RY`, and `RZ` operations while
+preserving both canonical radians and original display metadata.
 
-The eventual frontend surface remains valid Python and does not execute a function
-to discover its angle:
+The implemented frontend remains valid Python and does not execute a function to
+discover its angle:
 
 ```python
 from ariadion import Qubit, deg, quantum, rx
@@ -271,8 +301,9 @@ def rotate(target: Qubit) -> Qubit:
    return target
 ```
 
-Future AST capture converts `deg(190)` into public `Angle`, then `SemanticAngle`,
-and finally canonical allocated-IR radians.
+AST capture converts `deg(190)` directly into a validated `SemanticAngle` and then
+canonical allocated-IR radians, preserving the source unit and numeric value. Bare
+numeric arguments and computed angle expressions are rejected with `P112`.
 
 ## Basis values and measurement intent
 
@@ -298,12 +329,11 @@ is required is instead an inferred terminal observation boundary.
 The public language namespace is `basis.x`, `basis.y`, `basis.z`, and
 `basis.named("custom-name")`; lower-case basis constants are not exported because
 they would collide with gate functions such as `x(target)` and `z(target)`. A
-quantum function may later establish a default basis with
-`@quantum(basis=basis.z)`. Whatever additional syntax is adopted, the resolved
-semantic model must retain the selected basis and Daidalon must lower any basis
-change explicitly. The future frontend's default terminal-observation basis is
-`basis.z` only when the language contract declares that policy; backends must not
-infer measurement bases.
+quantum function establishes its default inferred-return basis with
+`@quantum(basis=basis.z)`; the default is `basis.z`. The captured semantic model
+retains that selected basis. Current exact execution supports terminal Z-basis
+observations only and diagnoses other bases during lowering; it never silently
+changes or infers a measurement basis.
 
 ## Effect defaults and constraints
 
@@ -323,11 +353,11 @@ source-effect model has two defaults:
 `@classical` containing a quantum operation is an error. `@quantum` asserts that a
 function is compilable as quantum code. An unannotated `.ari` function may be
 inferred as classical, quantum, or hybrid. Imported ordinary Python functions
-remain classical unless explicitly supported. A quantum function may call another
-resolved quantum function or an explicitly supported classical subroutine, subject
-to later capture and control-flow rules. Imports, classes, exceptions, collections,
-and ordinary calls retain their normal Python behavior outside an explicit quantum
-boundary.
+remain classical unless explicitly supported. The initial `@quantum` capture subset
+does not support function composition, arbitrary classical calls, closures, or
+mutable captured state; it accepts only the documented intrinsic marker calls.
+Imports, classes, exceptions, collections, and ordinary calls retain their normal
+Python behavior outside an explicit quantum boundary.
 
 This is a language target only: `.ari` parsing is not implemented, and an
 annotation is a constraint for future analysis rather than a replacement for effect
@@ -355,17 +385,22 @@ override. This target API is not implemented in the current frontend.
 
 ## Source transformation, identity, and diagnostics
 
-The frontend uses Python's grammar for ordinary Python. Valid-Python quantum
-constructs can parse directly through Python's AST. When Ariadion-specific syntax
-is present, extension-aware tokenization or source transformation runs before
-Python AST parsing and supplies extension nodes alongside the resulting Python AST.
-Transformation must preserve a mapping to original source spans; it must never
-silently redefine unmarked Python syntax.
+The implemented frontend uses Python's grammar for ordinary Python and captures the
+valid-Python subset directly through Python's AST. Its `PythonSourceProvider`
+boundary accepts inspected file source today and explicit in-memory source for a
+future IDE buffer; it does not need to reread a saved file. The frontend derives
+deterministic source operation IDs and complete one-based absolute ranges from that
+source contract. When Ariadion-specific syntax is justified later,
+extension-aware tokenization or source transformation must preserve a mapping to
+original source spans and must never silently redefine unmarked Python syntax.
 
-Python syntax errors remain Python syntax errors. Ariadion extension, capture,
-resolution, type, ownership, and resource failures use source-linked diagnostics
-with exact original locations. `SyntaxDiagnostic` remains independent from
-semantic compiler diagnostics.
+Python parser failures retain the parser's message and are surfaced as source-linked
+frontend diagnostics. Ariadion extension, capture, resolution, type, ownership,
+and resource failures likewise use exact original locations. The current frontend reports structured `P100`–
+`P112` diagnostics for unavailable source, unsupported syntax, marker resolution,
+argument shape, unresolved values, annotations, returns, and angle expressions;
+`P113` rejects standalone execution with an unbound quantum parameter.
+`SyntaxDiagnostic` remains independent from semantic compiler diagnostics.
 
 The following identity behavior describes the width-based builder compatibility
 surface and the neutral source-identity contract used by logical programs.
@@ -427,9 +462,8 @@ plan and lowers the result into integer-target `CircuitIR`.
 
 ```text
 Python-compatible Ariadion source
-   -> Python AST and Ariadion extension nodes
-   -> resolved quantum values and effects
-   -> typed ownership and observation semantics
+   -> Python AST capture into LogicalProgram
+   -> resolved logical values and typed return observations
    -> logical operation schedule
    -> reliability analysis
    -> protection and allocation plan
@@ -437,9 +471,10 @@ Python-compatible Ariadion source
    -> simulator or hardware backend
 ```
 
-The extension-source contracts are specified separately in
+The `ariadion-syntax` extension-source contracts are specified separately in
 [`specs/syntax.md`](syntax.md). They retain exact spelling, source ranges, and
-identity without trying to replace Python's AST.
+identity without trying to replace Python's AST; they are not the runtime
+valid-Python capture frontend.
 
 ## Research references
 

@@ -22,6 +22,7 @@ owner's data but must not silently repair, reorder, or reinterpret it.
 | Aggregate root | Mutability | Owns | Does not own |
 | --- | --- | --- | --- |
 | `Program` | Mutable while building | Source declarations, source operations, and source construction order | Compiled semantics or execution results |
+| `QuantumFunction` | Immutable wrapper with a private cache | A Python function reference, capture policy, source-provider boundary, and immutable captured `LogicalProgram` values | Invocation of the function body, IR, allocation, or execution results |
 | `LogicalProgram` | Immutable | Declared logical values, observation-result values, tagged return shape, quantum instructions, and logical-reference invariants | Slots, circuit width, backend policy, or execution results |
 | `CircuitIR` | Immutable | Qubit layout, compiled operation order, IR provenance, and validated observation metadata | UI formatting, trace continuity, or backend policy |
 | `ExecutionTrace` | Immutable | Execution metadata, initial snapshot, contiguous operation occurrences, state history, and observation execution kind | State interpretation or navigation |
@@ -36,6 +37,12 @@ The practical question for every new rule is: **which object is allowed to
 guarantee this invariant?** For example, operation order belongs to `CircuitIR`,
 trace continuity belongs to `ExecutionTrace`, and one-based presentation numbering
 belongs to a frontend projection rather than the trace itself.
+
+`QuantumFunction` is a deliberate boundary rather than a callable-program proxy.
+Ariadion reads the Python AST of a quantum function. It does not execute the
+function body to construct the program. Calling the wrapper directly is rejected;
+`run()` captures its immutable `LogicalProgram` and executes only the resulting
+compiled artifacts.
 
 ## Invalid-state strategy
 
@@ -109,7 +116,7 @@ string would lose meaning, including:
 
 - public `Qubit`, `Bit`, and language-owned `Basis`, plus compiler-only
     `LogicalQubitId`, `ClassicalBitId`, `LogicalQubitValue`, and
-    `ObservationResultValue` contracts;
+    `ObservationResultValue`, `QuantumParameter`, and `NoneReturn` contracts;
 - `Basis` and basis expressions;
 - `MeasurementKey` and classical conditions;
 - `Probability`, `ShotCount`, `ExactClassicalDistribution`, and backend
@@ -200,6 +207,12 @@ quantum return identity
     -> ReadoutPlan structured quantum leaf
     -> ReturnedQuantumValue retained-state handle
 ```
+
+The valid-Python frontend creates each `SourceOperationId` from the captured source
+program ID, source construct kind, absolute one-based line and column, and a local
+ordinal. It derives those facts from `PythonFunctionSource`, not from a live
+`Qubit()` object or Python function-object identity. A source provider can therefore
+supply an unsaved IDE buffer while preserving the same source-range contract.
 
 `SourceRef.source_operation_id` is the canonical source-operation field.
 `SourceRef.snapshot_operation_id` is an optional compatibility property for a
@@ -387,6 +400,7 @@ return may create an implicit observation. `Qubit` truth testing must not silent
 observe a value, and a Python alias must never create another quantum state.
 
 The schema-v3 named-register source AST remains compatibility data. The current
-logical slice is hand-built data rather than AST capture. Next language milestones
-are ownership contracts, resource inference, a valid-Python `@quantum` prototype,
-and only then justified extension syntax or editor support.
+logical slice is now reachable through the valid-Python `@quantum` AST frontend as
+well as hand-built data. Next language milestones are composition and explicit
+quantum-input binding, ownership and lifetime analysis, resource inference, and
+only then justified extension syntax or richer editor support.

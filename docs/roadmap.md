@@ -18,22 +18,22 @@
 - `ObservationResultValue` declarations, structured return shapes, readout plans, and exact terminal joint classical distributions
 - terminal analytical observation projection with no sampling, collapse, or mid-circuit feedback
 - typed `SemanticAngle` and `LogicalRotationOperation` lowering to existing `RX`, `RY`, and `RZ` IR
+- safe valid-Python `@quantum` AST capture into `LogicalProgram`
+- source-provider boundary with inspected and explicit in-memory source
+- source-derived identities, source ranges, inferred typed returns, and unresolved quantum parameters
 
 ## Next sequence
 
 The next implementation work must preserve this order:
 
-1. Prototype `@quantum` capture with Python AST.
-2. Resolve `Qubit()` assignments, typed quantum parameters, and public gate calls.
-3. Convert Python return expressions and annotations into `ReturnShape`, inferring terminal observations only for classical leaves.
-4. Add lifetime analysis and slot reuse beyond `dense-no-reuse-v1`.
-5. Define sampled terminal and mid-circuit execution: shots, seeds, outcomes, collapse, feedback, reset, and post-measurement traces.
-6. Define noise-channel contracts and bind them to simulation requests.
-7. Add a small density-matrix noisy simulator.
-8. Add scheduling and T1/T2 idle decoherence.
-9. Add reliability goals and bare-execution estimates.
-10. Add pluggable protection-planning interfaces.
-11. Add encoded-QEC simulation and decoder integration later.
+1. Add function composition, explicit quantum-input binding, and lifetime/escape analysis beyond `dense-no-reuse-v1`.
+2. Define sampled terminal and mid-circuit execution: shots, seeds, outcomes, collapse, feedback, reset, and post-measurement traces.
+3. Define noise-channel contracts and bind them to simulation requests.
+4. Add a small density-matrix noisy simulator.
+5. Add scheduling and T1/T2 idle decoherence.
+6. Add reliability goals and bare-execution estimates.
+7. Add pluggable protection-planning interfaces.
+8. Add encoded-QEC simulation and decoder integration later.
 
 ## Milestone 1 — value, effect, and observation contracts
 
@@ -54,15 +54,16 @@ The next implementation work must preserve this order:
 - run the resulting IR through simulation, trace capture, inspection, joint classical calculation, and quantum return handles
 - use deterministic declaration-order allocation with no reuse or lifetime analysis
 
-## Milestone 3 — decorated Python frontend and inferred observations
+## Milestone 3 — decorated Python frontend and inferred observations — complete
 
-- `@quantum` capture using Python's AST
-- logical `Qubit()` creation and typed quantum parameters
-- resolve `h`, `x`, `z`, `cx`, `rx`, `ry`, and `rz` calls plus `basis.z`
-- convert Python returns into `ReturnShape` and infer terminal `Qubit`-to-`Bit` observations only for classical leaves
-- preserve quantum return leaves without observation
-- add extension-aware diagnostics and source transformation only when justified
-- defer `.ari` loading and editor parsing until the valid-Python path is proven
+- `@quantum` captures a safe valid-Python subset using Python's AST without calling the function body
+- local `Qubit()` declarations, aliases, typed quantum parameters, and exact marker-identity resolution for `h`, `x`, `z`, `cx`, `rx`, `ry`, and `rz`
+- `deg`, `rad`, and `turns` rotation literals preserve typed semantic source units
+- Python annotations and return expressions become tagged `ReturnShape` values; terminal `Qubit`-to-`Bit` observations are inferred only for classical leaves
+- quantum return leaves remain unobserved retained-state handles
+- explicit source-provider contracts preserve absolute ranges and deterministic IDs for inspected files and in-memory buffers
+- unsupported constructs receive source-linked frontend diagnostics; `.ari` loading and native parsing remain deferred
+- next frontend work is composition, explicit binding, ownership/lifetime analysis, and then justified extension syntax
 
 ## Milestone 4 — staged noisy simulation and reliability planning
 

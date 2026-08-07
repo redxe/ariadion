@@ -380,9 +380,9 @@ class LogicalValueTests(unittest.TestCase):
         self.assertIs(ariadion_language.basis, basis)
         self.assertFalse(hasattr(ariadion_semantics, "basis"))
         self.assertIs(ClassicalBitValue, ObservationResultValue)
-        self.assertFalse(hasattr(ariadion, "x"))
+        self.assertTrue(hasattr(ariadion, "x"))
         self.assertFalse(hasattr(ariadion, "y"))
-        self.assertFalse(hasattr(ariadion, "z"))
+        self.assertTrue(hasattr(ariadion, "z"))
 
     def test_logical_gate_opcodes_do_not_include_parameterless_rotations(self) -> None:
         self.assertEqual(

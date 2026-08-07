@@ -12,11 +12,11 @@ does not begin with `program name` or `qubits data[2]`, and it does not address 
 qubit by a source-level integer. Those forms are not requirements for the future
 language grammar and must not drive a standalone parser implementation.
 
-The first executable frontend will use valid Python; this is the target surface,
-not an implemented API yet:
+The first executable frontend now uses valid Python and Python's AST through the
+dedicated `ariadion-frontend-python` package:
 
 ```python
-from ariadion import Bit, Qubit, basis, cx, h, quantum
+from ariadion import Bit, Qubit, basis, cx, h, quantum, run
 
 
 @quantum(basis=basis.z)
@@ -26,16 +26,37 @@ def bell() -> tuple[Bit, Bit]:
     h(left)
     cx(left, right)
     return left, right
+
+
+result = run(bell)
 ```
 
-`left` and `right` are logical quantum values. Resource analysis and allocation
-later decide their lifetimes, reuse, dense IR targets, simulator width, and hardware
-layout. The declared classical return type creates terminal observations; explicit
-`observe(...)` remains available when an algorithm needs an earlier observation.
-Source `Qubit` values do not expose integer targets or a representation choice:
-`LogicalQubitId` is their pre-allocation semantic identity, an
-`AllocatedQubitSlot` is a compiler-selected target, and a `ProtectedRealization`
-is an encoded physical realization rather than a public value type.
+`left` and `right` are logical quantum values. Ariadion reads the Python AST of a
+quantum function. It does not execute the function body to construct the program.
+The initial capture subset resolves local declarations, aliases, supported marker
+calls, explicit-unit rotations, and typed terminal returns into `LogicalProgram`.
+Resource analysis and allocation later decide lifetimes, reuse, dense IR targets,
+simulator width, and hardware layout. The declared classical return type creates
+terminal observations; explicit `observe(...)` remains future work when an
+algorithm needs an earlier observation. Source `Qubit` values do not expose integer
+targets or a representation choice: `LogicalQubitId` is their pre-allocation
+semantic identity, an `AllocatedQubitSlot` is a compiler-selected target, and a
+`ProtectedRealization` is an encoded physical realization rather than a public
+value type.
+
+## Implemented valid-Python capture boundary
+
+`ariadion-frontend-python` depends only on `ariadion-core`,
+`ariadion-language`, and `ariadion-semantics`. It reads source through a
+`PythonSourceProvider`: `InspectSourceProvider` obtains ordinary file-backed
+source, while `ExplicitSourceProvider` accepts an in-memory IDE buffer with its
+file identity and starting line. Capture uses the supplied text directly and
+produces deterministic source-derived identities and absolute ranges. It never
+imports IR, Daidalon, runtime, the simulator, Theonoe, or the CLI.
+
+This frontend is intentionally not `ariadion-syntax`. `ProgramSyntax` remains an
+immutable source and compatibility-document model for extension-aware tools. No
+native `.ari` parser is introduced by valid-Python capture.
 
 ## Extension-aware frontend
 
@@ -75,7 +96,8 @@ The current immutable `ProgramSyntax` document model remains available at schema
 version $3$. Its `QubitRegisterDeclaration`, register/index `QubitReference`,
 gate statements, rotations, and basis-aware measurements preserve source data for
 existing frontend documents and tests. It is not a commitment to the future public
-language grammar, and no standalone lexer or parser will be built around it.
+language grammar, is not an input to `ariadion-frontend-python`, and no standalone
+lexer or parser will be built around it.
 
 `BasisExpression`, `AngleLiteral`, `Identifier`, `IntegerLiteral`, and
 `SyntaxLocation` remain useful source-value contracts. In particular,
@@ -131,7 +153,17 @@ version and migration path.
 
 ## Boundary
 
-The intended path is:
+The implemented valid-Python path is:
+
+```text
+Python function source
+    -> PythonSourceProvider
+    -> ariadion-frontend-python AST capture
+    -> LogicalProgram
+    -> Daidalon allocation and CircuitIR
+```
+
+The separate future extension-source path is:
 
 ```text
 Python-compatible source

@@ -7,27 +7,34 @@ Ariadion is both a programming model and an interactive environment. The initial
 ## Dependency direction
 
 ```text
-ariadion-core
-    ├── ariadion-language ──> ariadion-semantics ─┐
-    ├── ariadion-ir ───────────────────────────────┼── Daidalon ──> ariadion-runtime
-    └── ariadion-syntax ───────────────────────────┘   (future frontend input)
+ariadion-core ──> ariadion-language ──> ariadion-semantics ──> Daidalon
+ariadion-core ──> ariadion-ir ───────────────────────────────────> Daidalon
+ariadion-core ──> ariadion-syntax
 
-ariadion-runtime ──> simulator / Theonoe / visualization
+ariadion-core + ariadion-language + ariadion-semantics
+    -> ariadion-frontend-python
+    -> Ariadion SDK
 
-Ariadion SDK ───────────────────────────────────────> language, semantics, and runtime
+Daidalon ──> ariadion-runtime ──> simulator / Theonoe / visualization
+
+Ariadion SDK ───────────────────────────────────────> language, semantics, frontend, and runtime
 ```
 
 The compiler produces immutable semantic IR. Runtime backends consume IR. Debuggers
 and visualizations observe execution artifacts but do not change source semantics.
 `ariadion-core` owns neutral identity and source-location contracts so the language
 model and IR remain siblings. Daidalon consumes the hand-built `LogicalProgram`
-contract today, preserves source references in lowered operations and diagnostics,
-and assigns distinct IR-operation IDs for generated compiler output.
+contract and AST-captured `LogicalProgram` values today, preserves source references
+in lowered operations and diagnostics, and assigns distinct IR-operation IDs for
+generated compiler output.
 
-`ariadion-syntax` currently depends only on `ariadion-core`. A future resolved and
-typed source-semantic model will bridge Python-compatible extension syntax into
-Daidalon without making the syntax package depend on IR, runtime, simulators, or
-Theonoe. `ariadion-semantics` depends on `ariadion-core` and the public
+`ariadion-syntax` currently depends only on `ariadion-core`. It remains separate
+from the implemented valid-Python frontend. `ariadion-frontend-python` depends
+only on `ariadion-core`, `ariadion-language`, and `ariadion-semantics`; it never
+imports IR, Daidalon, runtime, simulator, Theonoe, or CLI packages. A future
+resolved and typed extension-source model will bridge Python-compatible extension
+syntax into Daidalon without making the syntax package depend on those packages.
+`ariadion-semantics` depends on `ariadion-core` and the public
 `ariadion-language` basis/angle contracts; Daidalon depends on it to lower logical
 values and instructions, while its reliability contracts remain planning-only
 inputs for later compiler stages.
@@ -36,16 +43,21 @@ inputs for later compiler stages.
 
 The public language direction is a managed Python quantum extension. Programmers
 create and manipulate logical quantum values; allocation, reuse, layout, and
-physical-resource mapping are compiler responsibilities. The intended frontend is:
+physical-resource mapping are compiler responsibilities. The first valid-Python
+frontend is implemented as AST capture into `LogicalProgram`. Ariadion reads the
+Python AST of a quantum function. It does not execute the function body to
+construct the program. Its current narrow subset supports local `Qubit()`
+declarations, aliases, typed quantum parameters, named intrinsic markers,
+explicit-unit rotations, and typed terminal returns. The implemented path is:
 
 ```text
 Python-compatible Ariadion source
     ↓
-Python AST and Ariadion extension nodes
+ariadion-frontend-python Python AST capture
     ↓
-resolved quantum values and effects
+LogicalProgram with source-derived identities
     ↓
-typed ownership and observation semantics
+typed return observations and quantum parameters
     ↓
 logical operation schedule
     ↓
@@ -58,10 +70,12 @@ allocated CircuitIR
 simulator or hardware backend
 ```
 
-The Python parser retains ownership of ordinary Python. Ariadion recognizes only
-explicit quantum constructs, preserving exact original source ranges and identities
-through transformation. A standalone parser for `program name` and `qubits data[2]`
-is not on the current path.
+Python retains ownership of ordinary parsing. The frontend resolves only exact
+public marker identities from the wrapped function's globals and never evaluates
+the body, annotations, or angle expressions. It preserves exact original source
+ranges and source-derived identities through an explicit source-provider boundary,
+including in-memory IDE source. A standalone parser for `program name` and
+`qubits data[2]` is not on the current path.
 
 The allocated `CircuitIR` continues to use dense integer targets and an explicit
 `qubit_count`; those are compiler results. Daidalon now exposes a
@@ -148,10 +162,21 @@ native-language modeling rules.
 A small width-based Python builder for the current vertical slice. It records
 already allocated integer-target operations, including explicit degree, radian,
 and turn-based rotation angles. Alongside the builder, the package exposes
-immutable public `Qubit`, `Bit`, `Basis`, and `basis` domain values without adding
-them to the width-based API. The builder is a compatibility and migration
-mechanism; its next prototype will operate on `Qubit` values instead of requiring
-`Program(width)`.
+immutable public `Qubit`, `Bit`, `Basis`, `basis`, and non-executing intrinsic
+marker values such as `h`, `cx`, and `rx`. The builder is a compatibility and
+migration mechanism; its next prototype will operate on `Qubit` values instead of
+requiring `Program(width)`.
+
+### `ariadion-frontend-python`
+
+The safe valid-Python frontend. It reads a decorated Python function through a
+`PythonSourceProvider`, parses its AST, resolves only exact public marker identity,
+and produces immutable `LogicalProgram` values with deterministic source-derived
+identities, ranges, typed returns, inferred terminal observations, and unresolved
+`QuantumParameter` inputs. It never calls the function body or intrinsic markers.
+Its dependencies are limited to `ariadion-core`, `ariadion-language`, and
+`ariadion-semantics`; it has no dependency on IR, Daidalon, runtime, simulator,
+Theonoe, CLI, or `ariadion-syntax`.
 
 ### `ariadion-semantics`
 
@@ -249,6 +274,12 @@ retained analytical state is not a physical post-measurement state. Its
 frontend-neutral `TraceDebuggerSession` and `TraceStepViewModel` compose IR, trace,
 and inspection data without managing terminal interaction.
 
+Before lowering, runtime rejects a `LogicalProgram` with unresolved
+`QuantumParameter` inputs using `UnboundQuantumParameterError` (`P113`). This
+prevents the current standalone exact executor from silently initializing a captured
+input as a local $|0\rangle$ value; binding and composition remain frontend and
+semantic work.
+
 ### `ariadion-cli`
 
 Loads a Python file's top-level program builder and provides trace rendering plus
@@ -258,7 +289,7 @@ Studio can reuse those models without scraping CLI text.
 ## Near-term vertical slice
 
 ```text
-write or hand-build -> validate -> logical slots/readout -> lower -> simulate -> trace -> inspect
+capture safe Python AST or hand-build -> validate -> logical slots/readout -> lower -> simulate -> trace -> inspect
 ```
 
 A change is considered vertically complete only when it can be exercised from the SDK and covered by a runtime-level test.
