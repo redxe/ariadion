@@ -14,9 +14,27 @@ CircuitIR
 not a source-language declaration: Daidalon derives them from logical quantum
 values. The current `LogicalSlotAllocationPlan` preserves the logical-to-IR mapping
 for diagnostics, resource reports, trace navigation, and later hardware layout
-explanations. Its first `dense-no-reuse-v1` policy maps declaration order to dense
-slots without lifetime analysis or reuse. It maps logical values to execution slots,
-not to hardware or protected physical qubits.
+explanations. Hand-built logical programs retain the declaration-order
+`dense-no-reuse-v1` policy. `LogicalModule` compilation first materializes an
+`ExpandedLogicalProgram`, analyzes lifetimes, and uses
+`expanded-dense-no-reuse-v1` to map every expanded value to a dense unique slot.
+It still performs no slot reuse. Both policies map logical values to execution
+slots, not to hardware or protected physical qubits.
+
+The module path is deliberately explicit:
+
+```text
+LogicalModule -> call expansion / logical instantiation -> ExpandedLogicalProgram
+-> lifetime analysis -> logical-slot allocation -> CircuitIR
+```
+
+A qubit declaration inside a reusable quantum function is a definition. Each
+function invocation instantiates that declaration as a distinct logical quantum
+value unless the value is a bound parameter alias. `LogicalQubitOrigin` preserves
+the definition program and definition value ID alongside an optional deterministic
+`CallInstanceId`, while `LogicalSlotAllocationEntry.origin` exposes that evidence
+after allocation. Returning a `Qubit` transfers the same logical quantum value
+across the function boundary. It never copies quantum state.
 
 ## Reliability, protection, and allocation boundary
 
@@ -101,12 +119,16 @@ lowering derives IDs as `<source-operation-id>:daidalon:<transformation>:<output
 Logical lowering derives them as
 `<logical-operation-id>:daidalon:<transformation>:<output-index>`.
 
-When Daidalon expands a `LogicalCallOperation`, it derives a distinct IR ID from
-the complete ordered logical call path. The first level has the conceptual form
+When Daidalon expands a `LogicalCallOperation`, it creates a deterministic
+`CallInstanceId` from the entry program and complete ordered logical call path. It
+uses that invocation identity to instantiate callee-local logical values and derives
+a distinct IR ID from the same full path. The first level has the conceptual form
 `<call-site-id>:invoke:<callee-logical-operation-id>:daidalon:<transformation>:<output-index>`;
 nested calls retain every preceding call site. Two invocations of the same callee
 therefore never reuse an IR operation ID, while recompiling unchanged semantic
-structure remains byte-stable.
+structure remains byte-stable. Definition identity, invocation identity, and
+expanded logical-value identity remain separate fields rather than being encoded as
+one source location.
 
 Bindings preserve caller alias identity rather than copying a quantum value. A
 callee may therefore receive the same logical value for multiple parameters; if a

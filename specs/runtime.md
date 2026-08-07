@@ -110,10 +110,12 @@ without requiring a specific simulator or provider implementation.
 
 ## Serialization and versioning
 
-`ExecutionTrace` uses `schema_version = 3`, which adds explicit marginal probability
-scope to measurement events after schema v2 added observation execution kinds.
-Older traces are rejected rather than silently interpreted under terminal
-analytical-projection semantics. All contract records provide
+`ExecutionTrace` uses `schema_version = 4`. Version four records the structured
+`OperationProvenance.call_stack` shape used to separate a callee definition source
+from each invocation frame; it follows schema v3's explicit marginal probability
+scope and schema v2's observation execution kinds. Older traces are rejected rather
+than silently interpreted under the current terminal analytical-projection and
+provenance semantics. All contract records provide
 `to_dict()` and canonical `to_json()` output. Consumers must reject unsupported
 future schema versions rather than guessing their meaning. Additive optional fields
 are preferred for compatible evolution; semantic changes require a new schema

@@ -105,13 +105,45 @@ result = run(bell)
 ```
 
 The `entangle(left, right)` call remains a `LogicalCallOperation` rather than
-textual substitution. Ariadion binds the callee parameters to `bell`'s existing
-logical values, then Daidalon expands it while lowering. Generated IR retains the
-definition source for `h(left)` and a separate invocation frame for the call site.
-For this first slice, a callable callee must be a parameter-only `Qubit`
-transformation that returns `None`, creates no local `Qubit()`, and contains no
-observations. Quantum or classical call results, callee-local ancillas, and
-external quantum-state injection remain later work.
+textual substitution. Ariadion binds callee parameters as aliases to `bell`'s
+existing logical values, then Daidalon materializes invocation-aware logical
+values before allocation:
+
+```text
+Python functions -> LogicalModule -> call expansion / logical instantiation
+-> ExpandedLogicalProgram -> lifetime analysis -> logical-slot allocation
+-> CircuitIR
+```
+
+A qubit declaration inside a reusable quantum function is a definition. Each
+function invocation instantiates that declaration as a distinct logical quantum
+value unless the value is a bound parameter alias. The allocation policy is still
+conservative: `expanded-dense-no-reuse-v1` allocates every expanded value to a
+dense slot even though lifetime analysis is now available.
+
+Scalar `Qubit` call results are supported through one assignment target:
+
+```python
+@quantum
+def prepare() -> Qubit:
+  value = Qubit()
+  h(value)
+  return value
+
+
+@quantum
+def use_prepared() -> Qubit:
+  value = prepare()
+  z(value)
+  return value
+```
+
+Returning a `Qubit` transfers the same logical quantum value across the function
+boundary. It never copies quantum state. A bare call still requires a `None`
+return; classical and tuple call results, callee observations, and external
+quantum-state injection remain deferred. Generated IR retains the definition
+source for a callee operation and a separate structured invocation frame for each
+call site.
 
 Rotations retain their written unit and lower to canonical radians without calling
 the angle helper as ordinary Python:
@@ -215,6 +247,7 @@ tests/               vertical-slice tests
 - **Teach through execution:** tutorials and diagnostics should use the same runtime as real projects.
 
 See [`docs/architecture.md`](docs/architecture.md), [the object-model design
-guide](docs/object-model.md), [`specs/language.md`](specs/language.md), [the
+guide](docs/object-model.md), [the debugger provenance guide](docs/debugger.md),
+[`specs/language.md`](specs/language.md), [the
 Python-extension syntax specification](specs/syntax.md), [`specs/runtime.md`](specs/runtime.md),
 [`specs/inspection.md`](specs/inspection.md), and [`specs/debugger.md`](specs/debugger.md).

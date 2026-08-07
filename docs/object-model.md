@@ -25,6 +25,7 @@ owner's data but must not silently repair, reorder, or reinterpret it.
 | `QuantumFunction` | Immutable wrapper with fresh capture traversals | A Python function reference, capture policy, source-provider boundary, and immutable captured `LogicalProgram` or `LogicalModule` values | Invocation of the function body, IR, allocation, or execution results |
 | `LogicalProgram` | Immutable | Declared logical values, observation-result values, tagged return shape, quantum instructions, and logical-reference invariants | Slots, circuit width, backend policy, or execution results |
 | `LogicalModule` | Immutable | Entry program, reachable programs, call bindings, and acyclic call-graph invariants | Python function objects, slots, circuit width, or execution results |
+| `ExpandedLogicalProgram` | Immutable compiler artifact | Invocation-specific values, expanded non-call instructions, return aliases, call-expansion evidence, and escape evidence | Source capture, slot decisions, or runtime state |
 | `CircuitIR` | Immutable | Qubit layout, compiled operation order, IR provenance, and validated observation metadata | UI formatting, trace continuity, or backend policy |
 | `ExecutionTrace` | Immutable | Execution metadata, initial snapshot, contiguous operation occurrences, state history, and observation execution kind | State interpretation or navigation |
 | `TraceDebuggerSession` | Immutable | Current trace-step selection and frontend-ready projection | Terminal input, source mutation, or simulation |
@@ -111,8 +112,8 @@ validate their own invariants.
 Small immutable types make ownership explicit and prevent unqualified primitives
 from leaking across package boundaries. Existing examples include `Angle`,
 `AngleMetadata`, `ProgramId`, `SourceOperationId`, `SourceNodeId`,
-`SnapshotOperationId`, `IrOperationId`, `ClassicalBitId`, `SourceRange`, and
-`SourceRef`.
+SnapshotOperationId`, `IrOperationId`, `ClassicalBitId`, `CallInstanceId`,
+`SourceRange`, and `SourceRef`.
 
 Existing and future language work should use value objects where a bare integer or
 string would lose meaning, including:
@@ -172,7 +173,10 @@ the name `LogicalQubit` must not be used for that QEC object because it collides
 with source-semantic language. The current hand-built logical slice uses one dense
 execution slot per declared value under the explicitly limited `dense-no-reuse-v1`
 `LogicalSlotAllocationPlan`; it does not infer lifetimes or reuse a slot. This plan
-does not imply that one source value maps to one physical qubit.
+does not imply that one source value maps to one physical qubit. Module compilation
+uses `expanded-dense-no-reuse-v1`: it materializes invocation-specific values,
+records lifetimes, then still assigns every expanded value a unique dense slot. It
+does not reuse a slot yet.
 
 `ReliabilityGoal`, `NoiseProfile`, and `ProtectionPlan` are immutable planning
 contracts owned by the semantic layer. They describe requested bounds, assumptions,
@@ -197,11 +201,13 @@ source construct identity
 call invocation identity
     LogicalCallOperation
     -> ordered QuantumArgumentBinding values
+    -> deterministic CallInstanceId
     -> CallFrameProvenance in OperationProvenance.call_stack
     -> invocation-specific IrOperationId
 
 logical value identity
-    LogicalQubitId
+    source LogicalQubitId definition
+    -> ExpandedLogicalQubit / LogicalQubitOrigin / invocation-specific LogicalQubitId
     -> LogicalSlotAllocationEntry / AllocatedQubitSlot
     -> integer IR target
 
@@ -256,11 +262,16 @@ This is a future extension. It must not replace existing identifiers until it ca
 represent every current relationship without information loss.
 
 `LogicalCallOperation` deliberately preserves a callable boundary. It names the
-callee `ProgramId` and ordered bindings from callee parameter IDs to caller logical
-value IDs. Daidalon expands that semantic operation later; it does not mutate a
-callee operation's `SourceRef.program_id` to look as though the operation was
-written at the caller call site. The source remains the definition, while each
-`CallFrameProvenance` records an invocation separately.
+callee `ProgramId`, ordered bindings from callee parameter IDs to caller logical
+value IDs, and an optional scalar quantum result alias. Daidalon expands that
+semantic operation before allocation; it does not mutate a callee operation's
+`SourceRef.program_id` to look as though the operation was written at the caller
+call site. The source remains the definition, while each `CallFrameProvenance`
+records an invocation separately. A qubit declaration inside a reusable quantum
+function is a definition. Each function invocation instantiates that declaration as
+a distinct logical quantum value unless the value is a bound parameter alias.
+Returning a `Qubit` transfers the same logical quantum value across the function
+boundary. It never copies quantum state.
 
 ## Exact observation execution boundary
 
@@ -399,9 +410,9 @@ inform allocation before IR targets are assigned.
 Python AST + extension node
     -> resolved logical-value node
     -> typed/owned semantic node
-    -> LogicalProgram / logical instruction schedule
-    -> reliability analysis
-    -> protection and allocation plan
+    -> LogicalProgram / LogicalModule
+    -> invocation-aware expansion and lifetime analysis
+    -> logical-slot allocation
     -> IR operation
 ```
 
@@ -417,8 +428,9 @@ observe a value, and a Python alias must never create another quantum state.
 
 The schema-v3 named-register source AST remains compatibility data. The current
 logical slice is now reachable through the valid-Python `@quantum` AST frontend as
-well as hand-built data. The current frontend also composes parameter-only
-`None`-returning quantum callees through explicit logical bindings. Next language
-milestones are callee-local values, quantum return binding, ownership and lifetime
-analysis, resource inference, and only then justified extension syntax or richer
-editor support.
+well as hand-built data. The current frontend composes local-value callees and
+scalar `Qubit` result aliases through explicit logical bindings. Call expansion and
+lifetime analysis preserve definition, invocation, and expanded-value identities
+before dense non-reusing allocation. Next language milestones are optimized slot
+reuse, ownership refinements, resource inference, and only then justified extension
+syntax or richer editor support.

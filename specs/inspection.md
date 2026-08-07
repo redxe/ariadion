@@ -76,6 +76,8 @@ All inspection records are frozen dataclasses with `to_dict()` and canonical
 `to_json()` output. Complex values are serialized as real/imaginary component
 objects. `TraceInspection.inspection_schema_version` independently versions the
 inspection payload, while `TraceInspection.trace_schema_version` preserves the
-associated schema-v3 `ExecutionTrace.schema_version` when storing or exchanging an
-inspection. `rotation_explanation` is an additive optional step field. The initial
-`INSPECTION_SCHEMA_VERSION` is $1$.
+associated schema-v4 `ExecutionTrace.schema_version` when storing or exchanging an
+inspection. `rotation_explanation` is an additive optional step field. The current
+`INSPECTION_SCHEMA_VERSION` is $2$ because inspection serializes the structured
+call-stack provenance. Older inspection schema versions are rejected rather than
+silently interpreted as the current shape.

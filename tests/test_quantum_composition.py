@@ -287,8 +287,21 @@ class QuantumCompositionTests(unittest.TestCase):
     def test_observing_callee_is_rejected(self) -> None:
         self._assert_unsupported_callee(_calls_returning_bit, "observations")
 
-    def test_local_qubit_callee_is_rejected(self) -> None:
-        self._assert_unsupported_callee(_calls_local_callee, "local Qubit")
+    def test_local_qubit_callee_is_instantiated_for_each_call(self) -> None:
+        compilation = compile_logical_module(_calls_local_callee.to_logical_module())
+
+        assert compilation.expanded_program is not None
+        record = compilation.call_expansion.records[0] if compilation.call_expansion else None
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(len(record.instantiated_local_qubits), 1)
+        local_value = next(
+            qubit
+            for qubit in compilation.expanded_program.qubits
+            if qubit.id == record.instantiated_local_qubits[0]
+        )
+        self.assertEqual(local_value.origin.call_instance_id, record.call_instance_id)
+        self.assertEqual(run(_calls_local_callee).returned_quantum_values, ())
 
     def test_direct_recursion_is_source_linked(self) -> None:
         with self.assertRaises(PythonFrontendError) as captured:

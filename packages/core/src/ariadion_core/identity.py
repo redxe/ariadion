@@ -12,6 +12,7 @@ SourceNodeId = NewType("SourceNodeId", str)
 # Pre-allocation identities assigned by resolved quantum semantics.
 LogicalQubitId = NewType("LogicalQubitId", str)
 LogicalOperationId = NewType("LogicalOperationId", str)
+CallInstanceId = NewType("CallInstanceId", str)
 ClassicalBitId = NewType("ClassicalBitId", str)
 IrOperationId = NewType("IrOperationId", str)
 

@@ -430,6 +430,44 @@ class QuantumArgumentBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class QuantumCallResult:
+    """A caller-visible alias for one scalar quantum value returned by a call."""
+
+    callee_value_id: LogicalQubitId
+    caller_value_id: LogicalQubitId
+    caller_binding_name: str | None = None
+    source: SemanticSourceRef | None = None
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(
+            self.callee_value_id,
+            label="quantum call result callee value ID",
+        )
+        require_nonempty_identifier(
+            self.caller_value_id,
+            label="quantum call result caller value ID",
+        )
+        if self.caller_binding_name is not None:
+            require_nonempty_identifier(
+                self.caller_binding_name,
+                label="quantum call result caller binding name",
+            )
+        if self.source is not None and not isinstance(self.source, SourceRef):
+            raise ValueError("quantum call result source must be SourceRef")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "callee_value_id": self.callee_value_id,
+            "caller_value_id": self.caller_value_id,
+            "caller_binding_name": self.caller_binding_name,
+            "source": self.source.to_dict() if self.source is not None else None,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
 class LogicalCallOperation:
     """A semantic quantum-function invocation before its callee is lowered."""
 
@@ -437,6 +475,7 @@ class LogicalCallOperation:
     callee_program_id: ProgramId
     arguments: tuple[QuantumArgumentBinding, ...]
     source: SemanticSourceRef | None = None
+    result: QuantumCallResult | None = None
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.id, label="logical call operation ID")
@@ -454,6 +493,8 @@ class LogicalCallOperation:
         )
         if self.source is not None and not isinstance(self.source, SourceRef):
             raise ValueError("logical call source must be SourceRef")
+        if self.result is not None and not isinstance(self.result, QuantumCallResult):
+            raise ValueError("logical call result must be QuantumCallResult")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -461,6 +502,7 @@ class LogicalCallOperation:
             "callee_program_id": self.callee_program_id,
             "arguments": [argument.to_dict() for argument in self.arguments],
             "source": self.source.to_dict() if self.source is not None else None,
+            "result": self.result.to_dict() if self.result is not None else None,
         }
 
     def to_json(self) -> str:
@@ -616,6 +658,7 @@ class LogicalProgram:
         )
         observed_result_ids: list[ClassicalBitId] = []
         observed_qubit_ids: set[LogicalQubitId] = set()
+        known_quantum_value_ids = set(known_qubit_ids)
         for instruction in self.instructions:
             _validate_source_program(
                 instruction.source,
@@ -628,7 +671,25 @@ class LogicalProgram:
             elif isinstance(instruction, LogicalRotationOperation):
                 referenced_qubits = (instruction.target,)
             elif isinstance(instruction, LogicalCallOperation):
-                referenced_qubits = ()
+                for binding in instruction.arguments:
+                    if binding.argument_id not in known_quantum_value_ids:
+                        raise ValueError(
+                            "logical call argument references an undeclared logical quantum "
+                            f"value: {binding.argument_id}"
+                        )
+                if instruction.result is not None:
+                    _validate_source_program(
+                        instruction.result.source,
+                        self.id,
+                        label="logical call result",
+                    )
+                    if instruction.result.caller_value_id in known_quantum_value_ids:
+                        raise ValueError(
+                            "logical call result caller value ID must be new within its "
+                            f"program: {instruction.result.caller_value_id}"
+                        )
+                    known_quantum_value_ids.add(instruction.result.caller_value_id)
+                continue
             else:
                 referenced_qubits = (instruction.qubit_id,)
                 observed_qubit_ids.add(instruction.qubit_id)
@@ -639,9 +700,10 @@ class LogicalProgram:
                         f"{instruction.result_id}"
                     )
             for qubit_id in referenced_qubits:
-                if qubit_id not in known_qubit_ids:
+                if qubit_id not in known_quantum_value_ids:
                     raise ValueError(
-                        "logical program instruction references an undeclared logical qubit: "
+                        "logical program instruction references an undeclared logical qubit "
+                        "or quantum value: "
                         f"{qubit_id}"
                     )
 
@@ -667,7 +729,7 @@ class LogicalProgram:
                             "classical return must have an observation producer: "
                             f"{reference.value_id}"
                         )
-                elif reference.value_id in known_qubit_ids:
+                elif reference.value_id in known_quantum_value_ids:
                     raise ValueError(
                         "classical return kind cannot reference a logical qubit ID: "
                         f"{reference.value_id}"
@@ -678,7 +740,7 @@ class LogicalProgram:
                         f"{reference.value_id}"
                     )
             elif reference.kind is ReturnValueKind.QUANTUM_VALUE:
-                if reference.value_id in known_qubit_ids:
+                if reference.value_id in known_quantum_value_ids:
                     if reference.value_id in observed_qubit_ids:
                         raise ValueError(
                             "quantum return cannot reference an observed logical qubit: "
@@ -739,7 +801,7 @@ class LogicalModule:
 
         call_edges: dict[ProgramId, tuple[ProgramId, ...]] = {}
         for caller in self.programs:
-            caller_qubit_ids = {qubit.id for qubit in caller.qubits}
+            caller_value_ids = {qubit.id for qubit in caller.qubits}
             callees: list[ProgramId] = []
             for instruction in caller.instructions:
                 if not isinstance(instruction, LogicalCallOperation):
@@ -768,11 +830,37 @@ class LogicalModule:
                         "in declared position order"
                     )
                 for binding in bindings:
-                    if binding.argument_id not in caller_qubit_ids:
+                    if binding.argument_id not in caller_value_ids:
                         raise ValueError(
                             "logical call argument must reference a logical value declared "
                             f"by its caller: {binding.argument_id}"
                         )
+                if instruction.result is None:
+                    if not isinstance(callee.return_shape, NoneReturn):
+                        raise ValueError(
+                            "logical calls without a result binding require a None-returning "
+                            "callee"
+                        )
+                    continue
+                if (
+                    not isinstance(callee.return_shape, ScalarReturn)
+                    or callee.return_shape.value.kind is not ReturnValueKind.QUANTUM_VALUE
+                ):
+                    raise ValueError(
+                        "logical call result bindings require a scalar quantum-returning callee"
+                    )
+                if (
+                    callee.return_shape.value.value_id
+                    != instruction.result.callee_value_id
+                ):
+                    raise ValueError(
+                        "logical call result must reference the callee scalar quantum return"
+                    )
+                if instruction.result.caller_value_id in caller_value_ids:
+                    raise ValueError(
+                        "logical call result caller value ID must be new within its caller"
+                    )
+                caller_value_ids.add(instruction.result.caller_value_id)
             call_edges[caller.id] = tuple(callees)
 
         visited: set[ProgramId] = set()

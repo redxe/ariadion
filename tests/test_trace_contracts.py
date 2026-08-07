@@ -270,12 +270,14 @@ class TraceContractTests(unittest.TestCase):
         self.assertEqual(trace.to_json(), trace.to_json())
         self.assertFalse(TraceCaptureOptions().enabled)
 
-    def test_schema_version_one_is_rejected_after_observation_execution_upgrade(self) -> None:
+    def test_older_schema_versions_are_rejected_after_call_stack_upgrade(self) -> None:
         circuit = compile_program(Program(1, program_id=ProgramId("examples/schema.py")))
         initial = StateSnapshot(circuit.id, circuit.qubit_count, (1 + 0j, 0j))
 
-        with self.assertRaisesRegex(ValueError, "supported trace schema"):
-            ExecutionTrace(circuit.id, initial, schema_version=1)
+        for schema_version in (1, 3):
+            with self.subTest(schema_version=schema_version):
+                with self.assertRaisesRegex(ValueError, "supported trace schema"):
+                    ExecutionTrace(circuit.id, initial, schema_version=schema_version)
 
     def test_measurement_events_reject_a_joint_return_probability_scope(self) -> None:
         operation = Operation(

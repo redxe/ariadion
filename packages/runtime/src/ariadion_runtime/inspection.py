@@ -28,7 +28,7 @@ from theonoe import (
 from .trace import ExecutionTrace, MeasurementEvent
 
 
-INSPECTION_SCHEMA_VERSION: Final = 1
+INSPECTION_SCHEMA_VERSION: Final = 2
 _ROTATION_AXES: Final = {
     OpCode.RX: RotationAxis.X,
     OpCode.RY: RotationAxis.Y,

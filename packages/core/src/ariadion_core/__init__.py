@@ -1,4 +1,5 @@
 from .identity import (
+    CallInstanceId,
     ClassicalBitId,
     IrOperationId,
     LogicalOperationId,
@@ -15,6 +16,7 @@ from .identity import (
 from .source import SourceRange, SourceRef, canonical_json
 
 __all__ = [
+    "CallInstanceId",
     "ClassicalBitId",
     "IrOperationId",
     "LogicalOperationId",

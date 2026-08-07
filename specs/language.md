@@ -27,10 +27,11 @@ and the eventual mapping to simulator or hardware qubits.
 The valid-Python `@quantum` frontend captures a narrow, deliberately safe subset
 of a decorated function into `LogicalProgram`. It also resolves a reachable,
 acyclic `LogicalModule` for explicit quantum-function calls. Classical computation,
-control flow, callable return values, callee-local ancillas, and a native `.ari`
-parser remain unsupported. `Program(width)` and its integer-target operations
-remain compatibility and migration mechanisms rather than the managed
-source-language model.
+control flow, classical or tuple call results, callee observations, and a native
+`.ari` parser remain unsupported. Callee-local quantum values and scalar `Qubit`
+call results are supported through invocation-aware expansion. `Program(width)`
+and its integer-target operations remain compatibility and migration mechanisms
+rather than the managed source-language model.
 
 ## Python-compatible quantum functions
 
@@ -168,13 +169,50 @@ caller logical values. `QuantumFunction.to_logical_program()` retains that
 unresolved semantic call; `to_logical_module()` recursively captures reachable
 callees into an acyclic `LogicalModule`.
 
-The first executable composition slice restricts every callable callee to a
-parameter-only transformation: it must take only `Qubit` parameters, return `None`,
-contain no observations, and declare no local `Qubit()` values. Nested calls are
-allowed when their transitively captured module satisfies the same rules. Quantum
-returns, classical returns, tuple results, assignment from calls, local ancillas,
-classical parameters, dynamic dispatch, and external quantum-state injection remain
-separate lifetime and ownership work.
+Composition materializes calls before resource allocation:
+
+```text
+Python functions
+  -> LogicalModule
+  -> invocation-aware call expansion / logical instantiation
+  -> ExpandedLogicalProgram
+  -> lifetime analysis
+  -> logical-slot allocation
+  -> CircuitIR
+```
+
+A qubit declaration inside a reusable quantum function is a definition. Each
+function invocation instantiates that declaration as a distinct logical quantum
+value unless the value is a bound parameter alias. Parameters are substitutions
+onto existing expanded values, never copied states. Every expanded local retains a
+definition origin and a deterministic `CallInstanceId` built from the complete
+ordered call path.
+
+A scalar quantum-returning call must have one simple assignment target:
+
+```python
+@quantum
+def prepare() -> Qubit:
+   value = Qubit()
+   h(value)
+   return value
+
+
+@quantum
+def use_prepared() -> Qubit:
+   value = prepare()
+   z(value)
+   return value
+```
+
+The assignment target is a source alias for the callee's returned expanded value;
+it does not declare or allocate another state. Returning a `Qubit` transfers the
+same logical quantum value across the function boundary. It never copies quantum
+state. A returned parameter therefore aliases the original caller value, while a
+returned callee local becomes one escaping invocation-local value. Bare call
+statements remain limited to `None` callees. Classical scalar results, tuple call
+results, callee observations, classical parameters, dynamic dispatch, and external
+quantum-state injection remain deferred.
 
 Capture has no persistent source-only program cache. Each public capture resolves
 the current relevant globals and annotations, so rebinding an intrinsic alias cannot
@@ -233,10 +271,10 @@ operation.
 ## Logical quantum values and managed resources
 
 Each `Qubit()` creation receives a logical identity. Resolved quantum operations
-target those identities, and a future lifetime analysis will determine the peak
-simultaneously live set. The current captured and hand-built logical slice instead
-allocates one dense slot per declared logical value in declaration order, then
-lowers to `CircuitIR`.
+target those identities. `LogicalModule` compilation first creates an
+`ExpandedLogicalProgram`, then records first use, last use, returned escape,
+call-boundary escape, or program-end lifetime evidence before allocation. Hand-built
+`LogicalProgram` compilation retains its original declaration-order path.
 
 ```text
 logical values and lifetimes
@@ -246,12 +284,14 @@ logical values and lifetimes
     -> allocated CircuitIR.qubit_count and integer targets
 ```
 
-The current `dense-no-reuse-v1` `LogicalSlotAllocationPlan` uses one slot per
-declared logical value, reports equal peak-live and allocated counts, and never
-reuses a slot. It is an execution-slot artifact, not a physical or protected
-hardware allocation: a later physical plan may map one source `Qubit` to many
-hardware qubits. Later policies can reuse a slot after a value's lifetime ends,
-introduce ancillas, insert resets, route for hardware topology, select a
+The original `dense-no-reuse-v1` `LogicalSlotAllocationPlan` remains the
+hand-built-program policy. Expanded modules use `expanded-dense-no-reuse-v1`:
+every expanded value, including a callee local, receives a dense unique slot, and
+the allocation reports the independently measured peak-live count. No slot reuse
+occurs in either policy yet. These are execution-slot artifacts, not physical or
+protected hardware allocation: a later physical plan may map one source `Qubit`
+to many hardware qubits. Later policies can reuse a slot after a value's lifetime
+ends, introduce ancillas, insert resets, route for hardware topology, select a
 `ProtectedRealization`, and report provider-specific requirements. The compiler
 must expose facts such as logical values created, peak live values, allocated
 simulator qubits, hardware qubits, and planning assumptions. A future annotation

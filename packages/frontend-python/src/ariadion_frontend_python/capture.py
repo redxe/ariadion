@@ -48,6 +48,7 @@ from ariadion_semantics import (
     ObservationReason,
     ObservationResultValue,
     QuantumArgumentBinding,
+    QuantumCallResult,
     QuantumParameter,
     ReturnValueKind,
     ReturnValueRef,
@@ -285,6 +286,17 @@ class _ExpectedNone:
 _ExpectedReturn = _ExpectedLeaf | _ExpectedTuple | _ExpectedNone
 
 
+@dataclass(frozen=True, slots=True)
+class _QuantumCallResultBinding:
+    """A source-level name that aliases a scalar quantum call result."""
+
+    id: LogicalQubitId
+    display_name: str
+
+
+_BoundQuantumValue = LogicalQubitValue | _QuantumCallResultBinding
+
+
 class _CaptureAbort(Exception):
     def __init__(self, diagnostic: FrontendDiagnostic) -> None:
         self.diagnostic = diagnostic
@@ -390,7 +402,7 @@ class _CaptureState:
         self.capture_context = capture_context
         self.globals = function.__globals__
         self._source_ordinals: dict[tuple[str, int, int], int] = {}
-        self._bindings: dict[str, LogicalQubitValue] = {}
+        self._bindings: dict[str, _BoundQuantumValue] = {}
         self._qubits: list[LogicalQubitValue] = []
         self._parameters: list[QuantumParameter] = []
         self._instructions: list[
@@ -620,9 +632,26 @@ class _CaptureState:
         if not isinstance(statement.value, ast.Call):
             self._fail(
                 "P103",
-                "Assignments may only create Qubit() values or aliases.",
+                "Assignments may only create Qubit() values, aliases, or scalar "
+                "quantum call results.",
                 statement.value,
             )
+        if isinstance(statement.value.func, ast.Name):
+            if statement.value.func.id in self._bindings:
+                self._fail(
+                    "P104",
+                    f"`{statement.value.func.id}` is locally shadowed and is not a quantum "
+                    "callable.",
+                    statement.value.func,
+                )
+            resolved = self._resolve_global_name(statement.value.func.id)
+            if isinstance(resolved, QuantumFunction):
+                self._capture_quantum_function_call(
+                    statement.value,
+                    resolved,
+                    result_target=target,
+                )
+                return
         self._capture_qubit_declaration(target, statement.value)
 
     def _capture_qubit_declaration(self, target: ast.Name, call: ast.Call) -> None:
@@ -677,6 +706,8 @@ class _CaptureState:
         self,
         call: ast.Call,
         callee_function: QuantumFunction,
+        *,
+        result_target: ast.Name | None = None,
     ) -> None:
         if call.keywords:
             self._fail("P105", "Quantum function calls do not accept keyword arguments.", call)
@@ -692,17 +723,39 @@ class _CaptureState:
                 call,
             )
         values = tuple(self._bound_qubit(argument) for argument in call.args)
-        self._validate_composed_callee(callee_program, call)
+        self._validate_composed_callee(
+            callee_program,
+            call,
+            expects_quantum_result=result_target is not None,
+        )
         arguments = tuple(
             QuantumArgumentBinding(parameter.logical_qubit_id, value.id)
             for parameter, value in zip(callee_program.parameters, values, strict=True)
         )
+        result = None
+        if result_target is not None:
+            assert isinstance(callee_program.return_shape, ScalarReturn)
+            result_source = self._source_for(result_target, "quantum-call-result")
+            result_value_id = LogicalQubitId(
+                f"{source.source_operation_id}:call-result:qubit"
+            )
+            result = QuantumCallResult(
+                caller_value_id=result_value_id,
+                callee_value_id=LogicalQubitId(callee_program.return_shape.value.value_id),
+                caller_binding_name=result_target.id,
+                source=result_source,
+            )
+            self._bindings[result_target.id] = _QuantumCallResultBinding(
+                id=result_value_id,
+                display_name=result_target.id,
+            )
         self._instructions.append(
             LogicalCallOperation(
-                LogicalOperationId(f"{source.source_operation_id}:operation"),
-                callee_program.id,
-                arguments,
-                source,
+                id=LogicalOperationId(f"{source.source_operation_id}:operation"),
+                callee_program_id=callee_program.id,
+                arguments=arguments,
+                source=source,
+                result=result,
             )
         )
 
@@ -710,6 +763,8 @@ class _CaptureState:
         self,
         callee_program: LogicalProgram,
         call: ast.Call,
+        *,
+        expects_quantum_result: bool,
     ) -> None:
         if any(isinstance(instruction, Observation) for instruction in callee_program.instructions):
             self._fail(
@@ -717,18 +772,22 @@ class _CaptureState:
                 "Composed quantum callees cannot contain observations.",
                 call,
             )
-        parameter_ids = {parameter.logical_qubit_id for parameter in callee_program.parameters}
-        qubit_ids = {qubit.id for qubit in callee_program.qubits}
-        if qubit_ids != parameter_ids:
-            self._fail(
-                "P116",
-                "Composed quantum callees cannot declare local Qubit() values.",
-                call,
-            )
+        if expects_quantum_result:
+            if (
+                not isinstance(callee_program.return_shape, ScalarReturn)
+                or callee_program.return_shape.value.kind is not ReturnValueKind.QUANTUM_VALUE
+            ):
+                self._fail(
+                    "P116",
+                    "Assigned quantum function calls require a scalar Qubit return.",
+                    call,
+                )
+            return
         if not isinstance(callee_program.return_shape, NoneReturn):
             self._fail(
                 "P116",
-                "Composed quantum callees must return None in the current slice.",
+                "Quantum function calls with a return value must be assigned to one name; "
+                "bare calls must return None.",
                 call,
             )
 
@@ -898,7 +957,7 @@ class _CaptureState:
         self._bindings[name] = value
         self._qubits.append(value)
 
-    def _bound_qubit(self, node: ast.expr) -> LogicalQubitValue:
+    def _bound_qubit(self, node: ast.expr) -> _BoundQuantumValue:
         if not isinstance(node, ast.Name):
             self._fail(
                 "P106",

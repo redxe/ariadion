@@ -47,6 +47,16 @@ from ariadion_semantics import (
     return_value_refs,
 )
 
+from .expansion import (
+    CallExpansionPlan,
+    ExpandedLogicalInstruction,
+    ExpandedLogicalProgram,
+    LogicalLifetimeAnalysis,
+    LogicalQubitOrigin,
+    analyze_logical_lifetimes,
+    expand_logical_module,
+)
+
 
 class DiagnosticSeverity(str, Enum):
     ERROR = "error"
@@ -105,6 +115,7 @@ class CompileError(ValueError):
 
 
 LOGICAL_ALLOCATION_POLICY_NAME: Final = "dense-no-reuse-v1"
+EXPANDED_LOGICAL_ALLOCATION_POLICY_NAME: Final = "expanded-dense-no-reuse-v1"
 _LOGICAL_LOWERING_TRANSFORMATION: Final = "logical-allocation-lowering"
 _Z_BASIS_NAME: Final = "z"
 
@@ -116,6 +127,7 @@ class LogicalSlotAllocationEntry:
     logical_qubit_id: LogicalQubitId
     display_name: str | None
     slot: int
+    origin: LogicalQubitOrigin | None = None
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(
@@ -128,13 +140,18 @@ class LogicalSlotAllocationEntry:
                 label="logical slot allocation display name",
             )
         _require_nonnegative_int(self.slot, label="logical slot allocation slot")
+        if self.origin is not None and not isinstance(self.origin, LogicalQubitOrigin):
+            raise ValueError("logical slot allocation origin must be LogicalQubitOrigin")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "logical_qubit_id": self.logical_qubit_id,
             "display_name": self.display_name,
             "slot": self.slot,
         }
+        if self.origin is not None:
+            result["origin"] = self.origin.to_dict()
+        return result
 
     def to_json(self) -> str:
         return canonical_json(self.to_dict())
@@ -176,14 +193,20 @@ class LogicalSlotAllocationPlan:
             raise ValueError(
                 "logical slot allocation entry slot must fit allocated_qubit_count"
             )
-        if self.policy_name == LOGICAL_ALLOCATION_POLICY_NAME:
+        if self.policy_name in {
+            LOGICAL_ALLOCATION_POLICY_NAME,
+            EXPANDED_LOGICAL_ALLOCATION_POLICY_NAME,
+        }:
             expected_slots = tuple(range(len(self.entries)))
             if tuple(entry.slot for entry in self.entries) != expected_slots:
                 raise ValueError(
                     "dense-no-reuse logical slot allocation entries must use declaration-order "
                     "dense slots"
                 )
-            if self.peak_live_qubits != len(self.entries):
+            if (
+                self.policy_name == LOGICAL_ALLOCATION_POLICY_NAME
+                and self.peak_live_qubits != len(self.entries)
+            ):
                 raise ValueError(
                     "dense-no-reuse logical slot allocation peak_live_qubits must equal entry "
                     "count"
@@ -193,6 +216,13 @@ class LogicalSlotAllocationPlan:
                     "dense-no-reuse logical slot allocation allocated_qubit_count must equal "
                     "entry count"
                 )
+        if (
+            self.policy_name == EXPANDED_LOGICAL_ALLOCATION_POLICY_NAME
+            and any(entry.origin is None for entry in self.entries)
+        ):
+            raise ValueError(
+                "expanded logical slot allocation entries must preserve logical qubit origins"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -324,6 +354,9 @@ class LogicalCompilationResult:
     ir: CircuitIR
     logical_allocation: LogicalSlotAllocationPlan
     readout: ReadoutPlan
+    expanded_program: ExpandedLogicalProgram | None = None
+    call_expansion: CallExpansionPlan | None = None
+    lifetime_analysis: LogicalLifetimeAnalysis | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.ir, CircuitIR):
@@ -335,6 +368,59 @@ class LogicalCompilationResult:
             )
         if not isinstance(self.readout, ReadoutPlan):
             raise ValueError("logical compilation result readout must be ReadoutPlan")
+        module_evidence = (
+            self.expanded_program,
+            self.call_expansion,
+            self.lifetime_analysis,
+        )
+        if any(item is None for item in module_evidence) and not all(
+            item is None for item in module_evidence
+        ):
+            raise ValueError(
+                "logical compilation result module evidence must be supplied together"
+            )
+        if self.expanded_program is not None:
+            if not isinstance(self.call_expansion, CallExpansionPlan):
+                raise ValueError(
+                    "logical compilation result call_expansion must be CallExpansionPlan"
+                )
+            if not isinstance(self.lifetime_analysis, LogicalLifetimeAnalysis):
+                raise ValueError(
+                    "logical compilation result lifetime_analysis must be LogicalLifetimeAnalysis"
+                )
+            expanded_qubit_ids = tuple(qubit.id for qubit in self.expanded_program.qubits)
+            allocation_qubit_ids = tuple(
+                entry.logical_qubit_id for entry in self.logical_allocation.entries
+            )
+            if allocation_qubit_ids != expanded_qubit_ids:
+                raise ValueError(
+                    "module logical allocation entries must match expanded logical qubits"
+                )
+            if tuple(entry.origin for entry in self.logical_allocation.entries) != tuple(
+                qubit.origin for qubit in self.expanded_program.qubits
+            ):
+                raise ValueError(
+                    "module logical allocation origins must match expanded logical qubits"
+                )
+            if self.ir.id != self.expanded_program.id:
+                raise ValueError(
+                    "module compilation IR ID must match the expanded logical program"
+                )
+            if self.call_expansion != self.expanded_program.call_expansion:
+                raise ValueError(
+                    "module call expansion evidence must match the expanded logical program"
+                )
+            lifetime_ids = tuple(
+                lifetime.logical_qubit_id for lifetime in self.lifetime_analysis.lifetimes
+            )
+            if lifetime_ids != expanded_qubit_ids:
+                raise ValueError(
+                    "module lifetime evidence must match expanded logical qubits"
+                )
+            if self.readout.return_shape != self.expanded_program.return_shape:
+                raise ValueError(
+                    "module readout return shape must match expanded logical program"
+                )
         if self.ir.qubit_count != self.logical_allocation.allocated_qubit_count:
             raise ValueError(
                 "logical compilation result IR qubit_count must match allocated_qubit_count"
@@ -398,6 +484,19 @@ class LogicalCompilationResult:
             "ir": self.ir.to_dict(),
             "logical_allocation": self.logical_allocation.to_dict(),
             "readout": self.readout.to_dict(),
+            "expanded_program": (
+                self.expanded_program.to_dict()
+                if self.expanded_program is not None
+                else None
+            ),
+            "call_expansion": (
+                self.call_expansion.to_dict() if self.call_expansion is not None else None
+            ),
+            "lifetime_analysis": (
+                self.lifetime_analysis.to_dict()
+                if self.lifetime_analysis is not None
+                else None
+            ),
         }
 
     def to_json(self) -> str:
@@ -469,7 +568,7 @@ def compile_logical_program(program: LogicalProgram) -> LogicalCompilationResult
 
 
 def compile_logical_module(module: LogicalModule) -> LogicalCompilationResult:
-    """Allocate the module entry and lower semantic calls through explicit bindings."""
+    """Expand calls before analyzing, allocating, and lowering logical values."""
 
     if not isinstance(module, LogicalModule):
         raise ValueError("logical module compiler input must be LogicalModule")
@@ -477,22 +576,32 @@ def compile_logical_module(module: LogicalModule) -> LogicalCompilationResult:
     if diagnostics:
         raise CompileError(tuple(diagnostics))
 
-    entry_program = module.entry_program
-    logical_allocation = _allocate_logical_program(entry_program)
+    expanded_program = expand_logical_module(module)
+    lifetime_analysis = analyze_logical_lifetimes(expanded_program)
+    logical_allocation = _allocate_expanded_program(
+        expanded_program,
+        lifetime_analysis,
+    )
     slots = {
         entry.logical_qubit_id: entry.slot
         for entry in logical_allocation.entries
     }
-    operations = _lower_logical_module(module, slots)
+    operations = tuple(
+        _lower_expanded_logical_instruction(instruction, slots)
+        for instruction in expanded_program.instructions
+    )
     return LogicalCompilationResult(
         ir=CircuitIR(
-            entry_program.id,
-            entry_program.name,
+            expanded_program.id,
+            expanded_program.name,
             logical_allocation.allocated_qubit_count,
             operations,
         ),
         logical_allocation=logical_allocation,
-        readout=_build_readout_plan(entry_program, slots),
+        readout=_build_expanded_readout_plan(expanded_program, slots),
+        expanded_program=expanded_program,
+        call_expansion=expanded_program.call_expansion,
+        lifetime_analysis=lifetime_analysis,
     )
 
 
@@ -612,71 +721,32 @@ def _validate_logical_lowering(program: LogicalProgram) -> list[Diagnostic]:
 
 
 def _validate_logical_module_lowering(module: LogicalModule) -> list[Diagnostic]:
-    """Validate call expansion without letting a callee escape the first slice."""
+    """Validate the flattened execution shape without allocating during traversal."""
 
     diagnostics: list[Diagnostic] = []
     programs_by_id = {program.id: program for program in module.programs}
-
-    def validate_program(
-        program: LogicalProgram,
-        bound_logical_ids: dict[LogicalQubitId, LogicalQubitId],
-    ) -> None:
-        has_observation = False
-        for index, instruction in enumerate(program.instructions):
-            if isinstance(instruction, (LogicalGateOperation, LogicalRotationOperation)):
-                if has_observation:
-                    diagnostics.append(
-                        _logical_instruction_diagnostic(
-                            index,
-                            instruction,
-                            "A202",
-                            "exact state-vector execution supports terminal observations only",
-                        )
-                    )
-                if (
-                    isinstance(instruction, LogicalGateOperation)
-                    and instruction.opcode not in _LOGICAL_GATE_OPCODE_MAP
-                ):
-                    diagnostics.append(
-                        _logical_instruction_diagnostic(
-                            index,
-                            instruction,
-                            "A200",
-                            f"logical gate {instruction.opcode.value!r} has no supported lowering",
-                        )
-                    )
-                if (
-                    isinstance(instruction, LogicalGateOperation)
-                    and instruction.opcode is LogicalGateOpCode.CX
-                    and bound_logical_ids.get(
-                        instruction.controls[0], instruction.controls[0]
-                    )
-                    == bound_logical_ids.get(instruction.targets[0], instruction.targets[0])
-                ):
-                    diagnostics.append(
-                        _logical_instruction_diagnostic(
-                            index,
-                            instruction,
-                            "A205",
-                            "logical call bindings cannot lower CX control and target "
-                            "to the same value",
-                        )
-                    )
+    for caller in module.programs:
+        for index, instruction in enumerate(caller.instructions):
+            if not isinstance(instruction, LogicalCallOperation):
                 continue
-            if isinstance(instruction, Observation):
-                has_observation = True
-                if instruction.basis.name != _Z_BASIS_NAME:
-                    diagnostics.append(
-                        _logical_instruction_diagnostic(
-                            index,
-                            instruction,
-                            "A201",
-                            "only z-basis observations are supported by logical allocation "
-                            f"lowering; received {instruction.basis.name!r}",
-                        )
+            callee = programs_by_id[instruction.callee_program_id]
+            if any(isinstance(item, Observation) for item in callee.instructions):
+                diagnostics.append(
+                    _logical_instruction_diagnostic(
+                        index,
+                        instruction,
+                        "A204",
+                        "composed quantum callees cannot contain observations",
                     )
-                continue
+                )
+    if diagnostics:
+        return diagnostics
 
+    expanded = expand_logical_module(module)
+    has_observation = False
+    for index, expanded_instruction in enumerate(expanded.instructions):
+        instruction = expanded_instruction.instruction
+        if isinstance(instruction, (LogicalGateOperation, LogicalRotationOperation)):
             if has_observation:
                 diagnostics.append(
                     _logical_instruction_diagnostic(
@@ -686,58 +756,44 @@ def _validate_logical_module_lowering(module: LogicalModule) -> list[Diagnostic]
                         "exact state-vector execution supports terminal observations only",
                     )
                 )
-            callee = programs_by_id[instruction.callee_program_id]
-            diagnostics.extend(_validate_module_callee(instruction, callee, index))
-            callee_bound_logical_ids = {
-                binding.parameter_id: bound_logical_ids.get(
-                    binding.argument_id,
-                    binding.argument_id,
+            if (
+                isinstance(instruction, LogicalGateOperation)
+                and instruction.opcode not in _LOGICAL_GATE_OPCODE_MAP
+            ):
+                diagnostics.append(
+                    _logical_instruction_diagnostic(
+                        index,
+                        instruction,
+                        "A200",
+                        f"logical gate {instruction.opcode.value!r} has no supported lowering",
+                    )
                 )
-                for binding in instruction.arguments
-            }
-            validate_program(callee, callee_bound_logical_ids)
-
-    validate_program(module.entry_program, {})
-    return diagnostics
-
-
-def _validate_module_callee(
-    call: LogicalCallOperation,
-    callee: LogicalProgram,
-    operation_index: int,
-) -> list[Diagnostic]:
-    """Reject callable shapes that need value-lifetime semantics not available yet."""
-
-    diagnostics: list[Diagnostic] = []
-    if not isinstance(callee.return_shape, NoneReturn):
-        diagnostics.append(
-            _logical_instruction_diagnostic(
-                operation_index,
-                call,
-                "A204",
-                "composed quantum callees must return None in the current slice",
+            if (
+                isinstance(instruction, LogicalGateOperation)
+                and instruction.opcode is LogicalGateOpCode.CX
+                and instruction.controls == instruction.targets
+            ):
+                diagnostics.append(
+                    _logical_instruction_diagnostic(
+                        index,
+                        instruction,
+                        "A205",
+                        "logical call bindings cannot lower CX control and target to the same "
+                        "value",
+                    )
+                )
+            continue
+        has_observation = True
+        if instruction.basis.name != _Z_BASIS_NAME:
+            diagnostics.append(
+                _logical_instruction_diagnostic(
+                    index,
+                    instruction,
+                    "A201",
+                    "only z-basis observations are supported by logical allocation lowering; "
+                    f"received {instruction.basis.name!r}",
+                )
             )
-        )
-    parameter_ids = {parameter.logical_qubit_id for parameter in callee.parameters}
-    callee_qubit_ids = {qubit.id for qubit in callee.qubits}
-    if callee_qubit_ids != parameter_ids:
-        diagnostics.append(
-            _logical_instruction_diagnostic(
-                operation_index,
-                call,
-                "A204",
-                "composed quantum callees cannot declare local Qubit() values",
-            )
-        )
-    if any(isinstance(instruction, Observation) for instruction in callee.instructions):
-        diagnostics.append(
-            _logical_instruction_diagnostic(
-                operation_index,
-                call,
-                "A204",
-                "composed quantum callees cannot contain observations",
-            )
-        )
     return diagnostics
 
 
@@ -776,6 +832,27 @@ def _allocate_logical_program(program: LogicalProgram) -> LogicalSlotAllocationP
     )
 
 
+def _allocate_expanded_program(
+    program: ExpandedLogicalProgram,
+    lifetimes: LogicalLifetimeAnalysis,
+) -> LogicalSlotAllocationPlan:
+    entries = tuple(
+        LogicalSlotAllocationEntry(
+            logical_qubit_id=qubit.id,
+            display_name=qubit.display_name,
+            slot=slot,
+            origin=qubit.origin,
+        )
+        for slot, qubit in enumerate(program.qubits)
+    )
+    return LogicalSlotAllocationPlan(
+        policy_name=EXPANDED_LOGICAL_ALLOCATION_POLICY_NAME,
+        entries=entries,
+        peak_live_qubits=lifetimes.peak_live_logical_values,
+        allocated_qubit_count=len(entries),
+    )
+
+
 def _build_readout_plan(
     program: LogicalProgram,
     slots: dict[LogicalQubitId, int],
@@ -797,68 +874,53 @@ def _build_readout_plan(
     return ReadoutPlan(observations=observations, return_shape=program.return_shape)
 
 
-def _lower_logical_module(
-    module: LogicalModule,
-    entry_slots: dict[LogicalQubitId, int],
-) -> tuple[Operation, ...]:
-    """Recursively lower semantic calls without rewriting their definition sources."""
+def _build_expanded_readout_plan(
+    program: ExpandedLogicalProgram,
+    slots: dict[LogicalQubitId, int],
+) -> ReadoutPlan:
+    result_values = {result.id: result for result in program.classical_bits}
+    observations = tuple(
+        AllocatedObservation(
+            result_id=instruction.result_id,
+            result_display_name=result_values[instruction.result_id].display_name,
+            logical_qubit_id=instruction.qubit_id,
+            allocated_slot=slots[instruction.qubit_id],
+            basis=instruction.basis,
+            reason=instruction.reason,
+            logical_operation_id=expanded_instruction.definition_operation_id,
+        )
+        for expanded_instruction in program.instructions
+        if isinstance((instruction := expanded_instruction.instruction), Observation)
+    )
+    return ReadoutPlan(observations=observations, return_shape=program.return_shape)
 
-    programs_by_id = {program.id: program for program in module.programs}
 
-    def lower_program(
-        program: LogicalProgram,
-        slots: dict[LogicalQubitId, int],
-        call_stack: tuple[CallFrameProvenance, ...],
-        call_path: tuple[LogicalOperationId, ...],
-    ) -> list[Operation]:
-        operations: list[Operation] = []
-        for instruction in program.instructions:
-            if isinstance(instruction, LogicalCallOperation):
-                callee = programs_by_id[instruction.callee_program_id]
-                callee_slots = {
-                    binding.parameter_id: slots[binding.argument_id]
-                    for binding in instruction.arguments
-                }
-                frame = CallFrameProvenance(
-                    caller_program_id=program.id,
-                    call_operation_id=instruction.id,
-                    callee_program_id=callee.id,
-                    call_source=instruction.source,
-                )
-                operations.extend(
-                    lower_program(
-                        callee,
-                        callee_slots,
-                        call_stack + (frame,),
-                        call_path + (instruction.id,),
-                    )
-                )
-                continue
-            operation_id = (
-                make_invoked_logical_ir_operation_id(
-                    call_path,
-                    instruction.id,
-                    _LOGICAL_LOWERING_TRANSFORMATION,
-                    0,
-                )
-                if call_path
-                else make_logical_ir_operation_id(
-                    instruction.id,
-                    _LOGICAL_LOWERING_TRANSFORMATION,
-                    0,
-                )
-            )
-            operations.append(
-                _lower_logical_instruction(
-                    instruction,
-                    slots,
-                    ir_operation_id=operation_id,
-                    call_stack=call_stack,
-                )
-            )
-        return operations
-
-    return tuple(lower_program(module.entry_program, entry_slots, (), ()))
+def _lower_expanded_logical_instruction(
+    expanded_instruction: ExpandedLogicalInstruction,
+    slots: dict[LogicalQubitId, int],
+) -> Operation:
+    call_path = tuple(frame.call_operation_id for frame in expanded_instruction.call_stack)
+    operation_id = (
+        make_invoked_logical_ir_operation_id(
+            call_path,
+            expanded_instruction.definition_operation_id,
+            _LOGICAL_LOWERING_TRANSFORMATION,
+            0,
+        )
+        if call_path
+        else make_logical_ir_operation_id(
+            expanded_instruction.definition_operation_id,
+            _LOGICAL_LOWERING_TRANSFORMATION,
+            0,
+        )
+    )
+    return _lower_logical_instruction(
+        expanded_instruction.instruction,
+        slots,
+        ir_operation_id=operation_id,
+        call_stack=expanded_instruction.call_stack,
+        definition_logical_operation_id=expanded_instruction.definition_operation_id,
+    )
 
 
 def _lower_logical_instruction(
@@ -867,6 +929,7 @@ def _lower_logical_instruction(
     *,
     ir_operation_id: IrOperationId | None = None,
     call_stack: tuple[CallFrameProvenance, ...] = (),
+    definition_logical_operation_id: LogicalOperationId | None = None,
 ) -> Operation:
     if isinstance(instruction, LogicalGateOperation):
         opcode = _LOGICAL_GATE_OPCODE_MAP[instruction.opcode]
@@ -904,6 +967,7 @@ def _lower_logical_instruction(
         )
     source = instruction.source
     parent_source_ids = (source.source_operation_id,) if source is not None else ()
+    definition_operation_id = definition_logical_operation_id or instruction.id
     return Operation(
         opcode=opcode,
         targets=targets,
@@ -919,7 +983,7 @@ def _lower_logical_instruction(
         provenance=OperationProvenance(
             parent_source_ids=parent_source_ids,
             transformation=_LOGICAL_LOWERING_TRANSFORMATION,
-            parent_logical_operation_ids=(instruction.id,),
+            parent_logical_operation_ids=(definition_operation_id,),
             call_stack=call_stack,
         ),
         observation=observation,

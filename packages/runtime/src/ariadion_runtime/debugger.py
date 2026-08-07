@@ -16,7 +16,7 @@ from .inspection import TraceInspection, TraceStepInspection
 from .trace import ExecutionTrace, MeasurementEvent, TraceStep
 
 
-TRACE_DEBUGGER_SCHEMA_VERSION: Final = 1
+TRACE_DEBUGGER_SCHEMA_VERSION: Final = 2
 
 
 class TraceDebuggerError(ValueError):

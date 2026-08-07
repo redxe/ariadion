@@ -15,6 +15,7 @@ from ariadion import (
     run,
 )
 from ariadion_ir import OpCode
+from ariadion_runtime import TRACE_DEBUGGER_SCHEMA_VERSION
 from ariadion_visualization import render_circuit
 from ariadion_cli.trace_view import render_trace_step
 
@@ -56,7 +57,8 @@ class TraceDebuggerTests(unittest.TestCase):
         self.assertEqual(payload["operation"]["source"]["source_node_id"], "node:debugger:h")
 
         document = json.loads(session.to_json())
-        self.assertEqual(document["schema_version"], 1)
+        self.assertEqual(TRACE_DEBUGGER_SCHEMA_VERSION, 2)
+        self.assertEqual(document["schema_version"], 2)
         self.assertEqual(document["current_step_index"], 0)
         self.assertEqual(document["circuit"]["id"], session.circuit.id)
         self.assertEqual(

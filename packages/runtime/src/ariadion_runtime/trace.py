@@ -20,7 +20,7 @@ from ariadion_ir import CircuitIR, OpCode, Operation, OperationProvenance
 from ariadion_simulator import SimulationResult, SimulationTrace, SimulationTraceStep
 
 
-EXECUTION_TRACE_SCHEMA_VERSION: Final = 3
+EXECUTION_TRACE_SCHEMA_VERSION: Final = 4
 _EXACT_MEASUREMENT_PROBABILITY_ABS_TOLERANCE: Final = 1e-12
 
 

@@ -212,6 +212,7 @@ class TraceInspectionTests(unittest.TestCase):
         inspection = inspect_execution_trace(trace)
         self.assertEqual(inspect_execution_trace(trace), inspection)
         payload = json.loads(inspection.to_json())
+        self.assertEqual(INSPECTION_SCHEMA_VERSION, 2)
         self.assertEqual(payload["circuit_id"], result.ir.id)
         self.assertEqual(
             payload["inspection_schema_version"],
@@ -222,7 +223,7 @@ class TraceInspectionTests(unittest.TestCase):
         self.assertEqual(payload["steps"][0]["transition"]["after"]["states"][0]["label"], "|0>")
         self.assertEqual(result.trace.metadata.mode, ExecutionMode.EXACT)
         with self.assertRaisesRegex(ValueError, "inspection_schema_version"):
-            replace(inspection, inspection_schema_version=2)
+            replace(inspection, inspection_schema_version=3)
 
 
 if __name__ == "__main__":

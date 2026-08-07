@@ -67,6 +67,7 @@ from ariadion_semantics import (
     LogicalModule,
     LogicalProgram,
     QuantumArgumentBinding,
+    QuantumCallResult,
     UnboundQuantumParameterError,
 )
 
@@ -138,6 +139,7 @@ __all__ = [
     "PythonSourceProvider",
     "Qubit",
     "QuantumArgumentBinding",
+    "QuantumCallResult",
     "QuantumFunction",
     "QuantumFunctionConfig",
     "RunResult",

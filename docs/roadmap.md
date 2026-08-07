@@ -22,20 +22,21 @@
 - source-provider boundary with inspected and explicit in-memory source
 - source-derived identities, source ranges, inferred typed returns, and unresolved quantum parameters
 - `LogicalModule` call graphs with explicit quantum argument bindings and acyclic validation
-- deferred Daidalon call expansion with definition and invocation provenance
+- materialized invocation-aware call expansion with definition and invocation provenance
+- expanded logical lifetime analysis and conservative `expanded-dense-no-reuse-v1` allocation
+- callee-local `Qubit()` instantiation and scalar `Qubit` call-result aliases
 
 ## Next sequence
 
 The next implementation work must preserve this order:
 
-1. Allow callee-local logical values, bind scalar quantum returns, and define escape/lifetime endpoints beyond `dense-no-reuse-v1`.
-2. Define sampled terminal and mid-circuit execution: shots, seeds, outcomes, collapse, feedback, reset, and post-measurement traces.
-3. Define noise-channel contracts and bind them to simulation requests.
-4. Add a small density-matrix noisy simulator.
-5. Add scheduling and T1/T2 idle decoherence.
-6. Add reliability goals and bare-execution estimates.
-7. Add pluggable protection-planning interfaces.
-8. Add encoded-QEC simulation and decoder integration later.
+1. Define sampled terminal and mid-circuit execution: shots, seeds, outcomes, collapse, feedback, reset, and post-measurement traces.
+2. Define noise-channel contracts and bind them to simulation requests.
+3. Add a small density-matrix noisy simulator.
+4. Add scheduling and T1/T2 idle decoherence.
+5. Add reliability goals and bare-execution estimates.
+6. Add pluggable protection-planning interfaces.
+7. Add encoded-QEC simulation and decoder integration later.
 
 ## Milestone 1 — value, effect, and observation contracts
 
@@ -65,17 +66,21 @@ The next implementation work must preserve this order:
 - quantum return leaves remain unobserved retained-state handles
 - explicit source-provider contracts preserve absolute ranges and deterministic IDs for inspected files and in-memory buffers
 - unsupported constructs receive source-linked frontend diagnostics; `.ari` loading and native parsing remain deferred
-- next frontend work is callee-local values, quantum-return binding, ownership/lifetime analysis, and then justified extension syntax
+- future frontend extensions require explicit ownership and allocation-policy contracts
 
 ## Milestone 4 — composed quantum functions and logical bindings — complete
 
 - preserve a quantum-function call as `LogicalCallOperation` rather than textual substitution
 - resolve a deterministic, acyclic `LogicalModule` from a root `QuantumFunction`
 - bind callee `QuantumParameter` identities to caller logical values explicitly
-- lower module calls only in Daidalon, allocating the entry program while first-slice callees remain parameter-only
+- materialize module calls in Daidalon before allocation through an immutable `ExpandedLogicalProgram`
+- instantiate every callee-local definition once per deterministic call instance while preserving parameter aliases
+- support one-target scalar `Qubit` call results as aliases, never copied quantum states
+- analyze expanded quantum-value lifetimes and preserve call/return escape evidence
+- allocate all expanded values with `expanded-dense-no-reuse-v1`; lifetime analysis exists but slot reuse remains deferred
 - retain callee definition source plus structured invocation `CallFrameProvenance`
 - generate invocation-specific deterministic IR operation IDs
-- reject closures, recursion, stale source-only capture assumptions, unsupported callee return/observation/local-value shapes, and unbound module-entry inputs
+- reject closures, recursion, stale source-only capture assumptions, classical and tuple call results, callee observations, and unbound module-entry inputs
 
 ## Milestone 5 — staged noisy simulation and reliability planning
 

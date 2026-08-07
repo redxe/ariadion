@@ -28,10 +28,13 @@ It is immutable: `next()`, `previous()`, and `go_to()` return a new session.
 
 `TraceStepViewModel` has `to_dict()` and canonical `to_json()` output for an
 individual active step. `TraceDebuggerSession` serializes a complete debugger
-document with its own `schema_version`, `current_step_index`, the complete
-serialized `CircuitIR`, `ExecutionTrace`, and `TraceInspection`. Studio can
-reconstruct the whole circuit and every inspected operation directly from that
-document instead of scraping terminal text.
+document with `schema_version = 2`, `current_step_index`, the complete serialized
+`CircuitIR`, `ExecutionTrace`, and `TraceInspection`. Version two records the
+structured provenance call-stack shape used by the trace and inspection contracts.
+Studio can reconstruct the whole circuit and every inspected operation directly
+from that document instead of scraping terminal text. Constructors reject a
+serialized document carrying an older or mismatched debugger schema version rather
+than silently treating it as version two.
 
 The session validates every inspection step against the matching trace operation:
 operation ID, opcode, targets, controls, key, observation metadata, source,

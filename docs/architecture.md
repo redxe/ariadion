@@ -60,11 +60,13 @@ LogicalProgram with source-derived identities and LogicalCallOperation values
     ↓
 LogicalModule with explicit callee-parameter bindings
     ↓
-logical operation schedule
+invocation-aware call expansion / logical instantiation
     ↓
-reliability analysis
+ExpandedLogicalProgram
     ↓
-protection and allocation plan
+lifetime analysis
+    ↓
+logical-slot allocation
     ↓
 allocated CircuitIR
     ↓
@@ -82,16 +84,20 @@ current path.
 
 The allocated `CircuitIR` continues to use dense integer targets and an explicit
 `qubit_count`; those are compiler results. Daidalon now exposes a
-`LogicalSlotAllocationPlan` beside the resulting IR. The first policy,
-`dense-no-reuse-v1`, maps declaration order to execution slots 0, 1, 2, 3 and sets
-both peak live and allocated counts to the number of declared logical values. It
-deliberately does not infer lifetimes or reuse slots. This is not a physical or
-protected allocation: a later physical plan may map one source `Qubit` to many
-hardware qubits. Later allocation artifacts can support diagnostics, resource
-reporting, trace navigation, and hardware mapping. Before a future optimized
-allocation, a schedule makes duration and idle-time assumptions explicit;
-reliability analysis compares its estimate to a requested failure budget; a
-protection-and-allocation plan can then select a feasible bare or protected
+`LogicalSlotAllocationPlan` beside the resulting IR. `compile_logical_module()`
+first materializes every reachable call into an `ExpandedLogicalProgram`, analyzes
+value lifetimes, and records call-expansion evidence before allocating. A qubit
+declaration inside a reusable quantum function is a definition. Each function
+invocation instantiates that declaration as a distinct logical quantum value unless
+the value is a bound parameter alias. `expanded-dense-no-reuse-v1` assigns every
+expanded value a dense unique slot; its peak-live count comes from lifetime analysis,
+but it does not reuse slots yet. Hand-built programs retain `dense-no-reuse-v1`.
+This is not physical or protected allocation: a later physical plan may map one
+source `Qubit` to many hardware qubits. Later allocation artifacts can support
+diagnostics, resource reporting, trace navigation, and hardware mapping. Before a
+future optimized allocation, a schedule makes duration and idle-time assumptions
+explicit; reliability analysis compares its estimate to a requested failure budget;
+a protection-and-allocation plan can then select a feasible bare or protected
 realization.
 
 At the public boundary, `Qubit` is already a logical value and `Bit` is a distinct
@@ -179,10 +185,14 @@ identities, ranges, typed returns, inferred terminal observations, unresolved
 `QuantumParameter` inputs, and explicit `LogicalCallOperation` values. Its
 `to_logical_module()` traversal captures a resolved acyclic call graph without
 executing any body. Callee parameters bind to caller logical values; calls are not
-textually substituted. A first callable callee is parameter-only, returns `None`,
-contains no observations, and declares no local `Qubit()`. The frontend has no
-persistent source-only capture cache, so relevant global rebinding cannot reuse
-stale semantics. It never calls the function body or intrinsic markers.
+textually substituted. Callable callees may declare local `Qubit()` values, and a
+scalar `Qubit` return may bind to one caller assignment name. That name aliases the
+returned quantum value; returning a `Qubit` transfers the same logical quantum
+value across the function boundary and never copies quantum state. Bare calls remain
+`None`-only, while classical or tuple call results and callee observations remain
+unsupported. The frontend has no persistent source-only capture cache, so relevant
+global rebinding cannot reuse stale semantics. It never calls the function body or
+intrinsic markers.
 Its dependencies are limited to `ariadion-core`, `ariadion-language`, and
 `ariadion-semantics`; it has no dependency on IR, Daidalon, runtime, simulator,
 Theonoe, CLI, or `ariadion-syntax`.
@@ -196,8 +206,8 @@ effects, reliability goals, layered noise profiles, composable simulation reques
 and protection-plan descriptions. It depends on `ariadion-core` plus shared public
 language angle/basis contracts and contains no allocated integer targets, circuit
 width, backend policy, noise engine, QEC planner, or lowering. Daidalon consumes
-the logical program contracts for the current declaration-order allocation slice;
-lifetime analysis, scheduling, reliability analysis, and optimized allocation remain
+the logical program contracts for call-result aliases, invocation-aware expansion,
+and allocation. Scheduling, reliability analysis, and optimized slot reuse remain
 future work.
 
 ### `ariadion-syntax`
@@ -231,17 +241,19 @@ allocation.
 Validates resolved quantum programs, creates an explicit deterministic
 `LogicalSlotAllocationPlan` plus `ReadoutPlan`, and lowers current logical gate and
 Z-basis observation instructions plus typed logical rotations to semantic IR.
-`compile_logical_module()` allocates only the entry program for the initial
-composition slice, binds each callee parameter through explicit logical bindings,
-and recursively expands semantic calls during lowering. It retains the callee
-definition source on each generated operation and records invocation frames in IR
-provenance, with invocation-specific deterministic IR IDs.
+`compile_logical_module()` materializes a `LogicalModule` into an immutable
+`ExpandedLogicalProgram`, binds each callee parameter as an alias, instantiates
+each callee-local definition per deterministic call instance, analyzes lifetimes,
+then allocates every expanded value. It retains the callee definition source on each
+generated operation and records invocation frames in IR provenance, with
+invocation-specific deterministic IR IDs. Returning a `Qubit` transfers the same
+expanded value over the boundary rather than copying quantum state.
 Lowered `MEASURE` operations carry declared result identity, basis, and reason as
 `ObservationMetadata`; `ReadoutPlan` retains structured returns rather than
 inferring output type or nesting from operation order. Typed rotations preserve
 source-unit metadata and canonical radians through existing `RX`/`RY`/`RZ` IR.
-The current `dense-no-reuse-v1` policy is intentionally not lifetime analysis.
-Future compiler passes will include
+The `expanded-dense-no-reuse-v1` policy consumes lifetime evidence but intentionally
+does not reuse slots. Future compiler passes will include
 canonicalization, decomposition, routing, scheduling, bare-execution estimation,
 protection planning, resource estimation, physical allocation, and backend-specific
 lowering.
@@ -279,7 +291,7 @@ leaves to return one joint `ExactClassicalDistribution`, preserving correlations
 rather than exposing independent marginal observations. It separately exposes
 returned quantum values as handles into the retained state, not copied qubit states.
 
-It also owns the versioned schema-v3 execution-trace contract consumed by debugger
+It also owns the versioned schema-v4 execution-trace contract consumed by debugger
 and Studio clients. It adapts simulator raw capture into that contract and projects
 it through Theonoe only when a consumer explicitly requests inspection, so capture
 and interpretation remain independently selectable. Measurement events distinguish
@@ -306,7 +318,8 @@ Studio can reuse those models without scraping CLI text.
 ## Near-term vertical slice
 
 ```text
-capture safe Python AST or hand-build -> validate -> logical slots/readout -> lower -> simulate -> trace -> inspect
+capture safe Python AST or hand-build -> validate -> expand calls -> analyze lifetimes
+-> logical slots/readout -> lower -> simulate -> trace -> inspect
 ```
 
 A change is considered vertically complete only when it can be exercised from the SDK and covered by a runtime-level test.
