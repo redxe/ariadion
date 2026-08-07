@@ -58,6 +58,9 @@ model, return to classical feedback, branching, and conditional gates.
 - classical, quantum, and hybrid function-effect contracts
 - source-level aliasing, escape, reset, and conversion rules
 - diagnostics with original Python-compatible source ranges
+- deferred design evidence: phase-context equivalence contracts as a prerequisite
+	before future algebraic optimization are documented in
+	[foundational-quantum-contracts.md](research/foundational-quantum-contracts.md)
 
 ## Milestone 2 — hand-built logical allocation slice
 
@@ -185,6 +188,9 @@ model, return to classical feedback, branching, and conditional gates.
 - estimate bare-execution reliability against explicit goals — complete
 - add pluggable protection-planning interfaces and Pareto resource reporting
 - add encoded-QEC simulation and decoder integration only after these earlier slices
+- deferred design evidence for protection-planning vocabulary (stabilizer,
+  Pauli-frame, invariant, and channel-proof terms) is documented in
+  [foundational-quantum-contracts.md](research/foundational-quantum-contracts.md)
 
 ## Milestone 6 — interactive debugging
 
@@ -193,6 +199,9 @@ model, return to classical feedback, branching, and conditional gates.
 - reduced density matrices
 - phase and interference explanations
 - entanglement provenance
+- deferred design evidence for coherence-class and invariant-break explanations
+	is documented in
+	[foundational-quantum-contracts.md](research/foundational-quantum-contracts.md)
 - deferred research: persistent computation artifacts for streamed/lazy traces,
   checkpoints, and distributed durability are documented in
   [persistent-computation-artifacts.md](research/persistent-computation-artifacts.md),
@@ -212,3 +221,10 @@ model, return to classical feedback, branching, and conditional gates.
 - cloud hardware adapters
 - distributed simulator workers
 - coordinator and friend-compute trust model
+
+## Deferred research notes (unscheduled)
+
+- geometric phase, Floquet, Magnus, Lindblad-generator, and Hamiltonian
+	sensitivity research for future Hamiltonian/pulse semantics remains deferred;
+	see
+	[foundational-quantum-contracts.md](research/foundational-quantum-contracts.md)
