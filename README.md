@@ -58,7 +58,7 @@ to guess their unit.
 
 Ariadion reads the Python AST of a quantum function. It does not execute the
 function body to construct the program. The initial `@quantum` frontend supports
-local `Qubit()` declarations, aliases, the built-in gate markers, explicit-unit
+local `Qubit()` declarations, aliases, gate/observation/reset markers, explicit-unit
 rotations, and typed terminal returns:
 
 ```python
@@ -80,6 +80,26 @@ result = run(bell)
 `result.classical_output_distribution` retains the exact joint Bell distribution:
 $00 \,\mapsto\, 0.5$, $01 \,\mapsto\, 0$, $10 \,\mapsto\, 0$, and
 $11 \,\mapsto\, 0.5$.
+
+Inferred observation handles ordinary classical returns. Explicit `observe()`
+exists when observation timing itself is part of the algorithm:
+
+```python
+from ariadion import Bit, Qubit, h, observe, quantum, reset
+
+
+@quantum
+def observe_then_reset() -> Bit:
+  value = Qubit()
+  h(value)
+  result = observe(value)
+  reset(value)
+  return result
+```
+
+`reset(q)` changes the state of the existing managed quantum value to
+$|0\rangle$; it does not create a new `Qubit`. Both functions are AST markers and
+cannot execute as ordinary Python.
 
 ## Exact analysis and sampled trajectories
 
@@ -108,6 +128,10 @@ entangled with the target. Sampled results use distinct public result types and
 empirical counts; they do not expose exact probability distributions. A captured
 sampled trace describes exactly one trajectory, so trace capture with more than
 one shot is rejected with `A204`.
+
+The source markers do not choose execution mode. Running `observe_then_reset`
+requires an explicit `SampledExecutionRequest`; exact execution raises `A203` for
+the reset, and an exact quantum operation after `observe()` raises `A202`.
 
 Captured quantum functions can now compose through explicit logical bindings:
 

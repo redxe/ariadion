@@ -8,7 +8,7 @@ from ariadion_core import (
 
 from .angle import Angle, AngleUnit, deg, rad, turns
 from .basis import Basis, BasisNamespace, basis
-from .intrinsics import QuantumIntrinsic, cx, h, rx, ry, rz, x, z
+from .intrinsics import QuantumIntrinsic, cx, h, observe, reset, rx, ry, rz, x, z
 from .program import Program, SourceOperation
 from .values import Bit, Qubit
 
@@ -31,7 +31,9 @@ __all__ = [
     "cx",
     "deg",
     "h",
+    "observe",
     "rad",
+    "reset",
     "rx",
     "ry",
     "rz",

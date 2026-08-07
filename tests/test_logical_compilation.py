@@ -19,6 +19,7 @@ from ariadion_runtime import (
     inspect_execution_trace,
     run_logical_program,
 )
+from ariadion_simulator import ExactTerminalObservationError
 from ariadion_semantics import (
     ClassicalBitValue,
     LogicalGateOpCode,
@@ -323,10 +324,15 @@ class LogicalCompilationTests(unittest.TestCase):
             (result,),
         )
 
-        with self.assertRaises(CompileError) as captured:
-            compile_logical_program(program)
+        compilation = compile_logical_program(program)
+        self.assertEqual(
+            tuple(operation.opcode for operation in compilation.ir.operations),
+            (OpCode.MEASURE, OpCode.H),
+        )
+        with self.assertRaises(ExactTerminalObservationError) as captured:
+            run_logical_program(program)
 
-        self.assertEqual(captured.exception.diagnostics[0].code, "A202")
+        self.assertEqual(captured.exception.code, "A202")
 
 
 def _bell_program() -> LogicalProgram:

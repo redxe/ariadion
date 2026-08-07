@@ -29,7 +29,8 @@ of a decorated function into `LogicalProgram`. It also resolves a reachable,
 acyclic `LogicalModule` for explicit quantum-function calls. Classical computation,
 control flow, classical or tuple call results, callee observations, and a native
 `.ari` parser remain unsupported. Callee-local quantum values and scalar `Qubit`
-call results are supported through invocation-aware expansion. `Program(width)`
+call results are supported through invocation-aware expansion, and `None`-returning
+callees may reset caller-managed values. `Program(width)`
 and its integer-target operations remain compatibility and migration mechanisms
 rather than the managed source-language model.
 
@@ -78,6 +79,29 @@ reason, and position inside the semantic return tree. Source code does not need
 terminal `measure()` calls. The compiler lowers the simultaneously live values to
 dense targets in allocated `CircuitIR`, while preserving result IDs separately from
 operation IDs and Python variable names.
+
+Inferred observation handles ordinary classical returns. Explicit `observe()`
+exists when observation timing itself is part of the algorithm.
+
+```python
+@quantum
+def observe_then_reset() -> Bit:
+   value = Qubit()
+   h(value)
+   result = observe(value)
+   reset(value)
+   return result
+```
+
+`observe(value)` creates a named `Bit` result when assigned, while the discarded
+form `observe(value)` still creates and records an observation boundary. `reset(q)`
+changes the state of the existing managed quantum value to $|0\rangle$; it does not
+create a new `Qubit`.
+
+An observation-result binding is distinct from a managed quantum-value binding.
+In this slice it may only be returned, aliased, or remain unused. Arithmetic,
+truth testing, conversion, branching, classical call results, and feedback-driven
+gates remain unsupported.
 
 The terminology boundary is deliberate:
 
@@ -214,6 +238,11 @@ statements remain limited to `None` callees. Classical scalar results, tuple cal
 results, callee observations, classical parameters, dynamic dispatch, and external
 quantum-state injection remain deferred.
 
+A `None`-returning callee may contain `reset(q)` because it changes the state of a
+caller-managed quantum value without producing a classical call result. Explicit
+observations inside a callee remain unsupported until classical call-result
+semantics can be expanded without ambiguity.
+
 Capture has no persistent source-only program cache. Each public capture resolves
 the current relevant globals and annotations, so rebinding an intrinsic alias cannot
 return stale semantics. A future cache requires a deterministic capture-environment
@@ -229,9 +258,8 @@ rather than physical slots. A return value may be a classical observation result
 a quantum value whose lifetime escapes the function; neither parameter nor return
 type exposes simulator or hardware indexes.
 
-The semantic model will later define ownership, escaping values, reset, and
-measurement consumption. The current frontend already preserves source-level alias
-identity, but it must not imply that an assignment copies a quantum state or
+The semantic model already preserves source-level alias identity and explicit
+reset identity, but it must not imply that an assignment copies a quantum state or
 silently changes quantum ownership. Measurement produces a classical result value;
 the precise ownership effect on the measured logical value remains a later
 semantic contract.
@@ -249,7 +277,7 @@ Qubit -> bool
    Reject with a semantic diagnostic.
 
 Bit -> bool
-   Ordinary classical conversion.
+   Reject with a semantic diagnostic until classical control is implemented.
 ```
 
 In particular, `if q:` for a `Qubit` is rejected initially. Ariadion must not
@@ -298,9 +326,11 @@ simulator qubits, hardware qubits, and planning assumptions. A future annotation
 such as `@quantum(max_qubits=12)` is a resource contract or hint, not manual
 allocation.
 
-## Classical outputs and exact terminal observations
+## Classical outputs and explicit observation execution
 
-The current logical execution slice supports only terminal Z-basis observations.
+The current logical lowering slice supports Z-basis observations. Exact execution
+requires observations to remain terminal, while explicit sampled execution allows
+an observation before later quantum operations.
 A function return is a structured semantic artifact, not merely an ordered list of
 identifiers. Classical observation results and returned quantum values may coexist,
 and their Python tuple structure is preserved independently of allocation or
@@ -338,8 +368,10 @@ outcomes, collapses each trajectory, and permits a later gate. Its sampled resul
 types expose empirical counts rather than exact probabilities. A sampled trace
 captures one trajectory only; a request to trace multiple shots fails with `A204`.
 IR `RESET` is likewise sampled-only: it collapses internally and conditionally
-applies `X` to establish $|0\rangle$. The public Python language deliberately adds
-no `observe()` or `reset()` syntax in this slice.
+applies `X` to establish $|0\rangle$. The public Python language provides
+`observe()` and `reset()` AST markers in this slice; neither marker executes as
+ordinary Python. A user must still request `SampledExecutionRequest` explicitly to
+run collapse/reset trajectories. There is no hidden exact-to-sampled switch.
 
 ## Current compatibility surface
 
@@ -404,23 +436,24 @@ numeric arguments and computed angle expressions are rejected with `P112`.
 ## Basis values and measurement intent
 
 A basis is a typed domain concept rather than a backend default. Explicit
-measurement remains available when observation timing changes algorithm meaning:
+observation remains available when observation timing changes algorithm meaning:
 
 ```python
-result = observe(
-     target,
-   basis=basis.x,
-     reset=True,
-)
+@quantum(basis=basis.z)
+def sample_target() -> Bit:
+    target = Qubit()
+    result = observe(target)
+    reset(target)
+    return result
 ```
 
-`observe` is the preferred future high-level spelling because it names the semantic
-act. The low-level IR opcode may remain `MEASURE`, and the current
-`Program.measure` builder method remains a compatibility API. Explicit observation
-is required or useful for mid-circuit feedback, post-selection, exact timing,
-syndrome extraction, partial observation of entangled values, reset and storage
-reuse, and repeated sampling policies. Returning a `Qubit` where a declared `Bit`
-is required is instead an inferred terminal observation boundary.
+`observe` names the semantic act and currently accepts one managed quantum value;
+it uses the function's declared default basis. The low-level IR opcode remains
+`MEASURE`, and the current `Program.measure` builder method remains a compatibility
+API. Explicit observation is useful for exact timing and sampled trajectories,
+while feedback, branching, post-selection, and repeated basis arguments remain
+future work. Returning a `Qubit` where a declared `Bit` is required is instead an
+inferred terminal observation boundary.
 
 The public language namespace is `basis.x`, `basis.y`, `basis.z`, and
 `basis.named("custom-name")`; lower-case basis constants are not exported because

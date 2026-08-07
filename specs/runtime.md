@@ -60,6 +60,14 @@ probabilities without collapsing the state vector. The sampled trajectory backen
 uses a private seeded pseudorandom generator, samples one target-order outcome,
 zeros incompatible amplitudes, and renormalizes before any later operation.
 
+At the source boundary, `result = observe(q)` lowers to one `MEASURE` operation
+with `ObservationReason.EXPLICIT`; returning `result` reuses that declared
+classical result rather than inserting another observation. A discarded
+`observe(q)` remains a trace/readout observation but is absent from the returned
+classical output. Exact execution raises `A202` if a quantum operation follows an
+observation. Sampled collapse is available only when the caller explicitly passes
+`SampledExecutionRequest`; runtime never switches execution modes implicitly.
+
 Every per-operation `MeasurementEvent` serializes `scope = marginal`: its exact
 probabilities describe only that operation's targets. They do not encode returned
 classical correlation by themselves.
@@ -102,6 +110,12 @@ target, conditionally applying `X` for an internal outcome of `1`, and leaving t
 target in $|0\rangle$. This internal measurement is not a user-visible
 `MeasurementEvent`; a sampled trace records a `ResetEvent` with the operation ID,
 target, and internal outcome. Exact traces reject reset evidence.
+
+Source `reset(q)` lowers to that operation while preserving the existing logical
+value identity. `reset(q)` changes the state of the existing managed quantum value
+to $|0\rangle$; it does not create a new `Qubit`. It is valid inside a composed
+`None`-returning helper, but it does not make the value's slot reusable under the
+current dense no-reuse allocation policy.
 
 For a future density-matrix backend, the exact reset channel is
 

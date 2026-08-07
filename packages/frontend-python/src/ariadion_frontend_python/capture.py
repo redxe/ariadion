@@ -27,7 +27,9 @@ from ariadion_language import (
     cx,
     deg,
     h,
+    observe,
     rad,
+    reset,
     rx,
     ry,
     rz,
@@ -42,6 +44,7 @@ from ariadion_semantics import (
     LogicalModule,
     LogicalProgram,
     LogicalQubitValue,
+    LogicalResetOperation,
     LogicalRotationOperation,
     NoneReturn,
     Observation,
@@ -86,6 +89,8 @@ _ROTATION_MARKERS = {
     ry: RotationAxis.Y,
     rz: RotationAxis.Z,
 }
+_OBSERVATION_MARKERS = frozenset({observe})
+_RESET_MARKERS = frozenset({reset})
 _ANGLE_MARKERS = {
     deg: SemanticAngleUnit.DEGREES,
     rad: SemanticAngleUnit.RADIANS,
@@ -295,6 +300,7 @@ class _QuantumCallResultBinding:
 
 
 _BoundQuantumValue = LogicalQubitValue | _QuantumCallResultBinding
+_BoundValue = _BoundQuantumValue | ObservationResultValue
 
 
 class _CaptureAbort(Exception):
@@ -402,11 +408,16 @@ class _CaptureState:
         self.capture_context = capture_context
         self.globals = function.__globals__
         self._source_ordinals: dict[tuple[str, int, int], int] = {}
-        self._bindings: dict[str, _BoundQuantumValue] = {}
+        self._quantum_bindings: dict[str, _BoundQuantumValue] = {}
+        self._observation_bindings: dict[str, ObservationResultValue] = {}
         self._qubits: list[LogicalQubitValue] = []
         self._parameters: list[QuantumParameter] = []
         self._instructions: list[
-            LogicalGateOperation | LogicalRotationOperation | Observation | LogicalCallOperation
+            LogicalGateOperation
+            | LogicalRotationOperation
+            | LogicalResetOperation
+            | Observation
+            | LogicalCallOperation
         ] = []
         self._classical_bits: list[ObservationResultValue] = []
         self._classical_return_qubit_ids: set[LogicalQubitId] = set()
@@ -616,18 +627,21 @@ class _CaptureState:
         target = statement.targets[0]
         if target.id in _known_intrinsic_names() or target.id in {"Qubit", "Bit"}:
             self._fail("P103", "Intrinsic names cannot be rebound inside @quantum.", target)
-        if target.id in self._bindings:
+        if self._binding_for_name(target.id) is not None:
             self._fail("P107", f"Reassignment of `{target.id}` is not supported.", target)
 
         if isinstance(statement.value, ast.Name):
-            source_value = self._bindings.get(statement.value.id)
+            source_value = self._binding_for_name(statement.value.id)
             if source_value is None:
                 self._fail(
                     "P106",
-                    f"Unknown quantum value `{statement.value.id}` in alias assignment.",
+                    f"Unknown managed value `{statement.value.id}` in alias assignment.",
                     statement.value,
                 )
-            self._bindings[target.id] = source_value
+            if isinstance(source_value, ObservationResultValue):
+                self._observation_bindings[target.id] = source_value
+            else:
+                self._quantum_bindings[target.id] = source_value
             return
         if not isinstance(statement.value, ast.Call):
             self._fail(
@@ -637,7 +651,7 @@ class _CaptureState:
                 statement.value,
             )
         if isinstance(statement.value.func, ast.Name):
-            if statement.value.func.id in self._bindings:
+            if self._binding_for_name(statement.value.func.id) is not None:
                 self._fail(
                     "P104",
                     f"`{statement.value.func.id}` is locally shadowed and is not a quantum "
@@ -645,6 +659,15 @@ class _CaptureState:
                     statement.value.func,
                 )
             resolved = self._resolve_global_name(statement.value.func.id)
+            if resolved is observe:
+                self._capture_observation(statement.value, result_target=target)
+                return
+            if resolved is reset:
+                self._fail(
+                    "P105",
+                    "reset does not return a value and must be an expression statement.",
+                    statement.value,
+                )
             if isinstance(resolved, QuantumFunction):
                 self._capture_quantum_function_call(
                     statement.value,
@@ -675,7 +698,7 @@ class _CaptureState:
         call = statement.value
         if not isinstance(call.func, ast.Name):
             self._fail("P103", "Only named quantum calls are supported.", call.func)
-        if call.func.id in self._bindings:
+        if self._binding_for_name(call.func.id) is not None:
             self._fail(
                 "P104",
                 f"`{call.func.id}` is locally shadowed and is not a quantum callable.",
@@ -690,10 +713,21 @@ class _CaptureState:
             if resolved is marker:
                 self._capture_rotation(call, axis)
                 return
+        if resolved is observe:
+            self._capture_observation(call)
+            return
+        if resolved is reset:
+            self._capture_reset(call)
+            return
         if isinstance(resolved, QuantumFunction):
             self._capture_quantum_function_call(call, resolved)
             return
-        known_intrinsics = tuple(_GATE_MARKERS) + tuple(_ROTATION_MARKERS)
+        known_intrinsics = (
+            tuple(_GATE_MARKERS)
+            + tuple(_ROTATION_MARKERS)
+            + tuple(_OBSERVATION_MARKERS)
+            + tuple(_RESET_MARKERS)
+        )
         if call.func.id in {_callable_name(marker) for marker in known_intrinsics}:
             self._fail(
                 "P104",
@@ -745,7 +779,7 @@ class _CaptureState:
                 caller_binding_name=result_target.id,
                 source=result_source,
             )
-            self._bindings[result_target.id] = _QuantumCallResultBinding(
+            self._quantum_bindings[result_target.id] = _QuantumCallResultBinding(
                 id=result_value_id,
                 display_name=result_target.id,
             )
@@ -835,6 +869,59 @@ class _CaptureState:
             LogicalRotationOperation(operation_id, axis, target.id, angle, source)
         )
 
+    def _capture_observation(
+        self,
+        call: ast.Call,
+        *,
+        result_target: ast.Name | None = None,
+    ) -> None:
+        if call.keywords or len(call.args) != 1:
+            self._fail(
+                "P105",
+                "observe expects exactly one quantum argument.",
+                call,
+            )
+        qubit = self._bound_qubit(call.args[0])
+        observation_source = self._source_for(call, "explicit-observation")
+        if result_target is None:
+            result_source = self._source_for(call, "discarded-observation-result")
+            display_name = None
+        else:
+            result_source = self._source_for(result_target, "observation-result")
+            display_name = result_target.id
+        result_id = ClassicalBitId(f"{result_source.source_operation_id}:classical-bit")
+        result = ObservationResultValue(result_id, display_name, result_source)
+        self._classical_bits.append(result)
+        self._instructions.append(
+            Observation(
+                LogicalOperationId(f"{observation_source.source_operation_id}:operation"),
+                qubit.id,
+                result.id,
+                self.default_basis,
+                ObservationReason.EXPLICIT,
+                observation_source,
+            )
+        )
+        if result_target is not None:
+            self._observation_bindings[result_target.id] = result
+
+    def _capture_reset(self, call: ast.Call) -> None:
+        if call.keywords or len(call.args) != 1:
+            self._fail(
+                "P105",
+                "reset expects exactly one quantum argument.",
+                call,
+            )
+        qubit = self._bound_qubit(call.args[0])
+        source = self._source_for(call, "reset")
+        self._instructions.append(
+            LogicalResetOperation(
+                LogicalOperationId(f"{source.source_operation_id}:operation"),
+                qubit.id,
+                source,
+            )
+        )
+
     def _parse_angle(self, node: ast.expr) -> SemanticAngle:
         if not isinstance(node, ast.Call) or node.keywords or len(node.args) != 1:
             self._fail(
@@ -910,10 +997,16 @@ class _CaptureState:
                 "Scalar quantum returns must be bound quantum value names.",
                 expression or statement,
             )
-        value = self._bindings.get(expression.id)
+        value = self._binding_for_name(expression.id)
         if value is None:
             self._fail("P106", f"Unknown quantum value `{expression.id}` in return.", expression)
         if expected.kind is ReturnValueKind.QUANTUM_VALUE:
+            if not isinstance(value, (LogicalQubitValue, _QuantumCallResultBinding)):
+                self._fail(
+                    "P110",
+                    "A classical Bit result cannot be returned as Qubit.",
+                    expression,
+                )
             if value.id in self._classical_return_qubit_ids:
                 self._fail(
                     "P110",
@@ -922,6 +1015,8 @@ class _CaptureState:
                 )
             self._quantum_return_qubit_ids.add(value.id)
             return ScalarReturn(ReturnValueRef(ReturnValueKind.QUANTUM_VALUE, value.id))
+        if isinstance(value, ObservationResultValue):
+            return ScalarReturn(ReturnValueRef(ReturnValueKind.CLASSICAL_BIT, value.id))
         if value.id in self._quantum_return_qubit_ids:
             self._fail(
                 "P110",
@@ -952,9 +1047,9 @@ class _CaptureState:
         value: LogicalQubitValue,
         node: ast.AST,
     ) -> None:
-        if name in self._bindings:
+        if self._binding_for_name(name) is not None:
             self._fail("P107", f"Reassignment of `{name}` is not supported.", node)
-        self._bindings[name] = value
+        self._quantum_bindings[name] = value
         self._qubits.append(value)
 
     def _bound_qubit(self, node: ast.expr) -> _BoundQuantumValue:
@@ -964,9 +1059,15 @@ class _CaptureState:
                 "Quantum intrinsic arguments must be bound quantum value names.",
                 node,
             )
-        value = self._bindings.get(node.id)
+        value = self._quantum_bindings.get(node.id)
         if value is None:
             self._fail("P106", f"Unknown quantum value `{node.id}`.", node)
+        if not isinstance(value, (LogicalQubitValue, _QuantumCallResultBinding)):
+            self._fail(
+                "P106",
+                "Quantum intrinsic arguments must be bound quantum value names.",
+                node,
+            )
         return value
 
     def _resolve_call_marker(
@@ -979,7 +1080,7 @@ class _CaptureState:
     ) -> object:
         if not isinstance(function, ast.Name):
             self._fail(code, f"Only named {label} calls are supported.", function)
-        if function.id in self._bindings:
+        if self._binding_for_name(function.id) is not None:
             self._fail(
                 "P104",
                 f"`{function.id}` is locally shadowed and is not an intrinsic.",
@@ -1000,6 +1101,12 @@ class _CaptureState:
 
     def _resolve_global_name(self, name: str) -> object:
         return self.globals.get(name, _MISSING)
+
+    def _binding_for_name(self, name: str) -> _BoundValue | None:
+        quantum_value = self._quantum_bindings.get(name)
+        if quantum_value is not None:
+            return quantum_value
+        return self._observation_bindings.get(name)
 
     def _resolve_global_or_builtin_name(self, name: str) -> object:
         resolved = self._resolve_global_name(name)
@@ -1127,5 +1234,11 @@ def _callable_name(marker: object) -> str:
 def _known_intrinsic_names() -> frozenset[str]:
     return frozenset(
         _callable_name(marker)
-        for marker in tuple(_GATE_MARKERS) + tuple(_ROTATION_MARKERS) + tuple(_ANGLE_MARKERS)
+        for marker in (
+            tuple(_GATE_MARKERS)
+            + tuple(_ROTATION_MARKERS)
+            + tuple(_OBSERVATION_MARKERS)
+            + tuple(_RESET_MARKERS)
+            + tuple(_ANGLE_MARKERS)
+        )
     )

@@ -367,6 +367,31 @@ class LogicalRotationOperation:
 
 
 @dataclass(frozen=True, slots=True)
+class LogicalResetOperation:
+    """Reset the state of one existing logical quantum value to ``|0>``."""
+
+    id: LogicalOperationId
+    qubit_id: LogicalQubitId
+    source: SemanticSourceRef | None = None
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.id, label="logical reset operation ID")
+        require_nonempty_identifier(self.qubit_id, label="logical reset qubit ID")
+        if self.source is not None and not isinstance(self.source, SourceRef):
+            raise ValueError("logical reset source must be SourceRef")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "qubit_id": self.qubit_id,
+            "source": self.source.to_dict() if self.source is not None else None,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
 class Observation:
     """A semantic observation boundary with its own instruction identity."""
 
@@ -510,7 +535,11 @@ class LogicalCallOperation:
 
 
 QuantumInstruction: TypeAlias = (
-    LogicalGateOperation | LogicalRotationOperation | Observation | LogicalCallOperation
+    LogicalGateOperation
+    | LogicalRotationOperation
+    | LogicalResetOperation
+    | Observation
+    | LogicalCallOperation
 )
 
 
@@ -607,6 +636,7 @@ class LogicalProgram:
                 (
                     LogicalGateOperation,
                     LogicalRotationOperation,
+                    LogicalResetOperation,
                     Observation,
                     LogicalCallOperation,
                 ),
@@ -670,6 +700,8 @@ class LogicalProgram:
                 referenced_qubits = instruction.controls + instruction.targets
             elif isinstance(instruction, LogicalRotationOperation):
                 referenced_qubits = (instruction.target,)
+            elif isinstance(instruction, LogicalResetOperation):
+                referenced_qubits = (instruction.qubit_id,)
             elif isinstance(instruction, LogicalCallOperation):
                 for binding in instruction.arguments:
                     if binding.argument_id not in known_quantum_value_ids:

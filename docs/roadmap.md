@@ -20,14 +20,14 @@
 - typed `SemanticAngle` and `LogicalRotationOperation` lowering to existing `RX`, `RY`, and `RZ` IR
 - safe valid-Python `@quantum` AST capture into `LogicalProgram`
 - source-provider boundary with inspected and explicit in-memory source
-- source-derived identities, source ranges, inferred typed returns, and unresolved quantum parameters
+- source-derived identities, source ranges, explicit/inferred typed returns, and unresolved quantum parameters
 - `LogicalModule` call graphs with explicit quantum argument bindings and acyclic validation
 - materialized invocation-aware call expansion with definition and invocation provenance
 - expanded logical lifetime analysis and conservative `expanded-dense-no-reuse-v1` allocation
 - callee-local `Qubit()` instantiation and scalar `Qubit` call-result aliases
 - explicit quantum ownership and release-safety evidence separate from liveness
 - seeded sampled state-vector trajectories with collapse, empirical counts, and one-shot traces
-- sampled IR reset through collapse plus conditional `X`; exact reset rejection with `A203`
+- sampled source/IR reset through collapse plus conditional `X`; exact reset rejection with `A203`
 
 ## Next sequence
 
@@ -39,6 +39,9 @@ The next implementation work must preserve this order:
 4. Add reliability goals and bare-execution estimates.
 5. Add pluggable protection-planning interfaces.
 6. Add encoded-QEC simulation and decoder integration later.
+
+After the noise-channel and density-matrix work establishes a clean execution
+model, return to classical feedback, branching, and conditional gates.
 
 ## Milestone 1 — value, effect, and observation contracts
 
@@ -59,12 +62,12 @@ The next implementation work must preserve this order:
 - run the resulting IR through simulation, trace capture, inspection, joint classical calculation, and quantum return handles
 - use deterministic declaration-order allocation with no reuse or lifetime analysis
 
-## Milestone 3 — decorated Python frontend and inferred observations — complete
+## Milestone 3 — decorated Python frontend and observations — complete
 
 - `@quantum` captures a safe valid-Python subset using Python's AST without calling the function body
-- local `Qubit()` declarations, aliases, typed quantum parameters, and exact marker-identity resolution for `h`, `x`, `z`, `cx`, `rx`, `ry`, and `rz`
+- local `Qubit()` declarations, aliases, typed quantum parameters, and exact marker-identity resolution for `h`, `x`, `z`, `cx`, `rx`, `ry`, `rz`, `observe`, and `reset`
 - `deg`, `rad`, and `turns` rotation literals preserve typed semantic source units
-- Python annotations and return expressions become tagged `ReturnShape` values; terminal `Qubit`-to-`Bit` observations are inferred only for classical leaves
+- Python annotations and return expressions become tagged `ReturnShape` values; ordinary `Qubit`-to-`Bit` returns infer terminal observations while explicit `observe()` captures a named observation result
 - quantum return leaves remain unobserved retained-state handles
 - explicit source-provider contracts preserve absolute ranges and deterministic IDs for inspected files and in-memory buffers
 - unsupported constructs receive source-linked frontend diagnostics; `.ari` loading and native parsing remain deferred
@@ -92,9 +95,25 @@ The next implementation work must preserve this order:
 - expose explicit `SampledExecutionRequest(shots, seed)` rather than inferring execution mode
 - independently initialize each sampled trajectory, collapse sampled measurements, and permit later gates
 - expose sampled outcomes, empirical joint counts, and sampled result classes separately from exact distributions
-- represent IR `RESET` only for sampled trajectory execution; reject exact reset (`A203`)
+- establish sampled-only IR `RESET` execution and reject exact reset (`A203`)
 - retain one sampled trajectory in a trace and reject multi-shot trace capture (`A204`)
 - classify local values as `discard_required` without implementing or authorizing slot reuse
+
+## Milestone 4.6 — explicit source observation and reset — complete
+
+- expose non-executing `observe` and `reset` AST markers through the public SDK
+- bind `result = observe(q)` to one `ObservationResultValue` with
+	`ObservationReason.EXPLICIT`; returning or aliasing that `Bit` never inserts a
+	second observation
+- preserve discarded explicit observations in semantic/readout/trace artifacts
+- lower `LogicalResetOperation` to `RESET` while retaining the same logical value
+	identity and provenance
+- allow reset within composed `None`-returning helpers while keeping callee
+	observations and classical call results unsupported
+- enforce `A202` and `A203` only at exact execution; sampled behavior still
+	requires explicit `SampledExecutionRequest`
+- defer `Bit` branching, feedback, arithmetic, conditional gates, slot reuse, and
+	density-matrix execution
 
 ## Milestone 5 — staged noisy simulation and reliability planning
 

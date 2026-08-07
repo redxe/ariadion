@@ -102,9 +102,12 @@ Each `Operation` contains:
 The current opcodes are `X`, `H`, `Z`, `RX`, `RY`, `RZ`, `CX`, `MEASURE`, and
 `RESET`. `RESET` has exactly one uncontrolled target. It is an explicit
 non-unitary allocated-IR operation intended for backends that can provide a valid
-discard/reset realization. The current Python source API does not expose a public
-`reset()` marker or builder method, and no compiler allocation policy uses reset to
-recycle a logical execution slot.
+discard/reset realization. `@quantum` source code exposes it through `reset(q)`,
+which captures a `LogicalResetOperation` and lowers it to `RESET` with ordinary
+logical-operation provenance. It changes the state of the existing logical value;
+it does not create a replacement `Qubit`. The width-based `Program` compatibility
+builder has no reset method, and no compiler allocation policy uses reset to recycle
+a logical execution slot.
 
 `RX`, `RY`, and `RZ` require a finite `angle_radians` value. Direct IR producers
 can omit `AngleMetadata`, but Daidalon preserves source `source_value` and

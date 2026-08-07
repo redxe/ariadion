@@ -35,6 +35,7 @@ from ariadion_semantics import (
     LogicalGateOperation,
     LogicalModule,
     LogicalProgram,
+    LogicalResetOperation,
     LogicalRotationOperation,
     NoneReturn,
     Observation,
@@ -720,18 +721,8 @@ def _validate(program: Program) -> list[Diagnostic]:
 
 def _validate_logical_lowering(program: LogicalProgram) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
-    has_observation = False
     for index, instruction in enumerate(program.instructions):
         if isinstance(instruction, (LogicalGateOperation, LogicalRotationOperation)):
-            if has_observation:
-                diagnostics.append(
-                    _logical_instruction_diagnostic(
-                        index,
-                        instruction,
-                        "A202",
-                        "exact state-vector execution supports terminal observations only",
-                    )
-                )
             if (
                 isinstance(instruction, LogicalGateOperation)
                 and instruction.opcode not in _LOGICAL_GATE_OPCODE_MAP
@@ -744,6 +735,8 @@ def _validate_logical_lowering(program: LogicalProgram) -> list[Diagnostic]:
                         f"logical gate {instruction.opcode.value!r} has no supported lowering",
                     )
                 )
+        elif isinstance(instruction, LogicalResetOperation):
+            continue
         elif isinstance(instruction, LogicalCallOperation):
             diagnostics.append(
                 _logical_instruction_diagnostic(
@@ -753,8 +746,7 @@ def _validate_logical_lowering(program: LogicalProgram) -> list[Diagnostic]:
                     "logical calls require compilation through compile_logical_module",
                 )
             )
-        else:
-            has_observation = True
+        elif isinstance(instruction, Observation):
             if instruction.basis.name != _Z_BASIS_NAME:
                 diagnostics.append(
                     _logical_instruction_diagnostic(
@@ -765,6 +757,8 @@ def _validate_logical_lowering(program: LogicalProgram) -> list[Diagnostic]:
                         f"received {instruction.basis.name!r}",
                     )
                 )
+        else:  # pragma: no cover - protects future instruction expansion
+            raise RuntimeError(f"unsupported logical instruction: {instruction!r}")
     return diagnostics
 
 
@@ -791,19 +785,9 @@ def _validate_logical_module_lowering(module: LogicalModule) -> list[Diagnostic]
         return diagnostics
 
     expanded = expand_logical_module(module)
-    has_observation = False
     for index, expanded_instruction in enumerate(expanded.instructions):
         instruction = expanded_instruction.instruction
         if isinstance(instruction, (LogicalGateOperation, LogicalRotationOperation)):
-            if has_observation:
-                diagnostics.append(
-                    _logical_instruction_diagnostic(
-                        index,
-                        instruction,
-                        "A202",
-                        "exact state-vector execution supports terminal observations only",
-                    )
-                )
             if (
                 isinstance(instruction, LogicalGateOperation)
                 and instruction.opcode not in _LOGICAL_GATE_OPCODE_MAP
@@ -831,8 +815,9 @@ def _validate_logical_module_lowering(module: LogicalModule) -> list[Diagnostic]
                     )
                 )
             continue
-        has_observation = True
-        if instruction.basis.name != _Z_BASIS_NAME:
+        if isinstance(instruction, LogicalResetOperation):
+            continue
+        if isinstance(instruction, Observation) and instruction.basis.name != _Z_BASIS_NAME:
             diagnostics.append(
                 _logical_instruction_diagnostic(
                     index,
@@ -842,6 +827,8 @@ def _validate_logical_module_lowering(module: LogicalModule) -> list[Diagnostic]
                     f"received {instruction.basis.name!r}",
                 )
             )
+        elif not isinstance(instruction, Observation):  # pragma: no cover
+            raise RuntimeError(f"unsupported expanded logical instruction: {instruction!r}")
     return diagnostics
 
 
@@ -971,7 +958,9 @@ def _lower_expanded_logical_instruction(
 
 
 def _lower_logical_instruction(
-    instruction: LogicalGateOperation | LogicalRotationOperation | Observation,
+    instruction: (
+        LogicalGateOperation | LogicalRotationOperation | LogicalResetOperation | Observation
+    ),
     slots: dict[LogicalQubitId, int],
     *,
     ir_operation_id: IrOperationId | None = None,
@@ -999,6 +988,14 @@ def _lower_logical_instruction(
             instruction.angle.source_value,
             instruction.angle.source_unit.value,
         )
+    elif isinstance(instruction, LogicalResetOperation):
+        opcode = OpCode.RESET
+        targets = (slots[instruction.qubit_id],)
+        controls = ()
+        key = None
+        observation = None
+        angle_radians = None
+        angle_metadata = None
     else:
         opcode = OpCode.MEASURE
         targets = (slots[instruction.qubit_id],)
@@ -1052,7 +1049,11 @@ def _operation_diagnostic(
 def _logical_instruction_diagnostic(
     index: int,
     instruction: (
-        LogicalGateOperation | LogicalRotationOperation | Observation | LogicalCallOperation
+        LogicalGateOperation
+        | LogicalRotationOperation
+        | LogicalResetOperation
+        | Observation
+        | LogicalCallOperation
     ),
     code: str,
     message: str,

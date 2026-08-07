@@ -185,7 +185,7 @@ A small width-based Python builder for the current vertical slice. It records
 already allocated integer-target operations, including explicit degree, radian,
 and turn-based rotation angles. Alongside the builder, the package exposes
 immutable public `Qubit`, `Bit`, `Basis`, `basis`, and non-executing intrinsic
-marker values such as `h`, `cx`, and `rx`. The builder is a compatibility and
+marker values such as `h`, `cx`, `rx`, `observe`, and `reset`. The builder is a compatibility and
 migration mechanism; its next prototype will operate on `Qubit` values instead of
 requiring `Program(width)`.
 
@@ -195,7 +195,8 @@ The safe valid-Python frontend. It reads a decorated Python function through a
 `PythonSourceProvider`, parses its AST, resolves only exact public marker identity,
 and produces immutable `LogicalProgram` values with deterministic source-derived
 identities, ranges, typed returns, inferred terminal observations, unresolved
-`QuantumParameter` inputs, and explicit `LogicalCallOperation` values. Its
+`QuantumParameter` inputs, explicit observation-result bindings, semantic resets,
+and explicit `LogicalCallOperation` values. Its
 `to_logical_module()` traversal captures a resolved acyclic call graph without
 executing any body. Callee parameters bind to caller logical values; calls are not
 textually substituted. Callable callees may declare local `Qubit()` values, and a
@@ -203,7 +204,8 @@ scalar `Qubit` return may bind to one caller assignment name. That name aliases 
 returned quantum value; returning a `Qubit` transfers the same logical quantum
 value across the function boundary and never copies quantum state. Bare calls remain
 `None`-only, while classical or tuple call results and callee observations remain
-unsupported. The frontend has no persistent source-only capture cache, so relevant
+unsupported. `None`-returning callees may reset caller-managed values. The frontend
+has no persistent source-only capture cache, so relevant
 global rebinding cannot reuse stale semantics. It never calls the function body or
 intrinsic markers.
 Its dependencies are limited to `ariadion-core`, `ariadion-language`, and
@@ -214,7 +216,7 @@ Theonoe, CLI, or `ariadion-syntax`.
 
 Immutable pre-allocation contracts for logical quantum values, `LogicalProgram`,
 gate-shaped and typed rotation `QuantumInstruction` values, observations, declared
-`ObservationResultValue` results, tagged recursive return structure, function
+`ObservationResultValue` results, `LogicalResetOperation`, tagged recursive return structure, function
 effects, reliability goals, layered noise profiles, composable simulation requests,
 and protection-plan descriptions. It depends on `ariadion-core` plus shared public
 language angle/basis contracts and contains no allocated integer targets, circuit
@@ -253,7 +255,7 @@ allocation.
 
 Validates resolved quantum programs, creates an explicit deterministic
 `LogicalSlotAllocationPlan` plus `ReadoutPlan`, and lowers current logical gate and
-Z-basis observation instructions plus typed logical rotations to semantic IR.
+Z-basis observation instructions, logical resets, and typed logical rotations to semantic IR.
 `compile_logical_module()` materializes a `LogicalModule` into an immutable
 `ExpandedLogicalProgram`, binds each callee parameter as an alias, instantiates
 each callee-local definition per deterministic call instance, analyzes lifetimes,
@@ -363,6 +365,13 @@ not physical post-measurement state evolution. The explicit sampled path instead
 collapses each trajectory in operation order and can run later gates. It remains
 separate from unsupported classical branching, density-matrix evolution, noise,
 scheduling, and QEC.
+
+Inferred observation handles ordinary classical returns. Explicit `observe()`
+exists when observation timing itself is part of the algorithm. Source `reset(q)`
+changes the state of the existing managed quantum value to $|0\rangle$; it does not
+create a new `Qubit`. Both markers are captured from AST and require an explicit
+`SampledExecutionRequest` for collapse/reset execution; they never cause a hidden
+switch from exact execution.
 
 A function return is a structured semantic artifact, not merely an ordered list of
 identifiers. Classical observation results and returned quantum values may coexist,

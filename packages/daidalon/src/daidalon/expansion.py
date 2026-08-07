@@ -22,6 +22,7 @@ from ariadion_semantics import (
 	LogicalModule,
 	LogicalProgram,
 	LogicalQubitValue,
+	LogicalResetOperation,
 	LogicalRotationOperation,
 	NoneReturn,
 	Observation,
@@ -36,7 +37,9 @@ from ariadion_semantics import (
 )
 
 
-_ExpandedInstruction: TypeAlias = LogicalGateOperation | LogicalRotationOperation | Observation
+_ExpandedInstruction: TypeAlias = (
+	LogicalGateOperation | LogicalRotationOperation | LogicalResetOperation | Observation
+)
 _ResolveValue: TypeAlias = Callable[[LogicalQubitId], LogicalQubitId]
 
 
@@ -145,10 +148,10 @@ class ExpandedLogicalInstruction:
 		require_nonempty_identifier(self.id, label="expanded logical instruction ID")
 		if not isinstance(
 			self.instruction,
-			(LogicalGateOperation, LogicalRotationOperation, Observation),
+			(LogicalGateOperation, LogicalRotationOperation, LogicalResetOperation, Observation),
 		):
 			raise ValueError(
-				"expanded logical instruction must wrap a gate, rotation, or observation"
+				"expanded logical instruction must wrap a gate, rotation, reset, or observation"
 			)
 		if self.instruction.id != self.id:
 			raise ValueError("expanded logical instruction ID must match its instruction ID")
@@ -326,6 +329,8 @@ class ExpandedLogicalProgram:
 				referenced_qubits = instruction.controls + instruction.targets
 			elif isinstance(instruction, LogicalRotationOperation):
 				referenced_qubits = (instruction.target,)
+			elif isinstance(instruction, LogicalResetOperation):
+				referenced_qubits = (instruction.qubit_id,)
 			else:
 				referenced_qubits = (instruction.qubit_id,)
 				observed_qubit_ids.add(instruction.qubit_id)
@@ -822,6 +827,8 @@ def analyze_logical_lifetimes(
 			references = instruction.controls + instruction.targets
 		elif isinstance(instruction, LogicalRotationOperation):
 			references = (instruction.target,)
+		elif isinstance(instruction, LogicalResetOperation):
+			references = (instruction.qubit_id,)
 		else:
 			references = (instruction.qubit_id,)
 		for qubit_id in references:
@@ -957,6 +964,12 @@ def _instantiate_instruction(
 			axis=instruction.axis,
 			target=resolve_value(instruction.target),
 			angle=instruction.angle,
+			source=instruction.source,
+		)
+	if isinstance(instruction, LogicalResetOperation):
+		return LogicalResetOperation(
+			id=expanded_instruction_id,
+			qubit_id=resolve_value(instruction.qubit_id),
 			source=instruction.source,
 		)
 	return Observation(
