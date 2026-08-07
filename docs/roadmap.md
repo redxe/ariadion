@@ -30,15 +30,18 @@
 - sampled source/IR reset through collapse plus conditional `X`; exact reset rejection with `A203`
 - exact density-matrix execution with typed one-qubit Kraus channels, exact reset,
   and physical versus readout-reported distributions
+- explicit simulation backend capabilities, inspectable selection plans, and
+	optional NumPy `complex128` local kernels while preserving reference semantics
 
 ## Next sequence
 
 The next implementation work must preserve this order:
 
 1. Add scheduling and T1/T2 idle decoherence.
-2. Add reliability goals and bare-execution estimates.
-3. Add pluggable protection-planning interfaces.
-4. Add encoded-QEC simulation and decoder integration later.
+2. Add noise-impact explanations.
+3. Add bare reliability estimation.
+4. Add pluggable protection-planning interfaces, then encoded-QEC simulation and
+	decoder integration later.
 
 After the noise-channel and density-matrix work has established a clean execution
 model, return to classical feedback, branching, and conditional gates.
@@ -151,11 +154,33 @@ model, return to classical feedback, branching, and conditional gates.
 - defer two-qubit noise, timing/T1/T2 execution, calibration ingestion, sampling,
 	  feedback, leakage, correlations, QEC, and slot reuse
 
+## Milestone 4.9 — backend capabilities and optional NumPy kernels — complete
+
+- define array-free `StateRepresentation`, `SimulationQuery`,
+	`SimulationCapabilities`, `SimulationBackend`, and `SimulationPlan` contracts
+	in `ariadion-simulator`
+- retain current engines as explicit `reference-state-vector`,
+	`reference-sampled-trajectory`, and `reference-density-matrix` wrappers rather
+	than changing runtime's default reference behavior
+- record `PERMUTATION`, `DIAGONAL`, `LOCAL_DENSE`,
+	`CONTROLLED_PERMUTATION`, and `KRAUS_CHANNEL` operator metadata as inspectable
+	local-kernel evidence
+- validate exact density results as positive semidefinite within an explicit
+	tolerance, in addition to existing Hermiticity and trace-one invariants
+- add the separately installable `ariadion-simulator-numpy` CPU implementation
+	using `complex128`, local/tensor transformations, indexed permutations, and
+	local Kraus/reset maps without global gate matrices or superoperators
+- keep NumPy selection explicit; defer automatic selection, JIT/GPU frameworks,
+	stabilizer/tensor-network/distributed implementations, gate fusion, mixed
+	precision, scheduling, and T1/T2 execution
+- add reference/NumPy parity coverage and manual non-CI kernel benchmarks
+
 ## Milestone 5 — scheduling and reliability planning
 
 - schedule operations and model T1/T2 idle decoherence
+- explain the modeled noise impact in execution artifacts
 - define leakage, correlation, and device-profile ingestion contracts
-- estimate bare-execution failure against reliability goals
+- estimate bare-execution reliability against explicit goals
 - add pluggable protection-planning interfaces and Pareto resource reporting
 - add encoded-QEC simulation and decoder integration only after these earlier slices
 

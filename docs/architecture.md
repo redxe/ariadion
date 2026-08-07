@@ -336,6 +336,59 @@ $\rho \mapsto \operatorname{Tr}_q(\rho) \otimes |0\rangle\langle0|_q$ (with
 the target tensor placement chosen by the backend). It is not a unitary and can
 destroy correlations between the reset target and live values.
 
+### Simulation backend capability and kernel boundary
+
+**Ariadion owns quantum semantics and execution planning; numerical kernels are
+replaceable realizations.** `ariadion-simulator` defines array-free
+`StateRepresentation`, `SimulationQuery`, `SimulationCapabilities`,
+`SimulationBackend`, and `SimulationPlan` contracts. The representation enum is
+an execution capability contract and intentionally does not expand the separate,
+amplitude-only runtime trace schema.
+
+```text
+Simulation intent
+    ↓
+capability/planning layer
+    ↓
+reference | NumPy | Numba | GPU | stabilizer | tensor network | distributed
+```
+
+The capability/planning layer records a caller-selected backend in an immutable
+`SimulationPlan`; it does not select NumPy, an accelerator, or any other backend
+automatically. Current reference wrappers are explicitly named
+`reference-state-vector`, `reference-sampled-trajectory`, and
+`reference-density-matrix`, and they retain the existing tuple-based reference
+engines as correctness oracles. Runtime's public `run()` behavior remains on those
+reference paths until a later, explicitly designed runtime-selection policy exists.
+
+`ariadion-simulator-numpy` is a separate optional package, so the reference
+package remains NumPy-free. Its CPU backends use `complex128` and return existing
+immutable `SimulationResult` and `DensityMatrixResult` contracts rather than
+leaking arrays. State-vector `X` and `CX` use indexed permutations, `Z` and `RZ`
+use diagonal multiplies, and `H`/`RX`/`RY` use local tensor-axis transforms. Its
+density kernels apply local $U\rho U^\dagger$ and Kraus maps, row/column
+permutations for `CX`, and exact reset without constructing a full-system gate
+matrix or superoperator.
+
+`KernelMetadata` exposes the relevant operator structure independently of a
+framework: `PERMUTATION`, `DIAGONAL`, `LOCAL_DENSE`,
+`CONTROLLED_PERMUTATION`, and `KRAUS_CHANNEL`. This makes a backend's local-kernel
+choice inspectable without changing IR syntax or committing the planner to a
+specific numerical library.
+
+Exact density results validate Hermiticity, trace one, and positive
+semidefiniteness. The explicit absolute positivity tolerance is
+`DENSITY_MATRIX_POSITIVITY_ABS_TOLERANCE = 1e-12`; a diagonal-pivoted Cholesky
+check rejects materially negative eigenvalue evidence while accepting numerical
+error at or below that tolerance.
+
+**Reference backends optimize for transparency and correctness. Performance
+backends may use vectorization, JIT compilation, GPUs, tensor networks,
+stabilizers, or distributed execution while preserving the same semantic
+contract.** None of those later realizations changes whether a request is exact,
+sampled, noisy, or approximate; that semantic mode stays explicit in the request
+and plan.
+
 ### `theonoe`
 
 Builds inspectable snapshots: basis probabilities, amplitudes, phase, reduced

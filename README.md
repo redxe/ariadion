@@ -181,6 +181,21 @@ Exact density observations remain terminal. Density execution supports exact res
 including entangled targets, but currently rejects enabled amplitude trace capture
 with `A205` rather than fabricating state-vector snapshots.
 
+## Explicit simulation backends
+
+The default `run()` path remains the transparent reference simulator. Internally,
+the reference state-vector, sampled trajectory, and density-matrix engines are
+available through explicit capability-backed selections with inspectable plans;
+there is no automatic performance-backend selection. The optional
+`ariadion-simulator-numpy` package adds caller-selected NumPy CPU `complex128`
+kernels while preserving tuple-based Ariadion results and the same exact/noisy
+semantics. It does not make NumPy a dependency of the reference package.
+
+The manual, non-CI [simulation-kernel benchmark](benchmarks/simulation_kernels.py)
+compares explicitly selected reference and optional NumPy backends. It reports wall
+time, modeled state bytes, and Python allocation peaks, but intentionally makes no
+speedup assertion.
+
 Captured quantum functions can now compose through explicit logical bindings:
 
 ```python

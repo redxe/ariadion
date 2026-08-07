@@ -22,8 +22,12 @@ from ariadion_noise import (
     validate_quantum_channel,
 )
 
-
 DENSITY_MATRIX_ABS_TOLERANCE: Final = 1e-12
+"""Absolute tolerance for Hermiticity and trace-one validation."""
+
+DENSITY_MATRIX_POSITIVITY_ABS_TOLERANCE: Final = 1e-12
+"""Allowed absolute negative pivot error when validating positive semidefiniteness."""
+
 DensityMatrix: TypeAlias = tuple[tuple[complex, ...], ...]
 
 _ONE_QUBIT_GATE_BY_OPCODE = {
@@ -346,7 +350,9 @@ def _validate_density_matrix(
         raise DensityMatrixInvariantError("density matrix dimension must equal 2**qubit_count")
     for row in density_matrix:
         if not isinstance(row, tuple | list) or len(row) != dimension:
-            raise DensityMatrixInvariantError("density matrix must be square with dimension 2**qubit_count")
+            raise DensityMatrixInvariantError(
+                "density matrix must be square with dimension 2**qubit_count"
+            )
         for value in row:
             if not isinstance(value, complex) or not (
                 isfinite(value.real) and isfinite(value.imag)
@@ -369,17 +375,81 @@ def _validate_density_matrix(
             ):
                 raise DensityMatrixInvariantError("density matrix must be Hermitian")
     trace = sum(density_matrix[index][index] for index in range(dimension))
-    if not isclose(trace.real, 1.0, rel_tol=0.0, abs_tol=DENSITY_MATRIX_ABS_TOLERANCE) or not isclose(
+    if not isclose(
+        trace.real,
+        1.0,
+        rel_tol=0.0,
+        abs_tol=DENSITY_MATRIX_ABS_TOLERANCE,
+    ) or not isclose(
         trace.imag,
         0.0,
         rel_tol=0.0,
         abs_tol=DENSITY_MATRIX_ABS_TOLERANCE,
     ):
         raise DensityMatrixInvariantError("density matrix trace must equal one")
+    _validate_positive_semidefinite(density_matrix, dimension=dimension)
+
+
+def _validate_positive_semidefinite(
+    density_matrix: DensityMatrix | list[list[complex]],
+    *,
+    dimension: int,
+) -> None:
+    """Validate $\rho \succeq 0$ using diagonal-pivoted Cholesky elimination.
+
+    A Hermitian positive semidefinite matrix has no materially negative pivot in
+    this decomposition. Diagonal pivoting makes the check robust for semidefinite
+    matrices; a near-zero pivot may only have near-zero remaining couplings.
+    """
+
+    remaining = [
+        [complex(density_matrix[row][column]) for column in range(dimension)]
+        for row in range(dimension)
+    ]
+    tolerance = DENSITY_MATRIX_POSITIVITY_ABS_TOLERANCE
+
+    for pivot_index in range(dimension):
+        pivot_row = max(
+            range(pivot_index, dimension),
+            key=lambda index: remaining[index][index].real,
+        )
+        if pivot_row != pivot_index:
+            remaining[pivot_index], remaining[pivot_row] = (
+                remaining[pivot_row],
+                remaining[pivot_index],
+            )
+            for row in range(dimension):
+                remaining[row][pivot_index], remaining[row][pivot_row] = (
+                    remaining[row][pivot_row],
+                    remaining[row][pivot_index],
+                )
+
+        pivot = remaining[pivot_index][pivot_index].real
+        if pivot < -tolerance:
+            raise DensityMatrixInvariantError(
+                "density matrix must be positive semidefinite within "
+                f"{DENSITY_MATRIX_POSITIVITY_ABS_TOLERANCE}"
+            )
+        if pivot <= tolerance:
+            if any(
+                abs(remaining[row][pivot_index]) > tolerance
+                for row in range(pivot_index + 1, dimension)
+            ):
+                raise DensityMatrixInvariantError(
+                    "density matrix must be positive semidefinite within "
+                    f"{DENSITY_MATRIX_POSITIVITY_ABS_TOLERANCE}"
+                )
+            continue
+
+        for row in range(pivot_index + 1, dimension):
+            factor = remaining[row][pivot_index] / pivot
+            for column in range(pivot_index + 1, dimension):
+                remaining[row][column] -= factor * remaining[pivot_index][column]
 
 
 __all__ = [
     "DENSITY_MATRIX_ABS_TOLERANCE",
+    "DENSITY_MATRIX_POSITIVITY_ABS_TOLERANCE",
     "DensityMatrix",
     "DensityMatrixExecutionRequest",
     "DensityMatrixInvariantError",

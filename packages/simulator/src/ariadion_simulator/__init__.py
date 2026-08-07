@@ -1,5 +1,16 @@
+from .backend import (
+	BackendExecution,
+	SimulationBackend,
+	SimulationCapabilities,
+	SimulationPlan,
+	SimulationQuery,
+	StateRepresentation,
+	build_simulation_plan,
+	execute_with_backend,
+)
 from .density_matrix import (
 	DENSITY_MATRIX_ABS_TOLERANCE,
+	DENSITY_MATRIX_POSITIVITY_ABS_TOLERANCE,
 	DensityMatrix,
 	DensityMatrixExecutionRequest,
 	DensityMatrixInvariantError,
@@ -8,15 +19,21 @@ from .density_matrix import (
 	measurement_probabilities,
 	simulate_density_matrix,
 )
+from .kernels import KernelMetadata, OperatorStructure, kernel_metadata_for_operation
+from .reference_backends import (
+	ReferenceDensityMatrixBackend,
+	ReferenceSampledTrajectoryBackend,
+	ReferenceStateVectorBackend,
+)
 from .statevector import (
 	EXPECTED_STATE_VECTOR_NORM,
+	STATE_VECTOR_NORM_ABS_TOLERANCE,
 	ExactResetUnsupportedError,
 	ExactTerminalObservationError,
 	SampledExecutionRequest,
 	SampledSimulationResult,
 	SampledSimulationShot,
 	SampledTraceShotCountError,
-	STATE_VECTOR_NORM_ABS_TOLERANCE,
 	SimulationExecution,
 	SimulationMeasurementOutcome,
 	SimulationNormError,
@@ -29,7 +46,9 @@ from .statevector import (
 )
 
 __all__ = [
+	"BackendExecution",
 	"DENSITY_MATRIX_ABS_TOLERANCE",
+	"DENSITY_MATRIX_POSITIVITY_ABS_TOLERANCE",
 	"DensityMatrix",
 	"DensityMatrixExecutionRequest",
 	"DensityMatrixInvariantError",
@@ -54,4 +73,17 @@ __all__ = [
 	"measurement_probabilities",
 	"simulate",
 	"simulate_density_matrix",
+	"KernelMetadata",
+	"OperatorStructure",
+	"ReferenceDensityMatrixBackend",
+	"ReferenceSampledTrajectoryBackend",
+	"ReferenceStateVectorBackend",
+	"SimulationBackend",
+	"SimulationCapabilities",
+	"SimulationPlan",
+	"SimulationQuery",
+	"StateRepresentation",
+	"build_simulation_plan",
+	"execute_with_backend",
+	"kernel_metadata_for_operation",
 ]

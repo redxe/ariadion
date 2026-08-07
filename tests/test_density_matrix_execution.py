@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from math import pi
 import unittest
+from math import pi
 
 from ariadion import Bit, Qubit, observe, quantum, run, x
 from ariadion_core import IrOperationId, ProgramId
@@ -27,6 +27,7 @@ from ariadion_runtime import (
 )
 from ariadion_semantics import EvolutionModel, NoiseFeature, NoiseModelOrigin, SimulationRequest
 from ariadion_simulator import (
+    DENSITY_MATRIX_POSITIVITY_ABS_TOLERANCE,
     DensityMatrixExecutionRequest,
     DensityMatrixInvariantError,
     DensityMatrixResult,
@@ -84,7 +85,9 @@ def _circuit(name: str, width: int, *operations: Operation) -> CircuitIR:
 
 
 class _InvalidKrausChannel(QuantumChannel):
-    def kraus_operators(self) -> tuple[tuple[tuple[complex, complex], tuple[complex, complex]], ...]:
+    def kraus_operators(
+        self,
+    ) -> tuple[tuple[tuple[complex, complex], tuple[complex, complex]], ...]:
         return (((2 + 0j, 0j), (0j, 2 + 0j)),)
 
     def to_dict(self) -> dict[str, object]:
@@ -108,6 +111,37 @@ class DensityMatrixExecutionTests(unittest.TestCase):
             )
         with self.assertRaises(DensityMatrixInvariantError):
             DensityMatrixResult(circuit, ((2 + 0j, 0j), (0j, 0j)))
+
+    def test_density_result_rejects_materially_negative_eigenvalues(self) -> None:
+        circuit = _circuit("nonphysical", 1)
+
+        with self.assertRaisesRegex(DensityMatrixInvariantError, "positive semidefinite"):
+            DensityMatrixResult(
+                circuit,
+                ((0.5 + 0j, 0.6 + 0j), (0.6 + 0j, 0.5 + 0j)),
+            )
+
+        tolerance_scale = DENSITY_MATRIX_POSITIVITY_ABS_TOLERANCE / 2
+        accepted = DensityMatrixResult(
+            circuit,
+            ((1 + tolerance_scale + 0j, 0j), (0j, -tolerance_scale + 0j)),
+        )
+        self.assertEqual(accepted.circuit, circuit)
+
+    def test_density_result_accepts_valid_pure_and_mixed_states(self) -> None:
+        circuit = _circuit("physical", 1)
+
+        pure = DensityMatrixResult(
+            circuit,
+            ((0.5 + 0j, 0.5 + 0j), (0.5 + 0j, 0.5 + 0j)),
+        )
+        mixed = DensityMatrixResult(
+            circuit,
+            ((0.5 + 0j, 0j), (0j, 0.5 + 0j)),
+        )
+
+        self.assertEqual(pure.probabilities, (0.5, 0.5))
+        self.assertEqual(mixed.probabilities, (0.5, 0.5))
 
     def test_all_supported_ideal_single_qubit_gates_evolve_density(self) -> None:
         cases = (
