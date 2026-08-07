@@ -14,7 +14,7 @@ from __future__ import annotations
 from math import isclose, isfinite
 
 from ariadion_core import IrOperationId, ProgramId, canonical_json, require_nonempty_identifier
-from ariadion_ir import CircuitIR
+from ariadion_ir import CircuitIR, OpCode, Operation
 
 
 class MissingOperationTimingError(ValueError):
@@ -229,7 +229,10 @@ class ExecutionSchedule:
     def __init__(
         self,
         program_id: ProgramId,
-        operation_fingerprint: tuple[tuple[IrOperationId, str, tuple[int, ...], tuple[int, ...]], ...],
+        operation_fingerprint: tuple[
+            tuple[IrOperationId, str, tuple[int, ...], tuple[int, ...], float | None],
+            ...,
+        ],
         scheduled_operations: tuple[ScheduledOperation, ...],
         idle_intervals: tuple[IdleInterval, ...],
         peak_duration_ns: float,
@@ -242,7 +245,7 @@ class ExecutionSchedule:
         for item in operation_fingerprint:
             if (
                 not isinstance(item, tuple)
-                or len(item) != 4
+                or len(item) != 5
                 or not isinstance(item[0], str)
                 or not isinstance(item[1], str)
                 or not isinstance(item[2], tuple)
@@ -250,7 +253,7 @@ class ExecutionSchedule:
             ):
                 raise SchedulingInvariantError(
                     "execution schedule operation_fingerprint must contain "
-                    "(operation_id, opcode, targets, controls) tuples"
+                    "(operation_id, opcode, targets, controls, angle_radians) tuples"
                 )
             if not all(isinstance(target, int) and target >= 0 for target in item[2]):
                 raise SchedulingInvariantError(
@@ -261,6 +264,16 @@ class ExecutionSchedule:
                 raise SchedulingInvariantError(
                     "execution schedule operation_fingerprint controls must be "
                     "non-negative integers"
+                )
+            angle_radians = item[4]
+            if angle_radians is not None and (
+                isinstance(angle_radians, bool)
+                or not isinstance(angle_radians, (int, float))
+                or not isfinite(float(angle_radians))
+            ):
+                raise SchedulingInvariantError(
+                    "execution schedule operation_fingerprint angle_radians must be "
+                    "None or a finite number"
                 )
         if not isinstance(scheduled_operations, tuple):
             raise SchedulingInvariantError(
@@ -399,8 +412,9 @@ class ExecutionSchedule:
                     "opcode": opcode,
                     "targets": list(targets),
                     "controls": list(controls),
+                    "angle_radians": angle_radians,
                 }
-                for operation_id, opcode, targets, controls in self.operation_fingerprint
+                for operation_id, opcode, targets, controls, angle_radians in self.operation_fingerprint
             ],
             "scheduled_operations": [op.to_dict() for op in self.scheduled_operations],
             "idle_intervals": [ii.to_dict() for ii in self.idle_intervals],
@@ -440,12 +454,7 @@ def schedule_asap(
 
     scheduled_operations: list[ScheduledOperation] = []
     operation_fingerprint = tuple(
-        (
-            operation.id,
-            operation.opcode.value,
-            tuple(operation.targets),
-            tuple(operation.controls),
-        )
+        _operation_fingerprint_entry(operation)
         for operation in circuit.operations
     )
 
@@ -554,12 +563,7 @@ def validate_schedule_for_circuit(circuit: CircuitIR, schedule: ExecutionSchedul
         )
 
     expected_fingerprint = tuple(
-        (
-            operation.id,
-            operation.opcode.value,
-            tuple(operation.targets),
-            tuple(operation.controls),
-        )
+        _operation_fingerprint_entry(operation)
         for operation in circuit.operations
     )
     if schedule.operation_fingerprint != expected_fingerprint:
@@ -586,10 +590,9 @@ def validate_schedule_for_circuit(circuit: CircuitIR, schedule: ExecutionSchedul
                 "execution schedule operation timing is not a valid deterministic ASAP "
                 "realization of this circuit"
             )
-    if schedule.peak_duration_ns + 1e-12 < expected_asap.peak_duration_ns:
+    if not isclose(schedule.peak_duration_ns, expected_asap.peak_duration_ns, rel_tol=0.0, abs_tol=1e-12):
         raise ScheduleCircuitBindingError(
-            "execution schedule peak_duration_ns cannot be shorter than deterministic "
-            "ASAP evidence"
+            "execution schedule peak_duration_ns must match deterministic ASAP evidence"
         )
 
     operation_slot_map = {
@@ -642,6 +645,22 @@ def _normalize_idle_intervals(
             (interval.slot, interval.start_ns, interval.end_ns)
             for interval in idle_intervals
         )
+    )
+
+
+def _operation_fingerprint_entry(
+    operation: Operation,
+) -> tuple[IrOperationId, str, tuple[int, ...], tuple[int, ...], float | None]:
+    opcode = operation.opcode
+    angle_radians: float | None = None
+    if opcode in {OpCode.RX, OpCode.RY, OpCode.RZ}:
+        angle_radians = operation.angle_radians
+    return (
+        operation.id,
+        opcode.value,
+        tuple(operation.targets),
+        tuple(operation.controls),
+        angle_radians,
     )
 
 

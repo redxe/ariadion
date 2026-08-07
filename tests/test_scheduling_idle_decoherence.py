@@ -32,6 +32,7 @@ from ariadion_simulator import (
     SimulationQuery,
     StateRepresentation,
     idle_decoherence_channels_for_duration,
+    measurement_probabilities,
     schedule_asap,
     simulate_density_matrix,
     validate_density_matrix,
@@ -66,13 +67,16 @@ def _circuit(
     return CircuitIR(pid, name, width, tuple(operations))
 
 
-def _fingerprint_for(circuit: CircuitIR) -> tuple[tuple[IrOperationId, str, tuple[int, ...], tuple[int, ...]], ...]:
+def _fingerprint_for(
+    circuit: CircuitIR,
+) -> tuple[tuple[IrOperationId, str, tuple[int, ...], tuple[int, ...], float | None], ...]:
     return tuple(
         (
             operation.id,
             operation.opcode.value,
             tuple(operation.targets),
             tuple(operation.controls),
+            operation.angle_radians if operation.opcode in {OpCode.RX, OpCode.RY, OpCode.RZ} else None,
         )
         for operation in circuit.operations
     )
@@ -128,8 +132,8 @@ class SchedulingContractTests(unittest.TestCase):
             ExecutionSchedule(
                 program_id=ProgramId("sched:x"),
                 operation_fingerprint=(
-                    (IrOperationId("sched:a"), "x", (0,), ()),
-                    (IrOperationId("sched:a"), "x", (1,), ()),
+                    (IrOperationId("sched:a"), "x", (0,), (), None),
+                    (IrOperationId("sched:a"), "x", (1,), (), None),
                 ),
                 scheduled_operations=(
                     ScheduledOperation(IrOperationId("sched:a"), 0.0, 10.0),
@@ -228,7 +232,7 @@ class ScheduleIntegrityTests(unittest.TestCase):
         circuit = _circuit("missing-op", 1, h, x)
         schedule = ExecutionSchedule(
             program_id=circuit.id,
-            operation_fingerprint=((h.id, h.opcode.value, h.targets, h.controls),),
+            operation_fingerprint=((h.id, h.opcode.value, h.targets, h.controls, None),),
             scheduled_operations=(ScheduledOperation(h.id, 0.0, 10.0),),
             idle_intervals=(IdleInterval(slot=0, start_ns=10.0, end_ns=20.0),),
             peak_duration_ns=20.0,
@@ -244,8 +248,8 @@ class ScheduleIntegrityTests(unittest.TestCase):
         schedule = ExecutionSchedule(
             program_id=circuit.id,
             operation_fingerprint=(
-                (h.id, h.opcode.value, h.targets, h.controls),
-                (extra_id, OpCode.X.value, (0,), ()),
+                (h.id, h.opcode.value, h.targets, h.controls, None),
+                (extra_id, OpCode.X.value, (0,), (), None),
             ),
             scheduled_operations=(
                 ScheduledOperation(h.id, 0.0, 10.0),
@@ -351,11 +355,102 @@ class ScheduleIntegrityTests(unittest.TestCase):
         with self.assertRaisesRegex(SchedulingInvariantError, "peak_duration_ns"):
             ExecutionSchedule(
                 program_id=circuit.id,
-                operation_fingerprint=((h.id, h.opcode.value, h.targets, h.controls),),
+                operation_fingerprint=((h.id, h.opcode.value, h.targets, h.controls, None),),
                 scheduled_operations=(ScheduledOperation(h.id, 0.0, 10.0),),
                 idle_intervals=(),
                 peak_duration_ns=9.0,
             )
+
+    def test_rejects_same_ids_changed_rx_angle(self) -> None:
+        rx = _op(OpCode.RX, 0, "rx", angle_radians=0.1)
+        original = _circuit("rx-angle", 1, rx, program_id="sched:rot-angle")
+        schedule = _execution_schedule_for(original)
+
+        changed = _circuit(
+            "rx-angle",
+            1,
+            _op(OpCode.RX, 0, "rx", angle_radians=0.2),
+            program_id="sched:rot-angle",
+        )
+        request = DensityMatrixExecutionRequest(
+            schedule=schedule,
+            idle_decoherence=IdleDecoherenceProfile(t1_ns=1000.0),
+        )
+        with self.assertRaisesRegex(ScheduleCircuitBindingError, "operation fingerprint"):
+            simulate_density_matrix(changed, execution=request)
+
+    def test_rejects_same_ids_changed_ry_angle(self) -> None:
+        ry = _op(OpCode.RY, 0, "ry", angle_radians=0.3)
+        original = _circuit("ry-angle", 1, ry, program_id="sched:rot-angle")
+        schedule = _execution_schedule_for(original)
+
+        changed = _circuit(
+            "ry-angle",
+            1,
+            _op(OpCode.RY, 0, "ry", angle_radians=0.4),
+            program_id="sched:rot-angle",
+        )
+        request = DensityMatrixExecutionRequest(
+            schedule=schedule,
+            idle_decoherence=IdleDecoherenceProfile(t1_ns=1000.0),
+        )
+        with self.assertRaisesRegex(ScheduleCircuitBindingError, "operation fingerprint"):
+            simulate_density_matrix(changed, execution=request)
+
+    def test_rejects_same_ids_changed_rz_angle(self) -> None:
+        rz = _op(OpCode.RZ, 0, "rz", angle_radians=0.5)
+        original = _circuit("rz-angle", 1, rz, program_id="sched:rot-angle")
+        schedule = _execution_schedule_for(original)
+
+        changed = _circuit(
+            "rz-angle",
+            1,
+            _op(OpCode.RZ, 0, "rz", angle_radians=0.6),
+            program_id="sched:rot-angle",
+        )
+        request = DensityMatrixExecutionRequest(
+            schedule=schedule,
+            idle_decoherence=IdleDecoherenceProfile(t1_ns=1000.0),
+        )
+        with self.assertRaisesRegex(ScheduleCircuitBindingError, "operation fingerprint"):
+            simulate_density_matrix(changed, execution=request)
+
+    def test_rejects_increased_peak_even_with_matching_trailing_idle(self) -> None:
+        x = _op(OpCode.X, 0, "x")
+        h = _op(OpCode.H, 1, "h")
+        circuit = _circuit("peak-increased", 2, x, h)
+        schedule = schedule_asap(circuit, {x.id: 10.0, h.id: 20.0})
+        stretched_peak = schedule.peak_duration_ns + 50.0
+        stretched = ExecutionSchedule(
+            program_id=schedule.program_id,
+            operation_fingerprint=schedule.operation_fingerprint,
+            scheduled_operations=schedule.scheduled_operations,
+            idle_intervals=(
+                *schedule.idle_intervals,
+                IdleInterval(slot=0, start_ns=schedule.peak_duration_ns, end_ns=stretched_peak),
+                IdleInterval(slot=1, start_ns=schedule.peak_duration_ns, end_ns=stretched_peak),
+            ),
+            peak_duration_ns=stretched_peak,
+        )
+        request = DensityMatrixExecutionRequest(
+            schedule=stretched,
+            idle_decoherence=IdleDecoherenceProfile(t1_ns=1000.0),
+        )
+        with self.assertRaisesRegex(ScheduleCircuitBindingError, "peak_duration_ns"):
+            simulate_density_matrix(circuit, execution=request)
+
+    def test_accepts_unchanged_rotation_schedule(self) -> None:
+        rx = _op(OpCode.RX, 0, "rx", angle_radians=0.25)
+        circuit = _circuit("rotation-ok", 1, rx)
+        schedule = schedule_asap(circuit, {rx.id: 10.0})
+        result = simulate_density_matrix(
+            circuit,
+            execution=DensityMatrixExecutionRequest(
+                schedule=schedule,
+                idle_decoherence=IdleDecoherenceProfile(t2_ns=800.0),
+            ),
+        )
+        self.assertEqual(len(result.density_matrix), 2)
 
 
 class IdleDecoherenceChannelTests(unittest.TestCase):
@@ -442,19 +537,11 @@ class IdleDecoherenceChannelTests(unittest.TestCase):
 
 class PhysicalDensityEffectsTests(unittest.TestCase):
     def test_population_relaxation(self) -> None:
-        t = 200.0
         t1 = 1000.0
         x = _op(OpCode.X, 0, "x")
-        circuit = _circuit("t1-relax", 1, x)
-        base = _execution_schedule_for(circuit, duration_ns=5.0)
-        peak = 5.0 + t
-        schedule = ExecutionSchedule(
-            program_id=base.program_id,
-            operation_fingerprint=base.operation_fingerprint,
-            scheduled_operations=base.scheduled_operations,
-            idle_intervals=(IdleInterval(slot=0, start_ns=5.0, end_ns=peak),),
-            peak_duration_ns=peak,
-        )
+        h_other = _op(OpCode.H, 1, "h-other")
+        circuit = _circuit("t1-relax", 2, x, h_other)
+        schedule = schedule_asap(circuit, {x.id: 5.0, h_other.id: 205.0})
         result = simulate_density_matrix(
             circuit,
             execution=DensityMatrixExecutionRequest(
@@ -462,24 +549,18 @@ class PhysicalDensityEffectsTests(unittest.TestCase):
                 idle_decoherence=IdleDecoherenceProfile(t1_ns=t1),
             ),
         )
+        t = schedule.peak_duration_ns - 5.0
         gamma1 = 1.0 - exp(-t / t1)
-        self.assertAlmostEqual(result.density_matrix[0][0].real, gamma1, places=10)
-        self.assertAlmostEqual(result.density_matrix[1][1].real, 1.0 - gamma1, places=10)
+        probabilities_q0 = measurement_probabilities(result.density_matrix, (0,))
+        self.assertAlmostEqual(probabilities_q0[0], gamma1, places=10)
+        self.assertAlmostEqual(probabilities_q0[1], 1.0 - gamma1, places=10)
 
     def test_coherence_loss_without_population_change(self) -> None:
-        t = 100.0
         t2 = 500.0
         h = _op(OpCode.H, 0, "h")
-        circuit = _circuit("t2-loss", 1, h)
-        base = _execution_schedule_for(circuit, duration_ns=5.0)
-        peak = 5.0 + t
-        schedule = ExecutionSchedule(
-            program_id=base.program_id,
-            operation_fingerprint=base.operation_fingerprint,
-            scheduled_operations=base.scheduled_operations,
-            idle_intervals=(IdleInterval(slot=0, start_ns=5.0, end_ns=peak),),
-            peak_duration_ns=peak,
-        )
+        x_other = _op(OpCode.X, 1, "x-other")
+        circuit = _circuit("t2-loss", 2, h, x_other)
+        schedule = schedule_asap(circuit, {h.id: 5.0, x_other.id: 105.0})
         result = simulate_density_matrix(
             circuit,
             execution=DensityMatrixExecutionRequest(
@@ -487,37 +568,39 @@ class PhysicalDensityEffectsTests(unittest.TestCase):
                 idle_decoherence=IdleDecoherenceProfile(t2_ns=t2),
             ),
         )
+        t = schedule.peak_duration_ns - 5.0
         expected = 0.5 * exp(-t / t2)
-        self.assertAlmostEqual(result.density_matrix[0][0].real, 0.5, places=10)
-        self.assertAlmostEqual(result.density_matrix[1][1].real, 0.5, places=10)
-        self.assertAlmostEqual(result.density_matrix[0][1].real, expected, places=10)
+        probabilities_q0 = measurement_probabilities(result.density_matrix, (0,))
+        self.assertAlmostEqual(probabilities_q0[0], 0.5, places=10)
+        self.assertAlmostEqual(probabilities_q0[1], 0.5, places=10)
+        reduced_coherence_q0 = result.density_matrix[0][1] + result.density_matrix[2][3]
+        self.assertAlmostEqual(reduced_coherence_q0.real, expected, places=10)
 
     def test_bell_state_degradation(self) -> None:
         h = _op(OpCode.H, 0, "h")
         cx = _op(OpCode.CX, 1, "cx", control=0)
-        circuit = _circuit("bell", 2, h, cx)
-        schedule = schedule_asap(circuit, {h.id: 20.0, cx.id: 50.0})
-        peak = schedule.peak_duration_ns + 200.0
-        extended = ExecutionSchedule(
-            program_id=schedule.program_id,
-            operation_fingerprint=schedule.operation_fingerprint,
-            scheduled_operations=schedule.scheduled_operations,
-            idle_intervals=(
-                *schedule.idle_intervals,
-                IdleInterval(slot=0, start_ns=schedule.peak_duration_ns, end_ns=peak),
-                IdleInterval(slot=1, start_ns=schedule.peak_duration_ns, end_ns=peak),
-            ),
-            peak_duration_ns=peak,
-        )
+        x2 = _op(OpCode.X, 2, "x2")
+        circuit = _circuit("bell", 3, h, cx, x2)
+        schedule = schedule_asap(circuit, {h.id: 20.0, cx.id: 50.0, x2.id: 270.0})
         noisy = simulate_density_matrix(
             circuit,
             execution=DensityMatrixExecutionRequest(
-                schedule=extended,
+                schedule=schedule,
                 idle_decoherence=IdleDecoherenceProfile(t1_ns=2000.0),
             ),
         )
         ideal = simulate_density_matrix(circuit)
-        self.assertGreater(abs(ideal.density_matrix[0][3]), abs(noisy.density_matrix[0][3]))
+        purity_ideal = sum(
+            value.real * value.real + value.imag * value.imag
+            for row in ideal.density_matrix
+            for value in row
+        )
+        purity_noisy = sum(
+            value.real * value.real + value.imag * value.imag
+            for row in noisy.density_matrix
+            for value in row
+        )
+        self.assertGreater(purity_ideal, purity_noisy)
 
 
 class ReferenceNumpyParityTests(unittest.TestCase):
@@ -530,18 +613,11 @@ class ReferenceNumpyParityTests(unittest.TestCase):
     def test_reference_numpy_parity_t1(self) -> None:
         h = _op(OpCode.H, 0, "h")
         x = _op(OpCode.X, 0, "x")
-        circuit = _circuit("parity-t1", 1, h, x)
-        schedule = schedule_asap(circuit, {h.id: 10.0, x.id: 10.0})
-        peak = schedule.peak_duration_ns + 50.0
-        extended = ExecutionSchedule(
-            program_id=schedule.program_id,
-            operation_fingerprint=schedule.operation_fingerprint,
-            scheduled_operations=schedule.scheduled_operations,
-            idle_intervals=(IdleInterval(slot=0, start_ns=schedule.peak_duration_ns, end_ns=peak),),
-            peak_duration_ns=peak,
-        )
+        h_other = _op(OpCode.H, 1, "h-other")
+        circuit = _circuit("parity-t1", 2, h, x, h_other)
+        schedule = schedule_asap(circuit, {h.id: 10.0, x.id: 10.0, h_other.id: 70.0})
         request = DensityMatrixExecutionRequest(
-            schedule=extended,
+            schedule=schedule,
             idle_decoherence=IdleDecoherenceProfile(t1_ns=1000.0),
         )
         reference = simulate_density_matrix(circuit, execution=request)
@@ -550,18 +626,11 @@ class ReferenceNumpyParityTests(unittest.TestCase):
 
     def test_reference_numpy_parity_combined_t1_t2(self) -> None:
         h = _op(OpCode.H, 0, "h")
-        circuit = _circuit("parity-t1t2", 1, h)
-        schedule = schedule_asap(circuit, {h.id: 10.0})
-        peak = schedule.peak_duration_ns + 100.0
-        extended = ExecutionSchedule(
-            program_id=schedule.program_id,
-            operation_fingerprint=schedule.operation_fingerprint,
-            scheduled_operations=schedule.scheduled_operations,
-            idle_intervals=(IdleInterval(slot=0, start_ns=schedule.peak_duration_ns, end_ns=peak),),
-            peak_duration_ns=peak,
-        )
+        x_other = _op(OpCode.X, 1, "x-other")
+        circuit = _circuit("parity-t1t2", 2, h, x_other)
+        schedule = schedule_asap(circuit, {h.id: 10.0, x_other.id: 110.0})
         request = DensityMatrixExecutionRequest(
-            schedule=extended,
+            schedule=schedule,
             idle_decoherence=IdleDecoherenceProfile(t1_ns=2000.0, t2_ns=800.0),
         )
         reference = simulate_density_matrix(circuit, execution=request)
