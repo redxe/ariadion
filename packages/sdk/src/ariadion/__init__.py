@@ -44,8 +44,14 @@ from ariadion_runtime import (
     MeasurementBitOrder,
     ObservationExecutionKind,
     ProbabilityScope,
+    ResetEvent,
     ReturnedQuantumValue,
     RunResult,
+    SampledClassicalResult,
+    SampledExecutionRequest,
+    SampledLogicalRunResult,
+    SampledRunResult,
+    SampledShot,
     RotationAxis,
     RotationEffect,
     RotationExplanation,
@@ -79,6 +85,7 @@ def run(
     program: Program,
     *,
     trace: TraceCaptureOptions | None = None,
+    execution: None = None,
 ) -> RunResult:
     ...
 
@@ -88,7 +95,28 @@ def run(
     program: LogicalProgram | LogicalModule | QuantumFunction,
     *,
     trace: TraceCaptureOptions | None = None,
+    execution: None = None,
 ) -> LogicalRunResult:
+    ...
+
+
+@overload
+def run(
+    program: Program,
+    *,
+    trace: TraceCaptureOptions | None = None,
+    execution: SampledExecutionRequest,
+) -> SampledRunResult:
+    ...
+
+
+@overload
+def run(
+    program: LogicalProgram | LogicalModule | QuantumFunction,
+    *,
+    trace: TraceCaptureOptions | None = None,
+    execution: SampledExecutionRequest,
+) -> SampledLogicalRunResult:
     ...
 
 
@@ -96,17 +124,22 @@ def run(
     program: Program | LogicalProgram | LogicalModule | QuantumFunction,
     *,
     trace: TraceCaptureOptions | None = None,
-) -> RunResult | LogicalRunResult:
+    execution: SampledExecutionRequest | None = None,
+) -> RunResult | LogicalRunResult | SampledRunResult | SampledLogicalRunResult:
     """Execute a builder, logical program, resolved module, or captured function."""
 
     if isinstance(program, Program):
-        return run_program(program, trace=trace)
+        return run_program(program, trace=trace, execution=execution)
     if isinstance(program, LogicalProgram):
-        return run_logical_program(program, trace=trace)
+        return run_logical_program(program, trace=trace, execution=execution)
     if isinstance(program, LogicalModule):
-        return run_logical_module(program, trace=trace)
+        return run_logical_module(program, trace=trace, execution=execution)
     if isinstance(program, QuantumFunction):
-        return run_logical_module(program.to_logical_module(), trace=trace)
+        return run_logical_module(
+            program.to_logical_module(),
+            trace=trace,
+            execution=execution,
+        )
     raise TypeError(
         "ariadion.run expects Program, LogicalProgram, LogicalModule, or QuantumFunction"
     )
@@ -143,11 +176,17 @@ __all__ = [
     "QuantumFunction",
     "QuantumFunctionConfig",
     "RunResult",
+    "SampledClassicalResult",
+    "SampledExecutionRequest",
+    "SampledLogicalRunResult",
+    "SampledRunResult",
+    "SampledShot",
     "RotationAxis",
     "RotationEffect",
     "RotationExplanation",
     "RotationSourceAngle",
     "ReturnedQuantumValue",
+    "ResetEvent",
     "SourceNodeId",
     "SourceRange",
     "StateSnapshot",

@@ -37,6 +37,8 @@ def render_circuit(
             )
         elif operation.opcode is OpCode.MEASURE:
             cells[operation.targets[0]] = _symbol_cell("[M]", cell_width, horizontal)
+        elif operation.opcode is OpCode.RESET:
+            cells[operation.targets[0]] = _symbol_cell("[R]", cell_width, horizontal)
         elif operation.opcode is OpCode.CX:
             control = operation.controls[0]
             target = operation.targets[0]

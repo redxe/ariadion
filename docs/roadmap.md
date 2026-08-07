@@ -16,7 +16,7 @@
 - hand-built `LogicalProgram` allocation through `CircuitIR`, trace, and inspection
 - declaration-order `dense-no-reuse-v1` logical-slot allocation artifacts and logical-to-IR provenance
 - `ObservationResultValue` declarations, structured return shapes, readout plans, and exact terminal joint classical distributions
-- terminal analytical observation projection with no sampling, collapse, or mid-circuit feedback
+- exact terminal analytical observation projection plus explicit sampled collapse and mid-circuit gates
 - typed `SemanticAngle` and `LogicalRotationOperation` lowering to existing `RX`, `RY`, and `RZ` IR
 - safe valid-Python `@quantum` AST capture into `LogicalProgram`
 - source-provider boundary with inspected and explicit in-memory source
@@ -25,18 +25,20 @@
 - materialized invocation-aware call expansion with definition and invocation provenance
 - expanded logical lifetime analysis and conservative `expanded-dense-no-reuse-v1` allocation
 - callee-local `Qubit()` instantiation and scalar `Qubit` call-result aliases
+- explicit quantum ownership and release-safety evidence separate from liveness
+- seeded sampled state-vector trajectories with collapse, empirical counts, and one-shot traces
+- sampled IR reset through collapse plus conditional `X`; exact reset rejection with `A203`
 
 ## Next sequence
 
 The next implementation work must preserve this order:
 
-1. Define sampled terminal and mid-circuit execution: shots, seeds, outcomes, collapse, feedback, reset, and post-measurement traces.
-2. Define noise-channel contracts and bind them to simulation requests.
-3. Add a small density-matrix noisy simulator.
-4. Add scheduling and T1/T2 idle decoherence.
-5. Add reliability goals and bare-execution estimates.
-6. Add pluggable protection-planning interfaces.
-7. Add encoded-QEC simulation and decoder integration later.
+1. Define noise-channel contracts and bind them to simulation requests.
+2. Add a small density-matrix noisy simulator.
+3. Add scheduling and T1/T2 idle decoherence.
+4. Add reliability goals and bare-execution estimates.
+5. Add pluggable protection-planning interfaces.
+6. Add encoded-QEC simulation and decoder integration later.
 
 ## Milestone 1 — value, effect, and observation contracts
 
@@ -78,9 +80,21 @@ The next implementation work must preserve this order:
 - support one-target scalar `Qubit` call results as aliases, never copied quantum states
 - analyze expanded quantum-value lifetimes and preserve call/return escape evidence
 - allocate all expanded values with `expanded-dense-no-reuse-v1`; lifetime analysis exists but slot reuse remains deferred
+- distinguish entry-parameter ownership from local ownership and emit release-safety evidence
+- keep semantic lifetime peaks separate from allocated execution width; `discard_required` never permits reuse
 - retain callee definition source plus structured invocation `CallFrameProvenance`
 - generate invocation-specific deterministic IR operation IDs
 - reject closures, recursion, stale source-only capture assumptions, classical and tuple call results, callee observations, and unbound module-entry inputs
+
+## Milestone 4.5 — sampled collapse and release safety — complete
+
+- preserve exact terminal measurement analysis and reject exact mid-circuit operations after observation (`A202`)
+- expose explicit `SampledExecutionRequest(shots, seed)` rather than inferring execution mode
+- independently initialize each sampled trajectory, collapse sampled measurements, and permit later gates
+- expose sampled outcomes, empirical joint counts, and sampled result classes separately from exact distributions
+- represent IR `RESET` only for sampled trajectory execution; reject exact reset (`A203`)
+- retain one sampled trajectory in a trace and reject multi-shot trace capture (`A204`)
+- classify local values as `discard_required` without implementing or authorizing slot reuse
 
 ## Milestone 5 — staged noisy simulation and reliability planning
 

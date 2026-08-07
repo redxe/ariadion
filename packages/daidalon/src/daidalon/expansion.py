@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from typing import TypeAlias
 
 from ariadion_core import (
 	CallInstanceId,
@@ -35,8 +36,15 @@ from ariadion_semantics import (
 )
 
 
-_ExpandedInstruction = LogicalGateOperation | LogicalRotationOperation | Observation
-_ResolveValue = Callable[[LogicalQubitId], LogicalQubitId]
+_ExpandedInstruction: TypeAlias = LogicalGateOperation | LogicalRotationOperation | Observation
+_ResolveValue: TypeAlias = Callable[[LogicalQubitId], LogicalQubitId]
+
+
+class LogicalValueOwnership(str, Enum):
+	"""Whether an expanded quantum value is borrowed or owned by this computation."""
+
+	ENTRY_PARAMETER = "entry_parameter"
+	LOCAL = "local"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +54,7 @@ class LogicalQubitOrigin:
 	definition_program_id: ProgramId
 	definition_qubit_id: LogicalQubitId
 	call_instance_id: CallInstanceId | None
+	ownership: LogicalValueOwnership = LogicalValueOwnership.LOCAL
 
 	def __post_init__(self) -> None:
 		require_nonempty_identifier(
@@ -61,12 +70,15 @@ class LogicalQubitOrigin:
 				self.call_instance_id,
 				label="logical qubit origin call instance ID",
 			)
+		if not isinstance(self.ownership, LogicalValueOwnership):
+			raise ValueError("logical qubit origin ownership must be LogicalValueOwnership")
 
 	def to_dict(self) -> dict[str, str | None]:
 		return {
 			"definition_program_id": self.definition_program_id,
 			"definition_qubit_id": self.definition_qubit_id,
 			"call_instance_id": self.call_instance_id,
+			"ownership": self.ownership.value,
 		}
 
 	def to_json(self) -> str:
@@ -433,10 +445,15 @@ class LogicalLifetime:
 
 @dataclass(frozen=True, slots=True)
 class LogicalLifetimeAnalysis:
-	"""Conservative lifetime evidence for one expanded logical program."""
+	"""Source-semantic liveness evidence, not a reusable-slot proof.
+
+	``peak_semantically_live_values`` counts overlapping source-semantic quantum
+	lifetimes. It is not a proof that the program can execute using that many
+	reusable physical or state-vector slots.
+	"""
 
 	lifetimes: tuple[LogicalLifetime, ...]
-	peak_live_logical_values: int
+	peak_semantically_live_values: int
 
 	def __post_init__(self) -> None:
 		if not isinstance(self.lifetimes, tuple) or not all(
@@ -446,23 +463,98 @@ class LogicalLifetimeAnalysis:
 		lifetime_ids = tuple(lifetime.logical_qubit_id for lifetime in self.lifetimes)
 		_require_unique(lifetime_ids, label="logical lifetime analysis qubit IDs")
 		if (
-			isinstance(self.peak_live_logical_values, bool)
-			or not isinstance(self.peak_live_logical_values, int)
-			or self.peak_live_logical_values < 0
+			isinstance(self.peak_semantically_live_values, bool)
+			or not isinstance(self.peak_semantically_live_values, int)
+			or self.peak_semantically_live_values < 0
 		):
 			raise ValueError(
-				"logical lifetime analysis peak_live_logical_values must be non-negative"
+				"logical lifetime analysis peak_semantically_live_values must be non-negative"
 			)
-		if self.peak_live_logical_values > len(self.lifetimes):
+		if self.peak_semantically_live_values > len(self.lifetimes):
 			raise ValueError(
 				"logical lifetime analysis peak cannot exceed declared lifetimes"
 			)
 
+	@property
+	def peak_live_logical_values(self) -> int:
+		"""Compatibility alias for the source-semantic lifetime peak."""
+
+		return self.peak_semantically_live_values
+
 	def to_dict(self) -> dict[str, object]:
 		return {
 			"lifetimes": [lifetime.to_dict() for lifetime in self.lifetimes],
-			"peak_live_logical_values": self.peak_live_logical_values,
+			"peak_semantically_live_values": self.peak_semantically_live_values,
 		}
+
+	def to_json(self) -> str:
+		return canonical_json(self.to_dict())
+
+
+class QuantumReleaseKind(str, Enum):
+	"""What must happen to a quantum value after semantic reachability ends."""
+
+	RETAINED = "retained"
+	DISCARD_REQUIRED = "discard_required"
+
+
+@dataclass(frozen=True, slots=True)
+class QuantumRelease:
+	"""Release safety evidence for one expanded quantum value.
+
+	``DISCARD_REQUIRED`` does not authorize slot reuse. It records that the value
+	is no longer semantically reachable while its prior quantum state remains
+	unproven and may need an explicit backend reset or discard.
+	"""
+
+	logical_qubit_id: LogicalQubitId
+	after_instruction_index: int
+	kind: QuantumReleaseKind
+	reason: LogicalLifetimeEndReason
+
+	def __post_init__(self) -> None:
+		require_nonempty_identifier(self.logical_qubit_id, label="quantum release qubit ID")
+		if (
+			isinstance(self.after_instruction_index, bool)
+			or not isinstance(self.after_instruction_index, int)
+			or self.after_instruction_index < 0
+		):
+			raise ValueError("quantum release after_instruction_index must be non-negative")
+		if not isinstance(self.kind, QuantumReleaseKind):
+			raise ValueError("quantum release kind must be QuantumReleaseKind")
+		if not isinstance(self.reason, LogicalLifetimeEndReason):
+			raise ValueError("quantum release reason must be LogicalLifetimeEndReason")
+
+	def to_dict(self) -> dict[str, object]:
+		return {
+			"logical_qubit_id": self.logical_qubit_id,
+			"after_instruction_index": self.after_instruction_index,
+			"kind": self.kind.value,
+			"reason": self.reason.value,
+		}
+
+	def to_json(self) -> str:
+		return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class QuantumReleaseAnalysis:
+	"""Release-safety facts kept separate from liveness and allocation."""
+
+	releases: tuple[QuantumRelease, ...]
+
+	def __post_init__(self) -> None:
+		if not isinstance(self.releases, tuple) or not all(
+			isinstance(release, QuantumRelease) for release in self.releases
+		):
+			raise ValueError("quantum release analysis releases must contain QuantumRelease values")
+		_require_unique(
+			tuple(release.logical_qubit_id for release in self.releases),
+			label="quantum release analysis qubit IDs",
+		)
+
+	def to_dict(self) -> dict[str, object]:
+		return {"releases": [release.to_dict() for release in self.releases]}
 
 	def to_json(self) -> str:
 		return canonical_json(self.to_dict())
@@ -529,6 +621,7 @@ class _LogicalModuleExpander:
 				program,
 				definitions_by_id[parameter.logical_qubit_id],
 				call_instance_id,
+				ownership=LogicalValueOwnership.ENTRY_PARAMETER,
 			)
 
 		pending_definitions = [
@@ -540,7 +633,12 @@ class _LogicalModuleExpander:
 			expanded_id = value_bindings.get(qubit.id)
 			if expanded_id is not None:
 				return expanded_id
-			expanded_id = self._instantiate_definition(program, qubit, call_instance_id)
+			expanded_id = self._instantiate_definition(
+				program,
+				qubit,
+				call_instance_id,
+				ownership=LogicalValueOwnership.LOCAL,
+			)
 			value_bindings[qubit.id] = expanded_id
 			if call_instance_id is not None:
 				instantiated_local_qubits.append(expanded_id)
@@ -662,6 +760,8 @@ class _LogicalModuleExpander:
 		program: LogicalProgram,
 		definition: LogicalQubitValue,
 		call_instance_id: CallInstanceId | None,
+		*,
+		ownership: LogicalValueOwnership,
 	) -> LogicalQubitId:
 		expanded_id = (
 			definition.id
@@ -676,6 +776,7 @@ class _LogicalModuleExpander:
 					definition_program_id=program.id,
 					definition_qubit_id=definition.id,
 					call_instance_id=call_instance_id,
+					ownership=ownership,
 				),
 				source=definition.source,
 				creation_instruction_index=len(self.instructions),
@@ -736,14 +837,14 @@ def analyze_logical_lifetimes(
 	lifetimes: list[LogicalLifetime] = []
 	for qubit in program.qubits:
 		uses = use_indexes[qubit.id]
-		first_index = min(uses) if uses else qubit.creation_instruction_index
+		first_index = qubit.creation_instruction_index
 		last_index = max(uses) if uses else qubit.creation_instruction_index
 		if qubit.id in returned_ids:
 			last_index = max(last_index, program_end_index)
 			end_reason = LogicalLifetimeEndReason.RETURNED
 		elif qubit.id in call_escape_ids:
 			end_reason = LogicalLifetimeEndReason.CALL_ESCAPE
-		elif qubit.origin.call_instance_id is None:
+		elif qubit.origin.ownership is LogicalValueOwnership.ENTRY_PARAMETER:
 			last_index = max(last_index, program_end_index)
 			end_reason = LogicalLifetimeEndReason.PROGRAM_END
 		else:
@@ -757,7 +858,7 @@ def analyze_logical_lifetimes(
 			)
 		)
 
-	peak_live_logical_values = max(
+	peak_semantically_live_values = max(
 		(
 			sum(
 				lifetime.first_instruction_index <= index <= lifetime.last_instruction_index
@@ -769,8 +870,53 @@ def analyze_logical_lifetimes(
 	)
 	return LogicalLifetimeAnalysis(
 		lifetimes=tuple(lifetimes),
-		peak_live_logical_values=peak_live_logical_values,
+		peak_semantically_live_values=peak_semantically_live_values,
 	)
+
+
+def analyze_quantum_releases(
+	program: ExpandedLogicalProgram,
+	lifetimes: LogicalLifetimeAnalysis,
+) -> QuantumReleaseAnalysis:
+	"""Classify semantic release without authorizing execution-slot reuse.
+
+	The analysis intentionally never emits a proven-clean/reusable result. Local
+	values that become inaccessible are marked ``DISCARD_REQUIRED`` because their
+	quantum state may still be superposed, entangled, or correlated. Returned
+	values and borrowed entry parameters remain ``RETAINED``.
+	"""
+
+	if not isinstance(program, ExpandedLogicalProgram):
+		raise ValueError("quantum release analysis input must be ExpandedLogicalProgram")
+	if not isinstance(lifetimes, LogicalLifetimeAnalysis):
+		raise ValueError("quantum release analysis lifetimes must be LogicalLifetimeAnalysis")
+	if tuple(lifetime.logical_qubit_id for lifetime in lifetimes.lifetimes) != tuple(
+		qubit.id for qubit in program.qubits
+	):
+		raise ValueError("quantum release analysis lifetimes must match expanded logical qubits")
+
+	returned_ids = {
+		LogicalQubitId(reference.value_id)
+		for reference in return_value_refs(program.return_shape)
+		if reference.kind is ReturnValueKind.QUANTUM_VALUE
+	}
+	releases = tuple(
+		QuantumRelease(
+			logical_qubit_id=qubit.id,
+			after_instruction_index=lifetime.last_instruction_index,
+			kind=(
+				QuantumReleaseKind.RETAINED
+				if (
+					qubit.id in returned_ids
+					or qubit.origin.ownership is LogicalValueOwnership.ENTRY_PARAMETER
+				)
+				else QuantumReleaseKind.DISCARD_REQUIRED
+			),
+			reason=lifetime.end_reason,
+		)
+		for qubit, lifetime in zip(program.qubits, lifetimes.lifetimes, strict=True)
+	)
+	return QuantumReleaseAnalysis(releases)
 
 
 def make_call_instance_id(

@@ -260,13 +260,13 @@ class CallExpansionTests(unittest.TestCase):
             (root_qubit.id,),
         )
 
-    def test_returned_parameter_does_not_create_call_escape_state(self) -> None:
+    def test_returned_parameter_alias_does_not_extend_a_root_local_to_program_end(self) -> None:
         expanded = expand_logical_module(_consume_returned_parameter.to_logical_module())
         analysis = analyze_logical_lifetimes(expanded)
 
         self.assertEqual(len(expanded.qubits), 1)
         lifetime = analysis.lifetimes[0]
-        self.assertEqual(lifetime.end_reason, LogicalLifetimeEndReason.PROGRAM_END)
+        self.assertEqual(lifetime.end_reason, LogicalLifetimeEndReason.LAST_USE)
 
     def test_nested_call_instance_ids_include_the_complete_call_path(self) -> None:
         module = _nested_prepare.to_logical_module()

@@ -22,23 +22,26 @@ It is immutable: `next()`, `previous()`, and `go_to()` return a new session.
 - entanglement changes and any unobservable global-phase delta;
 - an optional structured rotation explanation with exact trace facts and a
   separately labeled educational interpretation;
-- exact measurement data and its execution kind when the operation measures qubits;
+- exact probabilities or sampled measurement outcomes, with their execution kind,
+  when the operation measures qubits;
+- sampled reset evidence, including the internal trajectory outcome, when the
+  operation is `RESET`;
 - lowered observation metadata (declared result ID, logical qubit ID, basis, and
   reason) when available.
 
 `TraceStepViewModel` has `to_dict()` and canonical `to_json()` output for an
 individual active step. `TraceDebuggerSession` serializes a complete debugger
-document with `schema_version = 2`, `current_step_index`, the complete serialized
+document with `schema_version = 3`, `current_step_index`, the complete serialized
 `CircuitIR`, `ExecutionTrace`, and `TraceInspection`. Version two records the
-structured provenance call-stack shape used by the trace and inspection contracts.
-Studio can reconstruct the whole circuit and every inspected operation directly
-from that document instead of scraping terminal text. Constructors reject a
-serialized document carrying an older or mismatched debugger schema version rather
-than silently treating it as version two.
+structured provenance call-stack shape used by the trace and inspection contracts;
+version three adds reset evidence. Studio can reconstruct the whole circuit and every
+inspected operation directly from that document instead of scraping terminal text.
+Constructors reject a serialized document carrying an older or mismatched debugger
+schema version rather than silently treating it as the current shape.
 
 The session validates every inspection step against the matching trace operation:
 operation ID, opcode, targets, controls, key, observation metadata, source,
-compiler provenance, and measurement record must agree. This prevents a UI from
+compiler provenance, measurement record, and reset evidence must agree. This prevents a UI from
 combining Theonoe analysis with metadata from a different operation.
 
 For a composed operation, `source` remains the callee definition location and
@@ -87,10 +90,13 @@ probabilities, observation metadata, source data, compiler provenance, and
 precomputed rotation explanations. An `exact_terminal_distribution` event is
 visibly labeled as an analytical terminal-observation marginal with an unchanged
 retained state; it is not rendered as a sampled collapse or as the logical run's
-joint returned distribution. Rotation rendering labels exact facts separately from
-educational interpretations. Terminal command parsing and input remain outside this
-rendering function. The first renderer labels definition locations as `Defined at:`
-and invocation frames as `Called from:` when a call stack exists.
+joint returned distribution. A `sampled_collapse` event displays its sampled outcome
+and post-collapse state. A `RESET` event displays its internal trajectory outcome,
+whether a conditional `X` correction was applied, and that its target ends in
+$|0\rangle$. Rotation rendering labels exact facts separately from educational
+interpretations. Terminal command parsing and input remain outside this rendering
+function. The first renderer labels definition locations as `Defined at:` and
+invocation frames as `Called from:` when a call stack exists.
 
 Measurement output carries the runtime `targets_lsb_first` convention: target
 `targets[i]` maps to outcome bit `i`. See the runtime trace contract for the

@@ -52,6 +52,7 @@ def render_trace_step(
     lines.extend(_render_global_phase(view))
     lines.extend(_render_entanglement(view))
     lines.extend(_render_measurement(view))
+    lines.extend(_render_reset(view))
     return "\n".join(lines)
 
 
@@ -295,6 +296,19 @@ def _render_measurement(view: TraceStepViewModel) -> list[str]:
     for index, probability in enumerate(measurement.probabilities):
         lines.append(f"  |{index:0{target_count}b}> p={probability:.6f}")
     return lines
+
+
+def _render_reset(view: TraceStepViewModel) -> list[str]:
+    reset = view.reset
+    if reset is None:
+        return []
+    correction = "X" if reset.sampled_internal_outcome == 1 else "none"
+    return [
+        f"Reset q{reset.target}:",
+        f"  Internal trajectory outcome: {reset.sampled_internal_outcome}",
+        f"  Applied correction: {correction}",
+        "  Resulting target state: |0>",
+    ]
 
 
 def _format_qubits(qubits: tuple[int, ...]) -> str:

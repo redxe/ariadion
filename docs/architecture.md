@@ -66,6 +66,8 @@ ExpandedLogicalProgram
     ↓
 lifetime analysis
     ↓
+release-safety analysis
+    ↓
 logical-slot allocation
     ↓
 allocated CircuitIR
@@ -86,12 +88,23 @@ The allocated `CircuitIR` continues to use dense integer targets and an explicit
 `qubit_count`; those are compiler results. Daidalon now exposes a
 `LogicalSlotAllocationPlan` beside the resulting IR. `compile_logical_module()`
 first materializes every reachable call into an `ExpandedLogicalProgram`, analyzes
-value lifetimes, and records call-expansion evidence before allocating. A qubit
+value lifetimes and release safety, and records call-expansion evidence before
+allocating. A qubit
 declaration inside a reusable quantum function is a definition. Each function
 invocation instantiates that declaration as a distinct logical quantum value unless
 the value is a bound parameter alias. `expanded-dense-no-reuse-v1` assigns every
-expanded value a dense unique slot; its peak-live count comes from lifetime analysis,
-but it does not reuse slots yet. Hand-built programs retain `dense-no-reuse-v1`.
+expanded value a dense unique slot; it does not reuse slots. Its
+`peak_live_qubits` is an allocated-width fact, separate from
+`peak_semantically_live_values` lifetime evidence. Hand-built programs retain
+`dense-no-reuse-v1`.
+
+> **Quantum liveness is not quantum reusability. A value may become unreachable
+> while its state remains entangled with live values. Reusing its execution slot
+> requires a proven-clean state or an explicit discard/reset capability.**
+
+`QuantumReleaseAnalysis` retains returned values and borrowed entry parameters and
+marks other locals `discard_required`. That marker records a safety obligation; it
+does not make a slot available for reuse under the current allocation policies.
 This is not physical or protected allocation: a later physical plan may map one
 source `Qubit` to many hardware qubits. Later allocation artifacts can support
 diagnostics, resource reporting, trace navigation, and hardware mapping. Before a
@@ -264,9 +277,26 @@ A dependency-free state-vector reference backend. It favors clarity and correctn
 over performance, including standard allocated-IR `RX`, `RY`, and `RZ` matrices over
 canonical radians. Exact logical execution permits only terminal observations and
 retains the analytical amplitude state while runtime calculates a distribution; it
-does not sample or collapse the state. When explicitly enabled, it retains raw
-immutable amplitude transitions, but it does not depend on runtime trace contracts
-or interpret those states.
+does not sample or collapse the state and rejects general `RESET` with `A203`.
+Explicit `SampledExecutionRequest` execution runs independent seeded trajectories:
+`MEASURE` samples and collapses the vector, later gates are allowed, and IR `RESET`
+uses an internal collapse plus conditional `X` to establish $|0\rangle$. A sampled
+trace is exactly one trajectory; multiple-shot trace capture rejects with `A204`.
+When explicitly enabled, the backend retains raw immutable amplitude transitions,
+but it does not depend on runtime trace contracts or interpret those states.
+
+The intended execution-model boundary is explicit:
+
+| Execution model | `MEASURE` | `RESET` |
+| --- | --- | --- |
+| Exact state vector | Analytical terminal probability only; amplitudes remain retained | Unsupported (`A203`) |
+| Sampled state-vector trajectory | Sample one outcome and collapse | Collapse internally, conditionally apply `X`, yield $|0\rangle$ |
+| Future density matrix | Exact or sampled policy | Exact CPTP reset channel |
+
+For the future density-matrix case, reset has the channel semantics
+$\rho \mapsto \operatorname{Tr}_q(\rho) \otimes |0\rangle\langle0|_q$ (with
+the target tensor placement chosen by the backend). It is not a unitary and can
+destroy correlations between the reset target and live values.
 
 ### `theonoe`
 
@@ -291,12 +321,14 @@ leaves to return one joint `ExactClassicalDistribution`, preserving correlations
 rather than exposing independent marginal observations. It separately exposes
 returned quantum values as handles into the retained state, not copied qubit states.
 
-It also owns the versioned schema-v4 execution-trace contract consumed by debugger
+It also owns the versioned schema-v5 execution-trace contract consumed by debugger
 and Studio clients. It adapts simulator raw capture into that contract and projects
 it through Theonoe only when a consumer explicitly requests inspection, so capture
-and interpretation remain independently selectable. Measurement events distinguish
-an analytic terminal projection from a future sampled execution, and the trace's
-retained analytical state is not a physical post-measurement state. Its
+and interpretation remain independently selectable. The trace distinguishes
+analytical terminal probabilities from sampled outcomes and records sampled reset
+evidence. Exact `LogicalRunResult` and sampled `SampledLogicalRunResult` remain
+distinct: the former exposes analytical distributions and retained quantum handles,
+while the latter exposes independently initialized shots and empirical counts. Its
 frontend-neutral `TraceDebuggerSession` and `TraceStepViewModel` compose IR, trace,
 and inspection data without managing terminal interaction.
 
@@ -319,15 +351,18 @@ Studio can reuse those models without scraping CLI text.
 
 ```text
 capture safe Python AST or hand-build -> validate -> expand calls -> analyze lifetimes
--> logical slots/readout -> lower -> simulate -> trace -> inspect
+-> release safety -> logical slots/readout -> lower -> exact or sampled simulate
+-> trace -> inspect
 ```
 
 A change is considered vertically complete only when it can be exercised from the SDK and covered by a runtime-level test.
 
-For the current exact terminal-observation path, the runtime calculates a joint
-classical distribution without sampling or mutating the retained analytical state.
-This is not physical post-measurement state evolution. Sampled collapse and
-mid-circuit feedback remain separate execution capabilities.
+For the exact terminal-observation path, the runtime calculates a joint classical
+distribution without sampling or mutating the retained analytical state. This is
+not physical post-measurement state evolution. The explicit sampled path instead
+collapses each trajectory in operation order and can run later gates. It remains
+separate from unsupported classical branching, density-matrix evolution, noise,
+scheduling, and QEC.
 
 A function return is a structured semantic artifact, not merely an ordered list of
 identifiers. Classical observation results and returned quantum values may coexist,

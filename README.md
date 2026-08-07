@@ -6,7 +6,7 @@ Ariadion is an early-stage, basis-aware quantum programming platform designed to
 
 1. capture a safe subset of a Python quantum function or describe a compatibility builder program;
 2. lower it through the **Daidalon** compiler into semantic circuit IR;
-3. execute it with the reference state-vector simulator;
+3. execute it with the reference exact state-vector or sampled-trajectory simulator;
 4. inspect amplitudes, probabilities, phase, and entanglement hints with **Theonoe**;
 5. render a synchronized ASCII circuit view.
 
@@ -81,6 +81,34 @@ result = run(bell)
 $00 \,\mapsto\, 0.5$, $01 \,\mapsto\, 0$, $10 \,\mapsto\, 0$, and
 $11 \,\mapsto\, 0.5$.
 
+## Exact analysis and sampled trajectories
+
+`run()` remains exact by default. Exact state-vector execution reports analytical
+terminal measurement probabilities and preserves its retained analytical state; it
+does not collapse a measurement and rejects a later gate with `A202`. General
+`RESET` is rejected in exact pure-state-vector mode with `A203` because an
+entangled reset is not a unitary pure-state evolution.
+
+Pass an explicit `SampledExecutionRequest` to execute independent, seeded sampled
+trajectories instead:
+
+```python
+from ariadion import SampledExecutionRequest, run
+
+sampled = run(bell, execution=SampledExecutionRequest(shots=1_000, seed=42))
+assert sampled.classical_output is not None
+print(sampled.classical_output.counts)
+```
+
+Sampled `MEASURE` produces one outcome and collapses the state before later
+operations execute. `RESET` is available only in this sampled IR execution path:
+it samples and collapses its target, conditionally applies `X`, and leaves that
+target in $|0\rangle$. A reset can disturb correlations with any qubits that were
+entangled with the target. Sampled results use distinct public result types and
+empirical counts; they do not expose exact probability distributions. A captured
+sampled trace describes exactly one trajectory, so trace capture with more than
+one shot is rejected with `A204`.
+
 Captured quantum functions can now compose through explicit logical bindings:
 
 ```python
@@ -111,7 +139,8 @@ values before allocation:
 
 ```text
 Python functions -> LogicalModule -> call expansion / logical instantiation
--> ExpandedLogicalProgram -> lifetime analysis -> logical-slot allocation
+-> ExpandedLogicalProgram -> lifetime and release-safety analysis
+-> logical-slot allocation
 -> CircuitIR
 ```
 
@@ -119,7 +148,17 @@ A qubit declaration inside a reusable quantum function is a definition. Each
 function invocation instantiates that declaration as a distinct logical quantum
 value unless the value is a bound parameter alias. The allocation policy is still
 conservative: `expanded-dense-no-reuse-v1` allocates every expanded value to a
-dense slot even though lifetime analysis is now available.
+dense slot. `peak_semantically_live_values` is source-semantic evidence, while
+`peak_live_qubits` is the width actually allocated by the selected policy.
+
+> **Quantum liveness is not quantum reusability. A value may become unreachable
+> while its state remains entangled with live values. Reusing its execution slot
+> requires a proven-clean state or an explicit discard/reset capability.**
+
+The compiler records separate release evidence for every expanded value. Returned
+values and borrowed entry parameters are `retained`; other local values are
+`discard_required`. `discard_required` never authorizes slot reuse. The current
+allocation policies intentionally remain dense and non-reusing.
 
 Scalar `Qubit` call results are supported through one assignment target:
 

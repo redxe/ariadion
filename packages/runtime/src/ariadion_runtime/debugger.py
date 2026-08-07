@@ -13,10 +13,10 @@ from theonoe import (
 )
 
 from .inspection import TraceInspection, TraceStepInspection
-from .trace import ExecutionTrace, MeasurementEvent, TraceStep
+from .trace import ExecutionTrace, MeasurementEvent, ResetEvent, TraceStep
 
 
-TRACE_DEBUGGER_SCHEMA_VERSION: Final = 2
+TRACE_DEBUGGER_SCHEMA_VERSION: Final = 3
 
 
 class TraceDebuggerError(ValueError):
@@ -41,6 +41,7 @@ class TraceStepViewModel:
     global_phase_delta_radians: float | None
     measurement: MeasurementEvent | None
     rotation_explanation: RotationExplanation | None = None
+    reset: ResetEvent | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.circuit, CircuitIR):
@@ -66,6 +67,8 @@ class TraceStepViewModel:
             raise TraceDebuggerError(
                 "trace view rotation_explanation must be RotationExplanation"
             )
+        if self.reset is not None and not isinstance(self.reset, ResetEvent):
+            raise TraceDebuggerError("trace view reset must be ResetEvent")
 
     @property
     def step_number(self) -> int:
@@ -96,6 +99,7 @@ class TraceStepViewModel:
             "entanglement": self.entanglement.to_dict(),
             "global_phase_delta_radians": self.global_phase_delta_radians,
             "measurement": self.measurement.to_dict() if self.measurement is not None else None,
+            "reset": self.reset.to_dict() if self.reset is not None else None,
             "rotation_explanation": (
                 self.rotation_explanation.to_dict()
                 if self.rotation_explanation is not None
@@ -190,6 +194,7 @@ class TraceDebuggerSession:
             entanglement=transition.entanglement,
             global_phase_delta_radians=transition.global_phase_delta_radians,
             measurement=trace_step.measurement,
+            reset=trace_step.reset,
             rotation_explanation=inspection_step.rotation_explanation,
         )
 
@@ -250,4 +255,5 @@ def _inspection_metadata_matches_trace(
         and inspection_step.angle_radians == operation.angle_radians
         and inspection_step.angle_metadata == operation.angle_metadata
         and inspection_step.measurement == trace_step.measurement
+        and inspection_step.reset == trace_step.reset
     )

@@ -53,6 +53,10 @@ from .expansion import (
     ExpandedLogicalProgram,
     LogicalLifetimeAnalysis,
     LogicalQubitOrigin,
+    LogicalValueOwnership,
+    QuantumReleaseAnalysis,
+    QuantumReleaseKind,
+    analyze_quantum_releases,
     analyze_logical_lifetimes,
     expand_logical_module,
 )
@@ -159,7 +163,11 @@ class LogicalSlotAllocationEntry:
 
 @dataclass(frozen=True, slots=True)
 class LogicalSlotAllocationPlan:
-    """Managed logical values mapped to dense execution slots, not hardware qubits."""
+    """Managed logical values mapped to dense execution slots, not hardware qubits.
+
+    ``peak_live_qubits`` is an allocated execution-width fact for the selected
+    policy. It is deliberately separate from source-semantic liveness evidence.
+    """
 
     policy_name: str
     entries: tuple[LogicalSlotAllocationEntry, ...]
@@ -203,10 +211,7 @@ class LogicalSlotAllocationPlan:
                     "dense-no-reuse logical slot allocation entries must use declaration-order "
                     "dense slots"
                 )
-            if (
-                self.policy_name == LOGICAL_ALLOCATION_POLICY_NAME
-                and self.peak_live_qubits != len(self.entries)
-            ):
+            if self.peak_live_qubits != len(self.entries):
                 raise ValueError(
                     "dense-no-reuse logical slot allocation peak_live_qubits must equal entry "
                     "count"
@@ -349,7 +354,7 @@ class ReadoutPlan:
 
 @dataclass(frozen=True, slots=True)
 class LogicalCompilationResult:
-    """Allocated IR, logical slots, and ordered readout for one logical program."""
+    """Allocated IR and distinct expansion, liveness, release, and readout evidence."""
 
     ir: CircuitIR
     logical_allocation: LogicalSlotAllocationPlan
@@ -357,6 +362,7 @@ class LogicalCompilationResult:
     expanded_program: ExpandedLogicalProgram | None = None
     call_expansion: CallExpansionPlan | None = None
     lifetime_analysis: LogicalLifetimeAnalysis | None = None
+    release_analysis: QuantumReleaseAnalysis | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.ir, CircuitIR):
@@ -372,6 +378,7 @@ class LogicalCompilationResult:
             self.expanded_program,
             self.call_expansion,
             self.lifetime_analysis,
+            self.release_analysis,
         )
         if any(item is None for item in module_evidence) and not all(
             item is None for item in module_evidence
@@ -387,6 +394,10 @@ class LogicalCompilationResult:
             if not isinstance(self.lifetime_analysis, LogicalLifetimeAnalysis):
                 raise ValueError(
                     "logical compilation result lifetime_analysis must be LogicalLifetimeAnalysis"
+                )
+            if not isinstance(self.release_analysis, QuantumReleaseAnalysis):
+                raise ValueError(
+                    "logical compilation result release_analysis must be QuantumReleaseAnalysis"
                 )
             expanded_qubit_ids = tuple(qubit.id for qubit in self.expanded_program.qubits)
             allocation_qubit_ids = tuple(
@@ -417,6 +428,39 @@ class LogicalCompilationResult:
                 raise ValueError(
                     "module lifetime evidence must match expanded logical qubits"
                 )
+            release_ids = tuple(
+                release.logical_qubit_id for release in self.release_analysis.releases
+            )
+            if release_ids != expanded_qubit_ids:
+                raise ValueError(
+                    "module release evidence must match expanded logical qubits"
+                )
+            quantum_return_ids = set(self.readout.quantum_return_ids())
+            for qubit, lifetime, release in zip(
+                self.expanded_program.qubits,
+                self.lifetime_analysis.lifetimes,
+                self.release_analysis.releases,
+                strict=True,
+            ):
+                if (
+                    release.after_instruction_index != lifetime.last_instruction_index
+                    or release.reason is not lifetime.end_reason
+                ):
+                    raise ValueError(
+                        "module release evidence must match expanded lifetime endpoints"
+                    )
+                expected_release_kind = (
+                    QuantumReleaseKind.RETAINED
+                    if (
+                        qubit.id in quantum_return_ids
+                        or qubit.origin.ownership is LogicalValueOwnership.ENTRY_PARAMETER
+                    )
+                    else QuantumReleaseKind.DISCARD_REQUIRED
+                )
+                if release.kind is not expected_release_kind:
+                    raise ValueError(
+                        "module release evidence must match expanded ownership and returns"
+                    )
             if self.readout.return_shape != self.expanded_program.return_shape:
                 raise ValueError(
                     "module readout return shape must match expanded logical program"
@@ -495,6 +539,11 @@ class LogicalCompilationResult:
             "lifetime_analysis": (
                 self.lifetime_analysis.to_dict()
                 if self.lifetime_analysis is not None
+                else None
+            ),
+            "release_analysis": (
+                self.release_analysis.to_dict()
+                if self.release_analysis is not None
                 else None
             ),
         }
@@ -578,10 +627,8 @@ def compile_logical_module(module: LogicalModule) -> LogicalCompilationResult:
 
     expanded_program = expand_logical_module(module)
     lifetime_analysis = analyze_logical_lifetimes(expanded_program)
-    logical_allocation = _allocate_expanded_program(
-        expanded_program,
-        lifetime_analysis,
-    )
+    release_analysis = analyze_quantum_releases(expanded_program, lifetime_analysis)
+    logical_allocation = _allocate_expanded_program(expanded_program)
     slots = {
         entry.logical_qubit_id: entry.slot
         for entry in logical_allocation.entries
@@ -602,6 +649,7 @@ def compile_logical_module(module: LogicalModule) -> LogicalCompilationResult:
         expanded_program=expanded_program,
         call_expansion=expanded_program.call_expansion,
         lifetime_analysis=lifetime_analysis,
+        release_analysis=release_analysis,
     )
 
 
@@ -834,7 +882,6 @@ def _allocate_logical_program(program: LogicalProgram) -> LogicalSlotAllocationP
 
 def _allocate_expanded_program(
     program: ExpandedLogicalProgram,
-    lifetimes: LogicalLifetimeAnalysis,
 ) -> LogicalSlotAllocationPlan:
     entries = tuple(
         LogicalSlotAllocationEntry(
@@ -848,7 +895,7 @@ def _allocate_expanded_program(
     return LogicalSlotAllocationPlan(
         policy_name=EXPANDED_LOGICAL_ALLOCATION_POLICY_NAME,
         entries=entries,
-        peak_live_qubits=lifetimes.peak_live_logical_values,
+        peak_live_qubits=len(entries),
         allocated_qubit_count=len(entries),
     )
 

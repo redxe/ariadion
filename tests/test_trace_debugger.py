@@ -57,8 +57,8 @@ class TraceDebuggerTests(unittest.TestCase):
         self.assertEqual(payload["operation"]["source"]["source_node_id"], "node:debugger:h")
 
         document = json.loads(session.to_json())
-        self.assertEqual(TRACE_DEBUGGER_SCHEMA_VERSION, 2)
-        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(TRACE_DEBUGGER_SCHEMA_VERSION, 3)
+        self.assertEqual(document["schema_version"], 3)
         self.assertEqual(document["current_step_index"], 0)
         self.assertEqual(document["circuit"]["id"], session.circuit.id)
         self.assertEqual(

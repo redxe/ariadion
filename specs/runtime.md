@@ -12,6 +12,10 @@ with capture disabled returns no `ExecutionTrace` and must not retain intermedia
 state vectors. With capture enabled, it returns one `ExecutionTrace` for the
 executed circuit. The reference simulator retains an initial state and one
 before/after transition per current IR operation only while capture is enabled.
+An exact trace describes one analytical execution. A sampled trace describes one
+collapsed trajectory, not an aggregate of multiple shots. Consequently, enabled
+sampled trace capture requires exactly one shot; a request for multiple shots is
+rejected with `A204` rather than concatenating unrelated trajectories.
 
 ## Identity and indexing
 
@@ -45,14 +49,16 @@ exclusive: an `exact_probabilities` record contains probability data, while a
 `sampled_outcome` record contains one bit per measured target. Its required
 `execution_kind` makes the semantic boundary explicit:
 `exact_terminal_distribution` is an analytical terminal projection, and
-`sampled_collapse` is reserved for future sampled collapse. Exact traces reject
-sampled outcomes by invariant. A measurement event can attach only to a `MEASURE`
+`sampled_collapse` records an actual sampled outcome and post-measurement collapse.
+Exact traces reject sampled outcomes by invariant, while sampled traces reject exact
+probability records. A measurement event can attach only to a `MEASURE`
 operation with the same operation ID, targets, and key. Targets must be unique and
 fit the snapshot width. Exact records have exactly $2^n$ finite, non-negative
 probabilities for $n$ targets, and those probabilities must sum to one within an
 absolute tolerance of $10^{-12}$. The reference simulator emits exact
-probabilities without collapsing the state vector; sampling and collapse require
-an explicit future runtime policy.
+probabilities without collapsing the state vector. The sampled trajectory backend
+uses a private seeded pseudorandom generator, samples one target-order outcome,
+zeros incompatible amplitudes, and renormalizes before any later operation.
 
 Every per-operation `MeasurementEvent` serializes `scope = marginal`: its exact
 probabilities describe only that operation's targets. They do not encode returned
@@ -76,6 +82,36 @@ and quantum handles.
 
 Per-observation exact probabilities are marginals. The complete returned classical
 result is a separately calculated joint distribution.
+
+`SampledLogicalRunResult` is deliberately distinct from `LogicalRunResult`. Its
+optional `SampledClassicalResult` carries ordered result IDs, one `SampledShot` per
+independently initialized trajectory, joint counts, bit order, and seed. Counts use
+the same `targets_lsb_first` indexing convention as exact distributions, but are
+empirical observations rather than analytical probabilities. Sampled logical runs
+cannot expose a single retained quantum handle, including for one shot: the public
+result shape remains trajectory-oriented and does not vary with shot count, while
+multiple shots do not share one physical final state vector.
+
+## Reset
+
+`RESET` is a non-unitary IR operation with one uncontrolled target. Exact
+state-vector execution rejects any reset with `A203`: a reset of an entangled value
+is a channel, not a unitary transformation of one pure state vector. The sampled
+trajectory backend implements reset by internally sampling and collapsing the
+target, conditionally applying `X` for an internal outcome of `1`, and leaving the
+target in $|0\rangle$. This internal measurement is not a user-visible
+`MeasurementEvent`; a sampled trace records a `ResetEvent` with the operation ID,
+target, and internal outcome. Exact traces reject reset evidence.
+
+For a future density-matrix backend, the exact reset channel is
+
+$$
+\rho \longmapsto \operatorname{Tr}_q(\rho) \otimes |0\rangle\langle0|_q.
+$$
+
+The tensor placement follows the backend's qubit ordering. This makes explicit why
+resetting one member of an entangled state disturbs its correlations with live
+values.
 
 ### Measurement bit order
 
@@ -110,12 +146,12 @@ without requiring a specific simulator or provider implementation.
 
 ## Serialization and versioning
 
-`ExecutionTrace` uses `schema_version = 4`. Version four records the structured
+`ExecutionTrace` uses `schema_version = 5`. Version five adds sampled collapse
+outcomes and reset trajectory evidence while retaining version four's structured
 `OperationProvenance.call_stack` shape used to separate a callee definition source
-from each invocation frame; it follows schema v3's explicit marginal probability
-scope and schema v2's observation execution kinds. Older traces are rejected rather
-than silently interpreted under the current terminal analytical-projection and
-provenance semantics. All contract records provide
+from each invocation frame. Older traces are rejected rather than silently
+interpreted under the current exact, sampled, reset, and provenance semantics. All
+contract records provide
 `to_dict()` and canonical `to_json()` output. Consumers must reject unsupported
 future schema versions rather than guessing their meaning. Additive optional fields
 are preferred for compatible evolution; semantic changes require a new schema

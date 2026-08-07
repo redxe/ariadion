@@ -31,6 +31,7 @@ class OpCode(str, Enum):
     RZ = "RZ"
     CX = "CX"
     MEASURE = "MEASURE"
+    RESET = "RESET"
 
 
 _ROTATION_OPCODES = frozenset({OpCode.RX, OpCode.RY, OpCode.RZ})
@@ -202,6 +203,10 @@ class Operation:
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.id, label="IR operation ID")
+        if self.opcode is OpCode.RESET and (
+            len(self.targets) != 1 or self.controls
+        ):
+            raise ValueError("RESET operations require exactly one uncontrolled target")
         if self.observation is not None:
             if not isinstance(self.observation, ObservationMetadata):
                 raise ValueError("operation observation must be ObservationMetadata")

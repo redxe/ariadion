@@ -175,8 +175,19 @@ execution slot per declared value under the explicitly limited `dense-no-reuse-v
 `LogicalSlotAllocationPlan`; it does not infer lifetimes or reuse a slot. This plan
 does not imply that one source value maps to one physical qubit. Module compilation
 uses `expanded-dense-no-reuse-v1`: it materializes invocation-specific values,
-records lifetimes, then still assigns every expanded value a unique dense slot. It
-does not reuse a slot yet.
+records lifetime and release-safety evidence, then still assigns every expanded
+value a unique dense slot. `peak_semantically_live_values` is source-semantic
+lifetime evidence; `peak_live_qubits` is the width allocated by a selected policy.
+It does not reuse a slot yet.
+
+> **Quantum liveness is not quantum reusability. A value may become unreachable
+> while its state remains entangled with live values. Reusing its execution slot
+> requires a proven-clean state or an explicit discard/reset capability.**
+
+`QuantumReleaseAnalysis` is a separate immutable artifact. A returned value or
+borrowed entry parameter is `retained`; an otherwise dead local is
+`discard_required`. `discard_required` records a safety obligation and never
+authorizes an allocator to recycle the slot.
 
 `ReliabilityGoal`, `NoiseProfile`, and `ProtectionPlan` are immutable planning
 contracts owned by the semantic layer. They describe requested bounds, assumptions,
@@ -215,7 +226,7 @@ classical result identity
     ClassicalBitId
     -> AllocatedObservation / ObservationMetadata
     -> ReadoutPlan structured classical leaf
-    -> ExactClassicalDistribution joint-return bit position
+    -> ExactClassicalDistribution probability or SampledClassicalResult count bit position
 
 quantum return identity
     LogicalQubitId
@@ -273,7 +284,7 @@ a distinct logical quantum value unless the value is a bound parameter alias.
 Returning a `Qubit` transfers the same logical quantum value across the function
 boundary. It never copies quantum state.
 
-## Exact observation execution boundary
+## Exact and sampled observation execution boundary
 
 `ReadoutPlan` owns the bridge between compiled observations and the source-preserved
 structured return. For the current exact state-vector path, runtime calculates an
@@ -290,12 +301,22 @@ measurement order. Per-observation exact probabilities are `marginal`; the compl
 returned classical result is a separately calculated joint distribution.
 
 `MeasurementEvent.execution_kind` makes that distinction explicit:
-`exact_terminal_distribution` is an analytic terminal projection, while a future
-`sampled` event requires shot, seed, outcome, and collapsed-state semantics. The
-exact engine rejects any non-measurement operation after the first observation.
-Mid-circuit feedback, reset behavior after a sampled readout, and post-measurement
-state histories therefore belong to future execution contracts, not the current
-trace's `retained_analytic_state`.
+`exact_terminal_distribution` is an analytic terminal projection, while
+`sampled_collapse` contains a target-order outcome and a collapsed trajectory
+state. The exact engine rejects any non-measurement operation after the first
+observation. Explicit `SampledExecutionRequest` execution starts every shot from
+$|00\ldots0\rangle$, samples sequentially with a private seeded generator, and
+permits later quantum gates. It returns sampled result types rather than adding
+empirical counts to `LogicalRunResult`.
+
+`RESET` is likewise split by execution model. Exact pure-state-vector execution
+rejects it with `A203`; a sampled trajectory internally collapses the target and
+conditionally applies `X` to establish $|0\rangle$, recording `ResetEvent`
+evidence rather than a user-visible measurement result. A future density-matrix
+backend can model the exact channel
+$\rho \mapsto \operatorname{Tr}_q(\rho) \otimes |0\rangle\langle0|_q$. Reset of
+an entangled value can disturb live correlations, so neither reset evidence nor a
+semantic lifetime endpoint implies reusable allocation capacity.
 
 ## Ports and substitution boundaries
 
@@ -431,6 +452,8 @@ logical slice is now reachable through the valid-Python `@quantum` AST frontend 
 well as hand-built data. The current frontend composes local-value callees and
 scalar `Qubit` result aliases through explicit logical bindings. Call expansion and
 lifetime analysis preserve definition, invocation, and expanded-value identities
-before dense non-reusing allocation. Next language milestones are optimized slot
-reuse, ownership refinements, resource inference, and only then justified extension
-syntax or richer editor support.
+before dense non-reusing allocation. Any future optimized slot-reuse pass must
+consume release safety and establish a proven-clean state or explicit discard/reset
+capability; source liveness alone is insufficient. Later language milestones include
+ownership refinements, resource inference, and only then justified extension syntax
+or richer editor support.

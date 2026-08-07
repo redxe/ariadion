@@ -127,7 +127,7 @@ class TerminalObservationExecutionTests(unittest.TestCase):
         )
         self.assertEqual(operation.observation, metadata)
 
-    def test_trace_serializes_legacy_and_semantic_source_references_at_schema_four(self) -> None:
+    def test_trace_serializes_legacy_and_semantic_source_references_at_schema_five(self) -> None:
         circuit_id = ProgramId("examples/source-forms.py")
         legacy_source = SourceRef(
             program_id=circuit_id,
@@ -162,8 +162,8 @@ class TerminalObservationExecutionTests(unittest.TestCase):
         self.assertIsNotNone(execution.trace)
         assert execution.trace is not None
         payload = json.loads(execution.trace.to_json())
-        self.assertEqual(EXECUTION_TRACE_SCHEMA_VERSION, 4)
-        self.assertEqual(payload["schema_version"], 4)
+        self.assertEqual(EXECUTION_TRACE_SCHEMA_VERSION, 5)
+        self.assertEqual(payload["schema_version"], 5)
         first_source = payload["steps"][0]["operation"]["source"]
         second_source = payload["steps"][1]["operation"]["source"]
         self.assertEqual(

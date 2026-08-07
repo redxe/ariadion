@@ -25,10 +25,10 @@ from theonoe import (
     inspect_state_transition,
 )
 
-from .trace import ExecutionTrace, MeasurementEvent
+from .trace import ExecutionTrace, MeasurementEvent, ResetEvent
 
 
-INSPECTION_SCHEMA_VERSION: Final = 2
+INSPECTION_SCHEMA_VERSION: Final = 3
 _ROTATION_AXES: Final = {
     OpCode.RX: RotationAxis.X,
     OpCode.RY: RotationAxis.Y,
@@ -54,6 +54,7 @@ class TraceStepInspection:
     angle_radians: float | None = None
     angle_metadata: AngleMetadata | None = None
     rotation_explanation: RotationExplanation | None = None
+    reset: ResetEvent | None = None
 
     @property
     def call_stack(self) -> tuple[CallFrameProvenance, ...]:
@@ -86,6 +87,7 @@ class TraceStepInspection:
                 ),
             },
             "measurement": self.measurement.to_dict() if self.measurement is not None else None,
+            "reset": self.reset.to_dict() if self.reset is not None else None,
             "transition": self.transition.to_dict(),
             "rotation_explanation": (
                 self.rotation_explanation.to_dict()
@@ -120,13 +122,13 @@ class TraceInspection:
 
     @property
     def final(self) -> StateReport:
-        """Retained analytic state, not a physical post-sampling measurement state."""
+        """Return the final exact report or post-collapse sampled trajectory report."""
 
         return self.steps[-1].transition.after if self.steps else self.initial
 
     @property
     def retained_analytic_state(self) -> StateReport:
-        """Explicit name for the state report retained through terminal projections."""
+        """Compatibility name for the report retained through exact terminal projections."""
 
         return self.final
 
@@ -194,6 +196,7 @@ def inspect_execution_trace(
                 angle_radians=step.operation.angle_radians,
                 angle_metadata=step.operation.angle_metadata,
                 measurement=step.measurement,
+                reset=step.reset,
                 transition=transition,
                 rotation_explanation=_rotation_explanation(
                     opcode=step.operation.opcode,

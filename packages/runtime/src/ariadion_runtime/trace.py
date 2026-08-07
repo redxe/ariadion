@@ -20,7 +20,7 @@ from ariadion_ir import CircuitIR, OpCode, Operation, OperationProvenance
 from ariadion_simulator import SimulationResult, SimulationTrace, SimulationTraceStep
 
 
-EXECUTION_TRACE_SCHEMA_VERSION: Final = 4
+EXECUTION_TRACE_SCHEMA_VERSION: Final = 5
 _EXACT_MEASUREMENT_PROBABILITY_ABS_TOLERANCE: Final = 1e-12
 
 
@@ -143,12 +143,20 @@ class TraceCaptureOptions:
         self,
         result: SimulationResult,
         captured_trace: SimulationTrace,
+        *,
+        sampled: bool = False,
+        seed: int | None = None,
     ) -> ExecutionTrace:
         """Project raw backend capture to the public runtime trace contract."""
 
         if not self.enabled:
             raise ValueError("trace capture must be enabled to build an execution trace")
-        return _execution_trace_from_capture(result, captured_trace)
+        return _execution_trace_from_capture(
+            result,
+            captured_trace,
+            sampled=sampled,
+            seed=seed,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +217,7 @@ class ExecutionMetadata:
 
 @dataclass(frozen=True, slots=True)
 class StateSnapshot:
-    """An immutable exact state-vector snapshot for one circuit instant."""
+    """An immutable exact or sampled-trajectory state-vector snapshot."""
 
     circuit_id: ProgramId
     qubit_count: int
@@ -357,6 +365,36 @@ class MeasurementEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ResetEvent:
+    """Internal sampled trajectory evidence for one non-unitary RESET operation."""
+
+    operation_id: IrOperationId
+    target: int
+    sampled_internal_outcome: int
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.operation_id, label="reset operation ID")
+        if isinstance(self.target, bool) or not isinstance(self.target, int) or self.target < 0:
+            raise ValueError("reset target must be a non-negative integer")
+        if (
+            isinstance(self.sampled_internal_outcome, bool)
+            or not isinstance(self.sampled_internal_outcome, int)
+            or self.sampled_internal_outcome not in {0, 1}
+        ):
+            raise ValueError("reset sampled_internal_outcome must be zero or one")
+
+    def to_dict(self) -> dict[str, int | str]:
+        return {
+            "operation_id": self.operation_id,
+            "target": self.target,
+            "sampled_internal_outcome": self.sampled_internal_outcome,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
 class TraceStep:
     """The immutable state transition caused by one semantic IR operation."""
 
@@ -366,6 +404,7 @@ class TraceStep:
     after: StateSnapshot
     measurement: MeasurementEvent | None = None
     metadata: ExecutionMetadata | None = None
+    reset: ResetEvent | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.index, bool) or not isinstance(self.index, int) or self.index < 0:
@@ -380,6 +419,8 @@ class TraceStep:
             raise ValueError("trace step snapshots must have matching qubit counts")
         if self.measurement is not None and not isinstance(self.measurement, MeasurementEvent):
             raise ValueError("trace step measurement must be a MeasurementEvent")
+        if self.measurement is not None and self.reset is not None:
+            raise ValueError("trace steps cannot combine measurement and reset evidence")
         if self.measurement is not None:
             if self.measurement.operation_id != self.operation.id:
                 raise ValueError("measurement event operation ID must match its trace operation")
@@ -391,6 +432,17 @@ class TraceStep:
                 raise ValueError("measurement key must match the trace operation")
             if any(target >= self.before.qubit_count for target in self.measurement.targets):
                 raise ValueError("measurement targets must be within the snapshot width")
+        if self.reset is not None:
+            if not isinstance(self.reset, ResetEvent):
+                raise ValueError("trace step reset must be a ResetEvent")
+            if self.operation.opcode is not OpCode.RESET:
+                raise ValueError("reset events require a RESET operation")
+            if self.reset.operation_id != self.operation.id:
+                raise ValueError("reset event operation ID must match the trace operation")
+            if self.operation.targets != (self.reset.target,):
+                raise ValueError("reset target must match the trace operation")
+            if self.reset.target >= self.before.qubit_count:
+                raise ValueError("reset target must be within the snapshot width")
         if self.metadata is not None and not isinstance(self.metadata, ExecutionMetadata):
             raise ValueError("trace step metadata must be ExecutionMetadata")
 
@@ -426,6 +478,7 @@ class TraceStep:
             "after": self.after.to_dict(),
             "measurement": self.measurement.to_dict() if self.measurement is not None else None,
             "metadata": self.metadata.to_dict() if self.metadata is not None else None,
+            "reset": self.reset.to_dict() if self.reset is not None else None,
         }
 
     def to_json(self) -> str:
@@ -434,7 +487,7 @@ class TraceStep:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionTrace:
-    """A versioned, immutable sequence of exact state transitions for one circuit."""
+    """A versioned, immutable sequence of exact or sampled trajectory transitions."""
 
     circuit_id: ProgramId
     initial_state: StateSnapshot
@@ -502,17 +555,30 @@ class ExecutionTrace:
                 raise ValueError(
                     "exact execution traces cannot contain sampled measurement outcomes"
                 )
+            if (
+                self.metadata.mode is ExecutionMode.EXACT
+                and step.reset is not None
+            ):
+                raise ValueError("exact execution traces cannot contain sampled reset evidence")
+            if (
+                self.metadata.mode is ExecutionMode.SAMPLED
+                and step.measurement is not None
+                and step.measurement.kind is MeasurementRecordKind.EXACT_PROBABILITIES
+            ):
+                raise ValueError(
+                    "sampled execution traces cannot contain exact measurement probabilities"
+                )
             previous = step.after
 
     @property
     def final_state(self) -> StateSnapshot:
-        """Return the retained analytic state, not a sampled post-measurement state."""
+        """Return the final exact state or post-collapse sampled trajectory state."""
 
         return self.steps[-1].after if self.steps else self.initial_state
 
     @property
     def retained_analytic_state(self) -> StateSnapshot:
-        """Explicit name for the exact state retained through terminal projections."""
+        """Compatibility name for the exact state retained through terminal projections."""
 
         return self.final_state
 
@@ -545,6 +611,9 @@ def _require_tuple(value: object, *, label: str) -> None:
 def _execution_trace_from_capture(
     result: SimulationResult,
     captured_trace: SimulationTrace,
+    *,
+    sampled: bool,
+    seed: int | None,
 ) -> ExecutionTrace:
     circuit = result.circuit
     initial_state = StateSnapshot(
@@ -560,7 +629,10 @@ def _execution_trace_from_capture(
         circuit.id,
         initial_state,
         steps,
-        metadata=ExecutionMetadata(mode=ExecutionMode.EXACT),
+        metadata=ExecutionMetadata(
+            mode=ExecutionMode.SAMPLED if sampled else ExecutionMode.EXACT,
+            seed=seed,
+        ),
     )
 
 
@@ -578,10 +650,29 @@ def _trace_step_from_capture(
             key=operation.key,
             probabilities=captured_step.measurement_probabilities,
         )
+    elif captured_step.measurement_outcome is not None:
+        measurement = MeasurementEvent(
+            operation.id,
+            operation.targets,
+            MeasurementRecordKind.SAMPLED_OUTCOME,
+            key=operation.key,
+            outcome=captured_step.measurement_outcome,
+            execution_kind=ObservationExecutionKind.SAMPLED_COLLAPSE,
+        )
+    reset = (
+        ResetEvent(
+            operation_id=captured_step.reset_event.operation_id,
+            target=captured_step.reset_event.target,
+            sampled_internal_outcome=captured_step.reset_event.sampled_internal_outcome,
+        )
+        if captured_step.reset_event is not None
+        else None
+    )
     return TraceStep(
         captured_step.index,
         operation,
         StateSnapshot(circuit.id, circuit.qubit_count, captured_step.before_amplitudes),
         StateSnapshot(circuit.id, circuit.qubit_count, captured_step.after_amplitudes),
         measurement=measurement,
+        reset=reset,
     )

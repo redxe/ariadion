@@ -54,6 +54,13 @@ post-measurement state report. Per-observation exact probabilities in this data 
 `marginal` facts about one measurement's targets, never a substitute for the
 logical run's separately calculated `joint_return` classical distribution.
 
+For a sampled collapse, the before and after reports instead describe one physical
+trajectory: the outcome appears in the `MeasurementEvent` and the after report is
+the collapsed state. A sampled `RESET` has no user-visible measurement event, but
+its `TraceStepInspection.reset` preserves the internal trajectory outcome used to
+conditionally establish $|0\rangle$ on the target. Resetting an entangled target
+can therefore visibly change the inspected state of its partners.
+
 ## Rotation explanations
 
 For `RX`, `RY`, and `RZ` trace steps, runtime asks Theonoe to explain the exact
@@ -76,8 +83,8 @@ All inspection records are frozen dataclasses with `to_dict()` and canonical
 `to_json()` output. Complex values are serialized as real/imaginary component
 objects. `TraceInspection.inspection_schema_version` independently versions the
 inspection payload, while `TraceInspection.trace_schema_version` preserves the
-associated schema-v4 `ExecutionTrace.schema_version` when storing or exchanging an
+associated schema-v5 `ExecutionTrace.schema_version` when storing or exchanging an
 inspection. `rotation_explanation` is an additive optional step field. The current
-`INSPECTION_SCHEMA_VERSION` is $2$ because inspection serializes the structured
-call-stack provenance. Older inspection schema versions are rejected rather than
-silently interpreted as the current shape.
+`INSPECTION_SCHEMA_VERSION` is $3$ because inspection serializes structured reset
+evidence in addition to the call-stack provenance. Older inspection schema versions
+are rejected rather than silently interpreted as the current shape.

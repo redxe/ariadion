@@ -21,11 +21,26 @@ explanations. Hand-built logical programs retain the declaration-order
 It still performs no slot reuse. Both policies map logical values to execution
 slots, not to hardware or protected physical qubits.
 
+Semantic liveness is intentionally not a resource-reuse proof:
+
+> **Quantum liveness is not quantum reusability. A value may become unreachable
+> while its state remains entangled with live values. Reusing its execution slot
+> requires a proven-clean state or an explicit discard/reset capability.**
+
+`LogicalLifetimeAnalysis.peak_semantically_live_values` describes overlapping
+source-semantic value lifetimes. `LogicalSlotAllocationPlan.peak_live_qubits`
+describes the execution width allocated by a particular policy. The current dense
+policies allocate every expanded value, so their execution width equals their entry
+count rather than the semantic-liveness peak. `QuantumReleaseAnalysis` separately
+marks returned values and entry parameters as `retained` and all other locals as
+`discard_required`. `discard_required` is safety evidence only; it never grants a
+compiler permission to reuse a slot.
+
 The module path is deliberately explicit:
 
 ```text
 LogicalModule -> call expansion / logical instantiation -> ExpandedLogicalProgram
--> lifetime analysis -> logical-slot allocation -> CircuitIR
+-> lifetime and release-safety analysis -> logical-slot allocation -> CircuitIR
 ```
 
 A qubit declaration inside a reusable quantum function is a definition. Each
@@ -84,7 +99,12 @@ Each `Operation` contains:
 - canonical rotation radians and optional source-angle display metadata;
 - optional source metadata.
 
-The current opcodes are `X`, `H`, `Z`, `RX`, `RY`, `RZ`, `CX`, and `MEASURE`.
+The current opcodes are `X`, `H`, `Z`, `RX`, `RY`, `RZ`, `CX`, `MEASURE`, and
+`RESET`. `RESET` has exactly one uncontrolled target. It is an explicit
+non-unitary allocated-IR operation intended for backends that can provide a valid
+discard/reset realization. The current Python source API does not expose a public
+`reset()` marker or builder method, and no compiler allocation policy uses reset to
+recycle a logical execution slot.
 
 `RX`, `RY`, and `RZ` require a finite `angle_radians` value. Direct IR producers
 can omit `AngleMetadata`, but Daidalon preserves source `source_value` and

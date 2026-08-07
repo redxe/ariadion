@@ -331,10 +331,15 @@ returned classical result is a separately calculated joint distribution.
 
 Exact simulation may calculate a terminal observation distribution without
 sampling or mutating the retained analytical state. This is not physical
-post-measurement state evolution. Sampled collapse and mid-circuit feedback are
-separate execution capabilities. The exact engine rejects a gate after an
-observation with `A202`; future sampled execution must define shots, seeds,
-individual outcomes, collapse, feedback, reset, and trace granularity.
+post-measurement state evolution. The exact engine rejects a gate after an
+observation with `A202`. Explicit `SampledExecutionRequest` execution is a
+separate runtime capability: it uses seeded independent shots, emits individual
+outcomes, collapses each trajectory, and permits a later gate. Its sampled result
+types expose empirical counts rather than exact probabilities. A sampled trace
+captures one trajectory only; a request to trace multiple shots fails with `A204`.
+IR `RESET` is likewise sampled-only: it collapses internally and conditionally
+applies `X` to establish $|0\rangle$. The public Python language deliberately adds
+no `observe()` or `reset()` syntax in this slice.
 
 ## Current compatibility surface
 
