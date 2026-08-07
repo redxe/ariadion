@@ -349,7 +349,7 @@ class NoiseImpactComparisonProvenance:
     ideal_backend_id: str
     ideal_baseline_mode: NoiseImpactBaselineMode
     noisy_schedule: NoiseImpactScheduleSummary | None
-    noisy_idle_decoherence: IdleDecoherenceProfileSnapshot | None
+    noisy_idle_decoherence: IdleDecoherenceProfileSnapshot | dict[str, object] | None
     ideal_baseline_derivation: str
     metric_tolerance: float = NOISE_IMPACT_ABS_TOLERANCE
 
@@ -369,13 +369,27 @@ class NoiseImpactComparisonProvenance:
             raise ValueError(
                 "noise impact noisy_schedule must be NoiseImpactScheduleSummary or None"
             )
+        if isinstance(self.noisy_idle_decoherence, dict):
+            expected_keys = {"t1_ns", "t2_ns"}
+            if set(self.noisy_idle_decoherence) != expected_keys:
+                raise ValueError(
+                    "noise impact noisy_idle_decoherence must contain exactly t1_ns and t2_ns"
+                )
+            object.__setattr__(
+                self,
+                "noisy_idle_decoherence",
+                IdleDecoherenceProfileSnapshot(
+                    t1_ns=self.noisy_idle_decoherence["t1_ns"],  # type: ignore[arg-type]
+                    t2_ns=self.noisy_idle_decoherence["t2_ns"],  # type: ignore[arg-type]
+                ),
+            )
         if self.noisy_idle_decoherence is not None and not isinstance(
             self.noisy_idle_decoherence,
             IdleDecoherenceProfileSnapshot,
         ):
             raise ValueError(
                 "noise impact noisy_idle_decoherence must be "
-                "IdleDecoherenceProfileSnapshot or None"
+                "IdleDecoherenceProfileSnapshot, dict, or None"
             )
         if (self.noisy_schedule is None) != (self.noisy_idle_decoherence is None):
             raise ValueError(

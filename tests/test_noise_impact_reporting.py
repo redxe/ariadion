@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
 import unittest
-from math import exp
+from math import exp, inf, nan
 
 from ariadion import Bit, Qubit, cx, h, quantum, x
-from ariadion_core import IrOperationId, ProgramId
+from ariadion_core import IrOperationId, ProgramId, canonical_json
 from ariadion_ir import CircuitIR, OpCode, Operation
 from ariadion_noise import (
     AmplitudeDampingChannel,
@@ -332,6 +332,28 @@ class NoiseImpactReportTests(unittest.TestCase):
                 qubit_count=2,
             )
 
+    def test_public_density_input_rejects_bool_matrix_entries(self) -> None:
+        with self.assertRaisesRegex(ValueError, "finite complex values"):
+            inspect_density_state(
+                (
+                    (1.0, False),
+                    (0.0, 0.0),
+                ),
+                qubit_count=1,
+            )
+
+    def test_public_density_input_rejects_nonfinite_matrix_entries(self) -> None:
+        for bad in (nan, inf, -inf):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, "finite complex values"):
+                    inspect_density_state(
+                        (
+                            (1.0, bad),
+                            (0.0, 0.0),
+                        ),
+                        qubit_count=1,
+                    )
+
     def test_inspect_density_state_accepts_real_numeric_entries(self) -> None:
         report = inspect_density_state(
             (
@@ -459,6 +481,86 @@ class NoiseImpactReportTests(unittest.TestCase):
                 ideal_baseline_derivation="test",
             )
 
+    def test_legacy_idle_dict_input_is_coerced_and_stable(self) -> None:
+        source = {"t1_ns": 100.0, "t2_ns": 200.0}
+        comparison = NoiseImpactComparisonProvenance(
+            circuit_id=ProgramId("noise-impact:legacy-idle-dict"),
+            representation="density_matrix",
+            noisy_backend_id="reference-density-matrix",
+            ideal_backend_id="reference-density-matrix",
+            ideal_baseline_mode=NoiseImpactBaselineMode.IDEAL_NOISE_DISABLED_REPLAY,
+            noisy_schedule=NoiseImpactScheduleSummary(
+                program_id=ProgramId("noise-impact:legacy-idle-dict"),
+                operation_fingerprint=(),
+                peak_duration_ns=0.0,
+            ),
+            noisy_idle_decoherence=source,
+            ideal_baseline_derivation="test",
+        )
+        self.assertIsInstance(
+            comparison.noisy_idle_decoherence,
+            IdleDecoherenceProfileSnapshot,
+        )
+        before = canonical_json(comparison.to_dict())
+        source["t1_ns"] = 999.0
+        self.assertEqual(canonical_json(comparison.to_dict()), before)
+        payload = comparison.to_dict()
+        self.assertEqual(payload["noisy_idle_decoherence"], {"t1_ns": 100.0, "t2_ns": 200.0})
+
+    def test_legacy_idle_dict_validation_rejects_invalid_forms(self) -> None:
+        common = dict(
+            circuit_id=ProgramId("noise-impact:legacy-idle-invalid"),
+            representation="density_matrix",
+            noisy_backend_id="reference-density-matrix",
+            ideal_backend_id="reference-density-matrix",
+            ideal_baseline_mode=NoiseImpactBaselineMode.IDEAL_NOISE_DISABLED_REPLAY,
+            noisy_schedule=NoiseImpactScheduleSummary(
+                program_id=ProgramId("noise-impact:legacy-idle-invalid"),
+                operation_fingerprint=(),
+                peak_duration_ns=0.0,
+            ),
+            ideal_baseline_derivation="test",
+        )
+        invalid_cases = (
+            ({"t1_ns": 100.0}, "exactly t1_ns and t2_ns"),
+            ({"t1_ns": 100.0, "t2_ns": 200.0, "extra": 1.0}, "exactly t1_ns and t2_ns"),
+            ({"t1_ns": True, "t2_ns": 200.0}, "positive finite number"),
+            ({"t1_ns": "100", "t2_ns": 200.0}, "positive finite number"),
+            ({"t1_ns": nan, "t2_ns": 200.0}, "positive finite number"),
+            ({"t1_ns": inf, "t2_ns": 200.0}, "positive finite number"),
+            ({"t1_ns": -inf, "t2_ns": 200.0}, "positive finite number"),
+            ({"t1_ns": 0.0, "t2_ns": 200.0}, "positive finite number"),
+            ({"t1_ns": -1.0, "t2_ns": 200.0}, "positive finite number"),
+        )
+        for payload, message in invalid_cases:
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(ValueError, message):
+                    NoiseImpactComparisonProvenance(
+                        noisy_idle_decoherence=payload,
+                        **common,
+                    )
+
+    def test_direct_idle_snapshot_input_remains_accepted(self) -> None:
+        comparison = NoiseImpactComparisonProvenance(
+            circuit_id=ProgramId("noise-impact:direct-idle-snapshot"),
+            representation="density_matrix",
+            noisy_backend_id="reference-density-matrix",
+            ideal_backend_id="reference-density-matrix",
+            ideal_baseline_mode=NoiseImpactBaselineMode.IDEAL_NOISE_DISABLED_REPLAY,
+            noisy_schedule=NoiseImpactScheduleSummary(
+                program_id=ProgramId("noise-impact:direct-idle-snapshot"),
+                operation_fingerprint=(),
+                peak_duration_ns=0.0,
+            ),
+            noisy_idle_decoherence=IdleDecoherenceProfileSnapshot(
+                t1_ns=100.0,
+                t2_ns=200.0,
+            ),
+            ideal_baseline_derivation="test",
+        )
+        assert comparison.noisy_idle_decoherence is not None
+        self.assertEqual(comparison.noisy_idle_decoherence.to_dict(), {"t1_ns": 100.0, "t2_ns": 200.0})
+
     def test_report_json_is_immutable_against_source_and_nested_mutation(self) -> None:
         source_channel = {
             "kind": "binary_readout",
@@ -496,6 +598,37 @@ class NoiseImpactReportTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             readout_finding.readout.channel.p_one_given_zero = 0.7
         self.assertEqual(report.to_json(), baseline_json)
+
+    def test_to_dict_outputs_are_isolated_from_report_state(self) -> None:
+        request = DensityMatrixExecutionRequest(
+            noise_model=ExecutableNoiseModel(
+                gate_channels=(
+                    GateChannelBinding(OneQubitGate.H, AmplitudeDampingChannel(0.2)),
+                ),
+                readout_channel=BinaryReadoutChannel(0.05, 0.1),
+            ),
+            schedule=self._scheduled_idle_request_for_module().schedule,
+            idle_decoherence=self._scheduled_idle_request_for_module().idle_decoherence,
+        )
+        run = run_logical_module(_idle_sensitive_classical.to_logical_module(), execution=request)
+        report = build_density_noise_impact_report(run)
+        baseline_json = report.to_json()
+
+        payload = report.to_dict()
+        payload["ideal_physical_distribution"][0] = 0.0
+        payload["noisy_physical_distribution"][0] = 0.0
+        payload["reported_distribution"][0] = 0.0
+        payload["comparison"]["noisy_idle_decoherence"]["t1_ns"] = 999.0
+        payload["metrics"][0]["value"] = -1.0
+        payload["limitations"]["statements"][0] = "mutated"
+        payload["event_findings"][0]["summary"] = "mutated"
+        if payload["event_findings"][0]["gate"] is not None:
+            payload["event_findings"][0]["gate"]["channel"]["probability"] = 0.0
+        if payload["event_findings"][-1]["readout"] is not None:
+            payload["event_findings"][-1]["readout"]["channel"]["p_one_given_zero"] = 0.0
+
+        self.assertEqual(report.to_json(), baseline_json)
+        self.assertEqual(report.to_dict(), report.to_dict())
 
     def test_build_report_includes_idle_findings_and_deterministic_json(self) -> None:
         circuit = _two_qubit_idle_circuit()
