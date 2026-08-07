@@ -11,7 +11,7 @@ durations; missing required timing data raises ``MissingOperationTimingError``.
 
 from __future__ import annotations
 
-from math import isfinite
+from math import isclose, isfinite
 
 from ariadion_core import IrOperationId, ProgramId, canonical_json, require_nonempty_identifier
 from ariadion_ir import CircuitIR
@@ -218,16 +218,50 @@ class ExecutionSchedule:
     (the end of the last operation across all slots).
     """
 
-    __slots__ = ("program_id", "scheduled_operations", "idle_intervals", "peak_duration_ns")
+    __slots__ = (
+        "program_id",
+        "operation_fingerprint",
+        "scheduled_operations",
+        "idle_intervals",
+        "peak_duration_ns",
+    )
 
     def __init__(
         self,
         program_id: ProgramId,
+        operation_fingerprint: tuple[tuple[IrOperationId, str, tuple[int, ...], tuple[int, ...]], ...],
         scheduled_operations: tuple[ScheduledOperation, ...],
         idle_intervals: tuple[IdleInterval, ...],
         peak_duration_ns: float,
     ) -> None:
         require_nonempty_identifier(program_id, label="execution schedule program_id")
+        if not isinstance(operation_fingerprint, tuple):
+            raise SchedulingInvariantError(
+                "execution schedule operation_fingerprint must be a tuple"
+            )
+        for item in operation_fingerprint:
+            if (
+                not isinstance(item, tuple)
+                or len(item) != 4
+                or not isinstance(item[0], str)
+                or not isinstance(item[1], str)
+                or not isinstance(item[2], tuple)
+                or not isinstance(item[3], tuple)
+            ):
+                raise SchedulingInvariantError(
+                    "execution schedule operation_fingerprint must contain "
+                    "(operation_id, opcode, targets, controls) tuples"
+                )
+            if not all(isinstance(target, int) and target >= 0 for target in item[2]):
+                raise SchedulingInvariantError(
+                    "execution schedule operation_fingerprint targets must be "
+                    "non-negative integers"
+                )
+            if not all(isinstance(control, int) and control >= 0 for control in item[3]):
+                raise SchedulingInvariantError(
+                    "execution schedule operation_fingerprint controls must be "
+                    "non-negative integers"
+                )
         if not isinstance(scheduled_operations, tuple):
             raise SchedulingInvariantError(
                 "execution schedule scheduled_operations must be a tuple"
@@ -291,7 +325,20 @@ class ExecutionSchedule:
                         "execution schedule idle intervals must not overlap for the same slot"
                     )
 
+        fingerprint_operation_ids = [item[0] for item in operation_fingerprint]
+        if len(fingerprint_operation_ids) != len(set(fingerprint_operation_ids)):
+            raise SchedulingInvariantError(
+                "execution schedule operation_fingerprint must not contain duplicate "
+                "operation IDs"
+            )
+        if fingerprint_operation_ids != operation_ids:
+            raise SchedulingInvariantError(
+                "execution schedule operation_fingerprint operation order must match "
+                "scheduled_operations"
+            )
+
         self.program_id: ProgramId = program_id
+        self.operation_fingerprint = operation_fingerprint
         self.scheduled_operations: tuple[ScheduledOperation, ...] = scheduled_operations
         self.idle_intervals: tuple[IdleInterval, ...] = idle_intervals
         self.peak_duration_ns: float = peak
@@ -315,6 +362,7 @@ class ExecutionSchedule:
     def __repr__(self) -> str:
         return (
             f"ExecutionSchedule(program_id={self.program_id!r}, "
+            f"operation_fingerprint={self.operation_fingerprint!r}, "
             f"scheduled_operations={self.scheduled_operations!r}, "
             f"idle_intervals={self.idle_intervals!r}, "
             f"peak_duration_ns={self.peak_duration_ns!r})"
@@ -326,17 +374,34 @@ class ExecutionSchedule:
         return (
             self.program_id == other.program_id
             and
+            self.operation_fingerprint == other.operation_fingerprint
+            and
             self.scheduled_operations == other.scheduled_operations
             and self.idle_intervals == other.idle_intervals
             and self.peak_duration_ns == other.peak_duration_ns
         )
 
     def __hash__(self) -> int:
-        return hash((self.program_id, self.scheduled_operations, self.idle_intervals, self.peak_duration_ns))
+        return hash((
+            self.program_id,
+            self.operation_fingerprint,
+            self.scheduled_operations,
+            self.idle_intervals,
+            self.peak_duration_ns,
+        ))
 
     def to_dict(self) -> dict[str, object]:
         return {
             "program_id": self.program_id,
+            "operation_fingerprint": [
+                {
+                    "operation_id": operation_id,
+                    "opcode": opcode,
+                    "targets": list(targets),
+                    "controls": list(controls),
+                }
+                for operation_id, opcode, targets, controls in self.operation_fingerprint
+            ],
             "scheduled_operations": [op.to_dict() for op in self.scheduled_operations],
             "idle_intervals": [ii.to_dict() for ii in self.idle_intervals],
             "peak_duration_ns": self.peak_duration_ns,
@@ -374,6 +439,15 @@ def schedule_asap(
     slot_available: dict[int, float] = {slot: 0.0 for slot in range(circuit.qubit_count)}
 
     scheduled_operations: list[ScheduledOperation] = []
+    operation_fingerprint = tuple(
+        (
+            operation.id,
+            operation.opcode.value,
+            tuple(operation.targets),
+            tuple(operation.controls),
+        )
+        for operation in circuit.operations
+    )
 
     # Track (start, end) busy intervals per slot for idle-interval computation.
     slot_busy: dict[int, list[tuple[float, float]]] = {
@@ -430,6 +504,7 @@ def schedule_asap(
 
     return ExecutionSchedule(
         program_id=circuit.id,
+        operation_fingerprint=operation_fingerprint,
         scheduled_operations=tuple(scheduled_operations),
         idle_intervals=tuple(idle_intervals),
         peak_duration_ns=peak_duration_ns,
@@ -451,7 +526,6 @@ def validate_schedule_for_circuit(circuit: CircuitIR, schedule: ExecutionSchedul
         raise ScheduleCircuitBindingError(
             "execution schedule program_id must match the circuit program ID"
         )
-
     circuit_operation_ids = [operation.id for operation in circuit.operations]
     scheduled_operation_ids = [operation.operation_id for operation in schedule.scheduled_operations]
 
@@ -478,6 +552,97 @@ def validate_schedule_for_circuit(circuit: CircuitIR, schedule: ExecutionSchedul
         raise ScheduleCircuitBindingError(
             "execution schedule operation order must exactly match circuit operation order"
         )
+
+    expected_fingerprint = tuple(
+        (
+            operation.id,
+            operation.opcode.value,
+            tuple(operation.targets),
+            tuple(operation.controls),
+        )
+        for operation in circuit.operations
+    )
+    if schedule.operation_fingerprint != expected_fingerprint:
+        raise ScheduleCircuitBindingError(
+            "execution schedule operation fingerprint must match circuit operation semantics"
+        )
+
+    timing_profile = {
+        operation.operation_id: operation.duration_ns
+        for operation in schedule.scheduled_operations
+    }
+    expected_asap = schedule_asap(circuit, timing_profile)
+
+    for scheduled, expected in zip(
+        schedule.scheduled_operations,
+        expected_asap.scheduled_operations,
+        strict=True,
+    ):
+        if (
+            not isclose(scheduled.start_ns, expected.start_ns, rel_tol=0.0, abs_tol=1e-12)
+            or not isclose(scheduled.end_ns, expected.end_ns, rel_tol=0.0, abs_tol=1e-12)
+        ):
+            raise ScheduleCircuitBindingError(
+                "execution schedule operation timing is not a valid deterministic ASAP "
+                "realization of this circuit"
+            )
+    if schedule.peak_duration_ns + 1e-12 < expected_asap.peak_duration_ns:
+        raise ScheduleCircuitBindingError(
+            "execution schedule peak_duration_ns cannot be shorter than deterministic "
+            "ASAP evidence"
+        )
+
+    operation_slot_map = {
+        operation.id: tuple(operation.targets) + tuple(operation.controls)
+        for operation in circuit.operations
+    }
+    expected_idle_intervals = _derive_idle_intervals(
+        qubit_count=circuit.qubit_count,
+        operations=schedule.scheduled_operations,
+        operation_slot_map=operation_slot_map,
+        peak_duration_ns=schedule.peak_duration_ns,
+    )
+    if _normalize_idle_intervals(schedule.idle_intervals) != _normalize_idle_intervals(expected_idle_intervals):
+        raise ScheduleCircuitBindingError(
+            "execution schedule idle intervals do not match deterministic ASAP evidence"
+        )
+
+
+def _derive_idle_intervals(
+    *,
+    qubit_count: int,
+    operations: tuple[ScheduledOperation, ...],
+    operation_slot_map: dict[IrOperationId, tuple[int, ...]],
+    peak_duration_ns: float,
+) -> tuple[IdleInterval, ...]:
+    slot_activity: list[list[tuple[float, float]]] = [[] for _ in range(qubit_count)]
+    for operation in operations:
+        for slot in operation_slot_map[operation.operation_id]:
+            slot_activity[slot].append((operation.start_ns, operation.end_ns))
+
+    idle_intervals: list[IdleInterval] = []
+    for slot, ranges in enumerate(slot_activity):
+        ranges.sort(key=lambda value: value[0])
+        cursor = 0.0
+        for start_ns, end_ns in ranges:
+            if start_ns > cursor:
+                idle_intervals.append(IdleInterval(slot=slot, start_ns=cursor, end_ns=start_ns))
+            if end_ns > cursor:
+                cursor = end_ns
+        if peak_duration_ns > cursor:
+            idle_intervals.append(IdleInterval(slot=slot, start_ns=cursor, end_ns=peak_duration_ns))
+    return tuple(idle_intervals)
+
+
+def _normalize_idle_intervals(
+    idle_intervals: tuple[IdleInterval, ...],
+) -> tuple[tuple[int, float, float], ...]:
+    return tuple(
+        sorted(
+            (interval.slot, interval.start_ns, interval.end_ns)
+            for interval in idle_intervals
+        )
+    )
 
 
 __all__ = [
