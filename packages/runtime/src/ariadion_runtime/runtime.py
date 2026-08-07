@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+from math import isfinite
 
 from ariadion_core import (
     ClassicalBitId,
@@ -9,12 +11,14 @@ from ariadion_core import (
     canonical_json,
     require_nonempty_identifier,
 )
-from ariadion_ir import CircuitIR
+from ariadion_ir import CircuitIR, OpCode
 from ariadion_language import Program
-from ariadion_noise import BinaryReadoutChannel, GateChannelBinding, IdleDecoherenceProfile
+from ariadion_noise import BinaryReadoutChannel, GateChannelBinding, IdleDecoherenceProfile, NoiseFeature
 from ariadion_semantics import (
+    ClassicalAcceptanceCriterion,
     LogicalModule,
     LogicalProgram,
+    ReliabilityGoal,
     ReturnShape,
     UnboundQuantumParameterError,
 )
@@ -40,6 +44,17 @@ from daidalon import (
 )
 from theonoe import StateReport, inspect_amplitudes, inspect_state, render_report
 from theonoe import (
+    BARE_RELIABILITY_ABS_TOLERANCE,
+    BARE_RELIABILITY_SCHEMA_VERSION,
+    BareReliabilityBitOrder,
+    BareReliabilityCompletenessIssue,
+    BareReliabilityDistributionKind,
+    BareReliabilityGoalVerdict,
+    BareReliabilityMethod,
+    BareReliabilityProbabilityScope,
+    BareReliabilityReport,
+    BareReliabilityStatus,
+    BoundClassicalAcceptanceCriterion,
     BinaryReadoutChannelSnapshot,
     IdleDecoherenceProfileSnapshot,
     NoiseImpactBaselineMode,
@@ -398,6 +413,84 @@ class DensityExecutionScheduleSnapshot:
             )
 
 
+class DensityExecutionCoverageIssue(str, Enum):
+    COVERAGE_SNAPSHOT_ABSENT = "coverage_snapshot_absent"
+    IDEAL_ONLY_TWO_QUBIT_OPERATION_PRESENT = "ideal_only_two_qubit_operation_present"
+    UNSUPPORTED_FEATURES_PRESENT = "unsupported_features_present"
+
+
+_noise_feature_order = {feature: index for index, feature in enumerate(NoiseFeature)}
+_coverage_issue_order = {
+    issue: index for index, issue in enumerate(DensityExecutionCoverageIssue)
+}
+
+
+@dataclass(frozen=True, slots=True)
+class DensityExecutionCoverageSnapshot:
+    executed_noise_features: tuple[NoiseFeature, ...]
+    unsupported_features: tuple[NoiseFeature, ...]
+    assumptions: tuple[str, ...]
+    completeness_issues: tuple[DensityExecutionCoverageIssue, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.executed_noise_features, tuple):
+            raise ValueError(
+                "density execution coverage executed_noise_features must be a tuple"
+            )
+        if not all(isinstance(feature, NoiseFeature) for feature in self.executed_noise_features):
+            raise ValueError(
+                "density execution coverage executed_noise_features must contain NoiseFeature values"
+            )
+        if len(self.executed_noise_features) != len(set(self.executed_noise_features)):
+            raise ValueError("density execution coverage executed_noise_features must be unique")
+        object.__setattr__(
+            self,
+            "executed_noise_features",
+            tuple(sorted(self.executed_noise_features, key=_noise_feature_order.__getitem__)),
+        )
+        if not isinstance(self.unsupported_features, tuple):
+            raise ValueError("density execution coverage unsupported_features must be a tuple")
+        if not all(isinstance(feature, NoiseFeature) for feature in self.unsupported_features):
+            raise ValueError(
+                "density execution coverage unsupported_features must contain NoiseFeature values"
+            )
+        if len(self.unsupported_features) != len(set(self.unsupported_features)):
+            raise ValueError("density execution coverage unsupported_features must be unique")
+        object.__setattr__(
+            self,
+            "unsupported_features",
+            tuple(sorted(self.unsupported_features, key=_noise_feature_order.__getitem__)),
+        )
+        if not isinstance(self.assumptions, tuple) or not all(
+            isinstance(assumption, str) and assumption for assumption in self.assumptions
+        ):
+            raise ValueError("density execution coverage assumptions must be a tuple of strings")
+        if not isinstance(self.completeness_issues, tuple):
+            raise ValueError("density execution coverage completeness_issues must be a tuple")
+        if not all(isinstance(issue, DensityExecutionCoverageIssue) for issue in self.completeness_issues):
+            raise ValueError(
+                "density execution coverage completeness_issues must contain DensityExecutionCoverageIssue values"
+            )
+        if len(self.completeness_issues) != len(set(self.completeness_issues)):
+            raise ValueError("density execution coverage completeness_issues must be unique")
+        object.__setattr__(
+            self,
+            "completeness_issues",
+            tuple(sorted(self.completeness_issues, key=_coverage_issue_order.__getitem__)),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "executed_noise_features": [feature.value for feature in self.executed_noise_features],
+            "unsupported_features": [feature.value for feature in self.unsupported_features],
+            "assumptions": list(self.assumptions),
+            "completeness_issues": [issue.value for issue in self.completeness_issues],
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
 @dataclass(frozen=True, slots=True)
 class DensityExecutionProvenanceSnapshot:
     """Runtime-owned provenance facts for supported density logical execution."""
@@ -414,6 +507,7 @@ class DensityExecutionProvenanceSnapshot:
     physical_distribution_size: int | None
     reported_distribution_size: int | None
     reported_matches_physical: bool | None
+    coverage: DensityExecutionCoverageSnapshot | None = None
 
     def __post_init__(self) -> None:
         require_nonempty_identifier(self.circuit_id, label="density execution provenance circuit_id")
@@ -470,6 +564,13 @@ class DensityExecutionProvenanceSnapshot:
             raise ValueError(
                 "density execution provenance classical_result_ids must be a tuple of IDs"
             )
+        if self.coverage is not None and not isinstance(
+            self.coverage,
+            DensityExecutionCoverageSnapshot,
+        ):
+            raise ValueError(
+                "density execution provenance coverage must be DensityExecutionCoverageSnapshot or None"
+            )
         sizes = (self.physical_distribution_size, self.reported_distribution_size)
         if all(size is None for size in sizes):
             if self.classical_result_ids:
@@ -503,6 +604,30 @@ class DensityExecutionProvenanceSnapshot:
                 raise ValueError(
                     "density execution provenance reported_matches_physical must be set when distributions are present"
                 )
+
+        def to_dict(self) -> dict[str, object]:
+            return {
+                "circuit_id": self.circuit_id,
+                "backend_id": self.backend_id,
+                "schedule": self.schedule.to_dict() if self.schedule is not None else None,
+                "idle_decoherence": (
+                    self.idle_decoherence.to_dict() if self.idle_decoherence is not None else None
+                ),
+                "gate_noise_bindings": [binding.to_dict() for binding in self.gate_noise_bindings],
+                "readout_channel": (
+                    self.readout_channel.to_dict() if self.readout_channel is not None else None
+                ),
+                "gate_event_operation_ids": list(self.gate_event_operation_ids),
+                "idle_event_slots": list(self.idle_event_slots),
+                "classical_result_ids": list(self.classical_result_ids),
+                "physical_distribution_size": self.physical_distribution_size,
+                "reported_distribution_size": self.reported_distribution_size,
+                "reported_matches_physical": self.reported_matches_physical,
+                "coverage": self.coverage.to_dict() if self.coverage is not None else None,
+            }
+
+        def to_json(self) -> str:
+            return canonical_json(self.to_dict())
 
 
 @dataclass(frozen=True, slots=True)
@@ -635,6 +760,22 @@ class DensityMatrixLogicalRunResult:
             raise ValueError(
                 "density-matrix logical quantum handles must match quantum return leaves"
             )
+        expected_coverage = _derive_density_execution_coverage(self.compilation, self.provenance)
+        if self.provenance.coverage is not None:
+            if self.provenance.coverage.executed_noise_features != expected_coverage.executed_noise_features:
+                raise ValueError(
+                    "density-matrix logical provenance coverage executed_noise_features must match compiled circuit and simulation evidence"
+                )
+            if self.provenance.coverage.assumptions != expected_coverage.assumptions:
+                raise ValueError(
+                    "density-matrix logical provenance coverage assumptions must match compiled circuit and simulation evidence"
+                )
+            expected_issues = set(expected_coverage.completeness_issues)
+            actual_issues = set(self.provenance.coverage.completeness_issues)
+            if not expected_issues.issubset(actual_issues):
+                raise ValueError(
+                    "density-matrix logical provenance coverage completeness_issues must retain required circuit issues"
+                )
 
 
 def run_program(
@@ -893,6 +1034,177 @@ def build_density_noise_impact_report(
     )
 
 
+def build_bare_reliability_report(
+    run: DensityMatrixLogicalRunResult,
+    *,
+    goal: ReliabilityGoal,
+    acceptance: ClassicalAcceptanceCriterion,
+    distribution_kind: BareReliabilityDistributionKind,
+) -> BareReliabilityReport:
+    if not isinstance(run, DensityMatrixLogicalRunResult):
+        raise ValueError("bare reliability reporting requires DensityMatrixLogicalRunResult")
+    if not isinstance(goal, ReliabilityGoal):
+        raise ValueError("bare reliability goal must be ReliabilityGoal")
+    if not isinstance(acceptance, ClassicalAcceptanceCriterion):
+        raise ValueError("bare reliability acceptance must be ClassicalAcceptanceCriterion")
+    if not isinstance(distribution_kind, BareReliabilityDistributionKind):
+        raise ValueError(
+            "bare reliability distribution_kind must be BareReliabilityDistributionKind"
+        )
+
+    supporting_noise_impact = build_density_noise_impact_report(run)
+    classical_return_ids = run.compilation.readout.classical_return_ids()
+    quantum_return_ids = run.compilation.readout.quantum_return_ids()
+    if quantum_return_ids:
+        return _build_unsupported_bare_reliability_report(
+            goal=goal,
+            supporting_noise_impact=supporting_noise_impact,
+            status_reason="quantum or hybrid return structure is unsupported for bare reliability v0.1",
+        )
+    selected_distribution = _select_density_distribution(run, distribution_kind)
+    if selected_distribution is None:
+        return _build_unsupported_bare_reliability_report(
+            goal=goal,
+            supporting_noise_impact=supporting_noise_impact,
+            status_reason="selected density distribution is unavailable",
+        )
+    if not classical_return_ids:
+        return _build_unsupported_bare_reliability_report(
+            goal=goal,
+            supporting_noise_impact=supporting_noise_impact,
+            status_reason="classical return leaves are unavailable",
+        )
+    if selected_distribution.result_ids != classical_return_ids:
+        raise ValueError("bare reliability selected distribution result IDs must match classical returns")
+    if selected_distribution.bit_order is not MeasurementBitOrder.TARGETS_LSB_FIRST:
+        raise ValueError("bare reliability selected distribution bit order must be TARGETS_LSB_FIRST")
+    if selected_distribution.scope is not ProbabilityScope.JOINT_RETURN:
+        raise ValueError("bare reliability selected distribution scope must be JOINT_RETURN")
+    if acceptance.result_arity != len(selected_distribution.result_ids):
+        raise ValueError("bare reliability acceptance arity must match the selected distribution")
+
+    bound_acceptance = BoundClassicalAcceptanceCriterion(
+        circuit_id=run.compilation.ir.id,
+        result_ids=selected_distribution.result_ids,
+        bit_order=BareReliabilityBitOrder.TARGETS_LSB_FIRST,
+        scope=BareReliabilityProbabilityScope.JOINT_RETURN,
+        distribution_kind=distribution_kind,
+        accepted_outcomes=acceptance.accepted_outcomes,
+    )
+    model_relative_success_probability, model_relative_failure_probability = _compute_acceptance_probabilities(
+        selected_distribution.probabilities,
+        bound_acceptance.accepted_indices,
+    )
+
+    coverage = run.provenance.coverage
+    if coverage is None:
+        return BareReliabilityReport(
+            schema_version=BARE_RELIABILITY_SCHEMA_VERSION,
+            method=BareReliabilityMethod.EXACT_MODEL_RELATIVE_ACCEPTANCE_FAILURE_PROBABILITY,
+            status=BareReliabilityStatus.INCOMPLETE_MODEL,
+            goal_verdict=BareReliabilityGoalVerdict.NOT_EVALUATED,
+            goal=goal,
+            bound_acceptance=bound_acceptance,
+            model_relative_success_probability=model_relative_success_probability,
+            model_relative_failure_probability=model_relative_failure_probability,
+            goal_margin=None,
+            supporting_noise_impact=supporting_noise_impact,
+            executed_noise_features=(),
+            unsupported_features=(),
+            assumptions=(),
+            completeness_issues=(BareReliabilityCompletenessIssue.COVERAGE_SNAPSHOT_ABSENT,),
+            limitations=(
+                "Bare reliability v0.1 compares exact model-relative acceptance failure mass only.",
+                "Missing runtime coverage evidence prevents a supported verdict.",
+            ),
+            status_reasons=("runtime coverage snapshot is absent",),
+        )
+
+    completeness_issues = tuple(
+        BareReliabilityCompletenessIssue[issue.name] for issue in coverage.completeness_issues
+    )
+    if coverage.unsupported_features or completeness_issues:
+        return BareReliabilityReport(
+            schema_version=BARE_RELIABILITY_SCHEMA_VERSION,
+            method=BareReliabilityMethod.EXACT_MODEL_RELATIVE_ACCEPTANCE_FAILURE_PROBABILITY,
+            status=BareReliabilityStatus.INCOMPLETE_MODEL,
+            goal_verdict=BareReliabilityGoalVerdict.NOT_EVALUATED,
+            goal=goal,
+            bound_acceptance=bound_acceptance,
+            model_relative_success_probability=model_relative_success_probability,
+            model_relative_failure_probability=model_relative_failure_probability,
+            goal_margin=None,
+            supporting_noise_impact=supporting_noise_impact,
+            executed_noise_features=coverage.executed_noise_features,
+            unsupported_features=coverage.unsupported_features,
+            assumptions=coverage.assumptions,
+            completeness_issues=completeness_issues,
+            limitations=(
+                "Bare reliability v0.1 compares exact model-relative acceptance failure mass only.",
+                "Coverage issues prevent a supported verdict.",
+            ),
+            status_reasons=_coverage_status_reasons(coverage),
+        )
+    if goal.confidence is not None:
+        return BareReliabilityReport(
+            schema_version=BARE_RELIABILITY_SCHEMA_VERSION,
+            method=BareReliabilityMethod.EXACT_MODEL_RELATIVE_ACCEPTANCE_FAILURE_PROBABILITY,
+            status=BareReliabilityStatus.INDETERMINATE,
+            goal_verdict=BareReliabilityGoalVerdict.NOT_EVALUATED,
+            goal=goal,
+            bound_acceptance=bound_acceptance,
+            model_relative_success_probability=model_relative_success_probability,
+            model_relative_failure_probability=model_relative_failure_probability,
+            goal_margin=None,
+            supporting_noise_impact=supporting_noise_impact,
+            executed_noise_features=coverage.executed_noise_features,
+            unsupported_features=coverage.unsupported_features,
+            assumptions=coverage.assumptions,
+            completeness_issues=(),
+            limitations=(
+                "Bare reliability v0.1 compares exact model-relative acceptance failure mass only.",
+                "Confidence-bearing goals are not numerically justified by this slice.",
+            ),
+            status_reasons=("goal confidence is unsupported in bare reliability v0.1",),
+        )
+
+    tolerance = BARE_RELIABILITY_ABS_TOLERANCE
+    if model_relative_failure_probability < goal.maximum_failure_probability - tolerance:
+        verdict = BareReliabilityGoalVerdict.SATISFIED
+        goal_margin = goal.maximum_failure_probability - model_relative_failure_probability
+        status_reasons = ("failure probability is below the goal within tolerance",)
+    elif model_relative_failure_probability > goal.maximum_failure_probability + tolerance:
+        verdict = BareReliabilityGoalVerdict.VIOLATED
+        goal_margin = goal.maximum_failure_probability - model_relative_failure_probability
+        status_reasons = ("failure probability is above the goal within tolerance",)
+    else:
+        verdict = BareReliabilityGoalVerdict.NOT_EVALUATED
+        goal_margin = None
+        status_reasons = ("failure probability is within the shared tolerance of the goal",)
+
+    return BareReliabilityReport(
+        schema_version=BARE_RELIABILITY_SCHEMA_VERSION,
+        method=BareReliabilityMethod.EXACT_MODEL_RELATIVE_ACCEPTANCE_FAILURE_PROBABILITY,
+        status=BareReliabilityStatus.SUPPORTED,
+        goal_verdict=verdict,
+        goal=goal,
+        bound_acceptance=bound_acceptance,
+        model_relative_success_probability=model_relative_success_probability,
+        model_relative_failure_probability=model_relative_failure_probability,
+        goal_margin=goal_margin,
+        supporting_noise_impact=supporting_noise_impact,
+        executed_noise_features=coverage.executed_noise_features,
+        unsupported_features=coverage.unsupported_features,
+        assumptions=coverage.assumptions,
+        completeness_issues=(),
+        limitations=(
+            "Bare reliability v0.1 compares exact model-relative acceptance failure mass only.",
+            "It is not a hardware guarantee, confidence interval, or rigorous bound.",
+        ),
+        status_reasons=status_reasons,
+    )
+
+
 def _build_density_execution_provenance(
     *,
     compilation: LogicalCompilationResult,
@@ -944,6 +1256,7 @@ def _build_density_execution_provenance(
         event.operation_id for event in simulation.gate_noise_events
     )
     idle_event_slots = tuple(event.slot for event in simulation.idle_decoherence_events)
+    coverage = _build_density_execution_coverage(compilation=compilation, simulation=simulation, execution=execution)
 
     return DensityExecutionProvenanceSnapshot(
         circuit_id=compilation.ir.id,
@@ -958,6 +1271,148 @@ def _build_density_execution_provenance(
         physical_distribution_size=physical_size,
         reported_distribution_size=reported_size,
         reported_matches_physical=reported_matches,
+        coverage=coverage,
+    )
+
+
+def _build_density_execution_coverage(
+    *,
+    compilation: LogicalCompilationResult,
+    simulation: DensityMatrixResult,
+    execution: DensityMatrixExecutionRequest,
+) -> DensityExecutionCoverageSnapshot:
+    executed_noise_features: list[NoiseFeature] = []
+    if execution.noise_model.gate_channels:
+        executed_noise_features.append(NoiseFeature.GATE_CHANNELS)
+    if execution.idle_decoherence is not None:
+        executed_noise_features.append(NoiseFeature.IDLE_DECOHERENCE)
+    if execution.noise_model.readout_channel is not None:
+        executed_noise_features.append(NoiseFeature.READOUT_ERRORS)
+
+    completeness_issues: list[DensityExecutionCoverageIssue] = []
+    if any(operation.opcode is OpCode.CX for operation in compilation.ir.operations):
+        completeness_issues.append(DensityExecutionCoverageIssue.IDEAL_ONLY_TWO_QUBIT_OPERATION_PRESENT)
+
+    assumptions = ["reference-density-matrix backend"]
+    if execution.noise_model.gate_channels:
+        assumptions.append("gate channels are applied after the ideal gate")
+    if execution.idle_decoherence is not None:
+        assumptions.append("idle decoherence is schedule-derived and executable")
+    if execution.noise_model.readout_channel is not None:
+        assumptions.append("readout noise is applied after the physical distribution")
+
+    return DensityExecutionCoverageSnapshot(
+        executed_noise_features=tuple(executed_noise_features),
+        unsupported_features=(),
+        assumptions=tuple(assumptions),
+        completeness_issues=tuple(completeness_issues),
+    )
+
+
+def _derive_density_execution_coverage(
+    compilation: LogicalCompilationResult,
+    provenance: DensityExecutionProvenanceSnapshot,
+) -> DensityExecutionCoverageSnapshot:
+    executed_noise_features: list[NoiseFeature] = []
+    if provenance.gate_noise_bindings:
+        executed_noise_features.append(NoiseFeature.GATE_CHANNELS)
+    if provenance.idle_decoherence is not None:
+        executed_noise_features.append(NoiseFeature.IDLE_DECOHERENCE)
+    if provenance.readout_channel is not None:
+        executed_noise_features.append(NoiseFeature.READOUT_ERRORS)
+    completeness_issues: list[DensityExecutionCoverageIssue] = []
+    if any(operation.opcode is OpCode.CX for operation in compilation.ir.operations):
+        completeness_issues.append(DensityExecutionCoverageIssue.IDEAL_ONLY_TWO_QUBIT_OPERATION_PRESENT)
+    assumptions = ["reference-density-matrix backend"]
+    if provenance.gate_noise_bindings:
+        assumptions.append("gate channels are applied after the ideal gate")
+    if provenance.idle_decoherence is not None:
+        assumptions.append("idle decoherence is schedule-derived and executable")
+    if provenance.readout_channel is not None:
+        assumptions.append("readout noise is applied after the physical distribution")
+    return DensityExecutionCoverageSnapshot(
+        executed_noise_features=tuple(executed_noise_features),
+        unsupported_features=(),
+        assumptions=tuple(assumptions),
+        completeness_issues=tuple(completeness_issues),
+    )
+
+
+def _select_density_distribution(
+    run: DensityMatrixLogicalRunResult,
+    distribution_kind: BareReliabilityDistributionKind,
+) -> ExactClassicalDistribution | None:
+    if distribution_kind is BareReliabilityDistributionKind.PHYSICAL_OUTPUT:
+        return run.physical_classical_output_distribution
+    if distribution_kind is BareReliabilityDistributionKind.REPORTED_OUTPUT:
+        return run.reported_classical_output_distribution
+    raise ValueError("unsupported bare reliability distribution kind")
+
+
+def _compute_acceptance_probabilities(
+    probabilities: tuple[float, ...],
+    accepted_indices: tuple[int, ...],
+) -> tuple[float, float]:
+    accepted = set(accepted_indices)
+    success = sum(probability for index, probability in enumerate(probabilities) if index in accepted)
+    failure = sum(probability for index, probability in enumerate(probabilities) if index not in accepted)
+    success = _clamp_probability(success)
+    failure = _clamp_probability(failure)
+    total = success + failure
+    if not isfinite(total) or abs(total - 1.0) > BARE_RELIABILITY_ABS_TOLERANCE:
+        raise ValueError("bare reliability probabilities must sum to one within tolerance")
+    return success, failure
+
+
+def _clamp_probability(value: float) -> float:
+    if not isfinite(value):
+        raise ValueError("bare reliability probability must be finite")
+    if -BARE_RELIABILITY_ABS_TOLERANCE <= value < 0:
+        return 0.0
+    if 1 < value <= 1 + BARE_RELIABILITY_ABS_TOLERANCE:
+        return 1.0
+    if value < -BARE_RELIABILITY_ABS_TOLERANCE or value > 1 + BARE_RELIABILITY_ABS_TOLERANCE:
+        raise ValueError("bare reliability probability must be within [0, 1] within tolerance")
+    return value
+
+
+def _coverage_status_reasons(coverage: DensityExecutionCoverageSnapshot) -> tuple[str, ...]:
+    reasons = [
+        "runtime coverage snapshot marks the executed model as incomplete",
+    ]
+    if coverage.completeness_issues:
+        reasons.extend(issue.value for issue in coverage.completeness_issues)
+    if coverage.unsupported_features:
+        reasons.append("unsupported features are present in the runtime coverage snapshot")
+    return tuple(reasons)
+
+
+def _build_unsupported_bare_reliability_report(
+    *,
+    goal: ReliabilityGoal,
+    supporting_noise_impact: NoiseImpactReport,
+    status_reason: str,
+) -> BareReliabilityReport:
+    return BareReliabilityReport(
+        schema_version=BARE_RELIABILITY_SCHEMA_VERSION,
+        method=BareReliabilityMethod.EXACT_MODEL_RELATIVE_ACCEPTANCE_FAILURE_PROBABILITY,
+        status=BareReliabilityStatus.UNSUPPORTED,
+        goal_verdict=BareReliabilityGoalVerdict.NOT_EVALUATED,
+        goal=goal,
+        bound_acceptance=None,
+        model_relative_success_probability=None,
+        model_relative_failure_probability=None,
+        goal_margin=None,
+        supporting_noise_impact=supporting_noise_impact,
+        executed_noise_features=(),
+        unsupported_features=(),
+        assumptions=(),
+        completeness_issues=(),
+        limitations=(
+            "Bare reliability v0.1 compares exact model-relative acceptance failure mass only.",
+            "Quantum-only and hybrid-return executions are unsupported in this slice.",
+        ),
+        status_reasons=(status_reason,),
     )
 
 

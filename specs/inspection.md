@@ -123,6 +123,12 @@ artifacts:
 
 These findings provide inspectable modeled evidence and parameters. They do not
 claim additive causal decomposition of total state deviation across events.
+
+The runtime bare-reliability assessment reuses this density noise-impact report
+as supporting evidence, but the acceptance-failure calculation itself is a
+separate runtime helper. Inspection does not decide supported, incomplete,
+indeterminate, or unsupported bare-reliability status on its own, and it does
+not promote exact acceptance failure mass into a hardware guarantee.
 Readout distortion is reported as a classical output effect and is not represented
 as quantum-state damage in the retained density matrix.
 

@@ -42,6 +42,47 @@ class ProtectionStrategy(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class ClassicalAcceptanceCriterion:
+    """Distribution-independent classical success intent.
+
+    The criterion only states which ordered bit outcomes count as success. It does
+    not bind a circuit identity, result IDs, bit order, or physical/reported scope.
+    """
+
+    result_arity: int
+    accepted_outcomes: tuple[tuple[int, ...], ...]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.result_arity, bool) or not isinstance(self.result_arity, int) or self.result_arity < 1:
+            raise ValueError("classical acceptance criterion result_arity must be a positive integer")
+        _require_tuple(self.accepted_outcomes, label="classical acceptance criterion accepted_outcomes")
+        canonical_outcomes: list[tuple[int, ...]] = []
+        seen_outcomes: set[tuple[int, ...]] = set()
+        for outcome in self.accepted_outcomes:
+            if not isinstance(outcome, tuple):
+                raise ValueError("classical acceptance criterion accepted outcomes must be tuples")
+            if len(outcome) != self.result_arity:
+                raise ValueError("classical acceptance criterion accepted outcomes must match result_arity")
+            if any(isinstance(bit, bool) or not isinstance(bit, int) or bit not in {0, 1} for bit in outcome):
+                raise ValueError("classical acceptance criterion outcomes must contain only 0/1 bits")
+            if outcome in seen_outcomes:
+                raise ValueError("classical acceptance criterion accepted_outcomes must be unique")
+            seen_outcomes.add(outcome)
+            canonical_outcomes.append(outcome)
+        canonical_outcomes.sort(key=_outcome_index)
+        object.__setattr__(self, "accepted_outcomes", tuple(canonical_outcomes))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "result_arity": self.result_arity,
+            "accepted_outcomes": [list(outcome) for outcome in self.accepted_outcomes],
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
 class ReliabilityGoal:
     """A requested upper bound on total failure probability.
 
@@ -470,7 +511,12 @@ def _require_optional_type(value: object, expected_type: type[object], *, label:
         raise ValueError(f"{label} must be {expected_type.__name__} when provided")
 
 
+def _outcome_index(outcome: tuple[int, ...]) -> int:
+    return sum(bit << index for index, bit in enumerate(outcome))
+
+
 __all__ = [
+    "ClassicalAcceptanceCriterion",
     "CorrelationModel",
     "EvolutionModel",
     "GateNoise",

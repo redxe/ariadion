@@ -128,6 +128,23 @@ policy, simulator evidence linkage, and classical distribution linkage. The
 report helper derives provenance from this snapshot rather than from a retained
 raw `DensityMatrixExecutionRequest`.
 
+Runtime also exposes `build_bare_reliability_report(...)` for the bare
+reliability v0.1 milestone. It consumes a `DensityMatrixLogicalRunResult`, a
+semantic `ClassicalAcceptanceCriterion`, a `ReliabilityGoal`, and an explicit
+selection between the physical and reported classical distributions. The helper
+binds accepted outcomes to the exact `joint_return` classical distribution in
+`targets_lsb_first` order and reports the exact model-relative acceptance
+failure mass for the selected distribution. It does not infer a hardware
+guarantee, a confidence interval, or a protection plan.
+
+Status is explicit. Classical-only density runs can produce `SUPPORTED` or
+`INDETERMINATE` bare-reliability reports when the runtime coverage snapshot is
+complete enough. Missing coverage, unsupported executable features, or retained
+coverage issues produce `INCOMPLETE_MODEL`. Quantum-only or hybrid-return runs
+produce `UNSUPPORTED`. The current slice treats the ideal-only two-qubit
+operation evidence as a completeness issue, so CX-based exactness remains a
+model-relative assumption rather than a hardware claim.
+
 This guarantee is intentionally scoped: supported runtime construction rejects
 accidental mismatches across circuit/schedule/backend/readout/evidence
 artifacts. Hostile in-process Python fabrication and cryptographic attestation

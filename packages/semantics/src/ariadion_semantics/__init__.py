@@ -50,6 +50,7 @@ from ariadion_noise import (
     validate_quantum_channel,
 )
 from .reliability import (
+    ClassicalAcceptanceCriterion,
     CorrelationModel,
     EvolutionModel,
     GateNoise,
@@ -68,6 +69,7 @@ __all__ = [
     "AmplitudeDampingChannel",
     "BinaryReadoutChannel",
     "BitFlipChannel",
+    "ClassicalAcceptanceCriterion",
     "ClassicalBitValue",
     "CorrelationModel",
     "DepolarizingChannel",

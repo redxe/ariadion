@@ -5,6 +5,7 @@ import unittest
 from dataclasses import FrozenInstanceError
 
 from ariadion_semantics import (
+    ClassicalAcceptanceCriterion,
     CorrelationModel,
     EvolutionModel,
     GateNoise,
@@ -22,6 +23,50 @@ from ariadion_semantics import (
 
 
 class ReliabilityContractTests(unittest.TestCase):
+    def test_classical_acceptance_criterion_canonicalizes_and_serializes(self) -> None:
+        criterion = ClassicalAcceptanceCriterion(
+            2,
+            (
+                (0, 1),
+                (1, 0),
+            ),
+        )
+
+        self.assertEqual(criterion.accepted_outcomes, ((1, 0), (0, 1)))
+        self.assertEqual(
+            criterion.to_dict(),
+            {"result_arity": 2, "accepted_outcomes": [[1, 0], [0, 1]]},
+        )
+        self.assertEqual(json.loads(criterion.to_json()), criterion.to_dict())
+
+    def test_classical_acceptance_criterion_rejects_invalid_entries(self) -> None:
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            ClassicalAcceptanceCriterion(0, ())
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            ClassicalAcceptanceCriterion(True, ())  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "match result_arity"):
+            ClassicalAcceptanceCriterion(1, ((0, 1),))
+        with self.assertRaisesRegex(ValueError, "0/1 bits"):
+            ClassicalAcceptanceCriterion(1, ((True,),))
+        with self.assertRaisesRegex(ValueError, "unique"):
+            ClassicalAcceptanceCriterion(1, ((1,), (1,)))
+
+    def test_classical_acceptance_criterion_allows_empty_and_full_acceptance(self) -> None:
+        empty = ClassicalAcceptanceCriterion(1, ())
+        full = ClassicalAcceptanceCriterion(1, ((0,), (1,)))
+
+        self.assertEqual(empty.accepted_outcomes, ())
+        self.assertEqual(full.accepted_outcomes, ((0,), (1,)))
+        payload = full.to_dict()
+        payload["accepted_outcomes"][0][0] = 99
+        self.assertEqual(full.accepted_outcomes, ((0,), (1,)))
+
+    def test_classical_acceptance_criterion_preserves_mutation_isolation(self) -> None:
+        criterion = ClassicalAcceptanceCriterion(2, ((1, 0),))
+        payload = criterion.to_dict()
+        payload["accepted_outcomes"][0][0] = 0
+        self.assertEqual(criterion.accepted_outcomes, ((1, 0),))
+
     def test_reliability_goal_is_immutable_and_serializes_deterministically(self) -> None:
         goal = ReliabilityGoal(0.000001, confidence=0.95)
 
