@@ -21,12 +21,55 @@ Ariadion is an early-stage, basis-aware quantum programming platform designed to
 
 ## Quick start
 
-No third-party runtime dependencies are required for the current reference implementation.
+The reference SDK and CLI support Python 3.11 and 3.12. No third-party runtime
+dependencies are required for the current reference implementation.
+
+### Clean installation from built wheels
+
+From a repository checkout, the release smoke command builds every workspace
+distribution into a new, empty wheelhouse. It then creates a fresh virtual
+environment outside the checkout, installs `ariadion` and `ariadion-cli` using
+only that wheelhouse, runs an SDK Bell-state check, and executes
+`ariadion demo bell`:
+
+```bash
+python tools/release_smoke.py --wheelhouse build/release-wheels
+```
+
+The wheelhouse path must be absent or empty so stale artifacts cannot satisfy the
+installation. To inspect the installation manually, create a virtual environment
+outside the checkout and install from the generated artifacts:
+
+```text
+python -m venv <outside-checkout-venv>
+<venv-python> -m pip install --no-index --find-links build/release-wheels ariadion ariadion-cli
+<venv-ariadion> demo bell
+```
+
+The optional NumPy package remains outside the reference SDK dependency closure.
+Validate its separate install and explicit backend execution with a new, empty
+wheelhouse:
+
+```bash
+python tools/release_smoke.py --wheelhouse build/numpy-release-wheels --with-numpy
+```
+
+For reproducible release gating, this smoke path pins the acquired NumPy wheel to
+`2.4.6` today while the optional package itself keeps its broader compatibility
+declaration.
+
+### Development workflow
+
+Use the repository-local tooling from the workspace root:
 
 ```bash
 python tools/run_example.py examples/bell.py
 python tools/test.py
 ```
+
+Repository tests use source paths and are not evidence that built distributions
+install correctly. Use the separate release smoke workflow above for packaging
+and clean-environment installation proof.
 
 Trace navigation is available through the CLI for files exposing a top-level
 `program` builder:

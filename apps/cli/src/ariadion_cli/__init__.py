@@ -19,9 +19,25 @@ from .trace_view import render_trace_step
 InputFunction = Callable[[str], str]
 OutputFunction = Callable[[str], None]
 
+_ASCII_OUTPUT_FALLBACK = str.maketrans(
+    {
+        "═": "=",
+        "─": "-",
+        "│": "|",
+        "●": "o",
+    }
+)
+
 
 class CliError(ValueError):
     """Raised for actionable command-line input errors."""
+
+
+def _emit_output(output: OutputFunction, text: str) -> None:
+    try:
+        output(text)
+    except UnicodeEncodeError:
+        output(text.translate(_ASCII_OUTPUT_FALLBACK))
 
 
 def build_demo(name: str) -> Program:
@@ -63,9 +79,9 @@ def main(
     try:
         if args.command == "demo":
             result = run(build_demo(args.name))
-            output(result.circuit)
-            output("")
-            output(result.report)
+            _emit_output(output, result.circuit)
+            _emit_output(output, "")
+            _emit_output(output, result.report)
             return 0
         if args.command == "run":
             return _run_file(
@@ -77,7 +93,7 @@ def main(
         if args.command == "debug":
             return _debug_file(args.path, input_fn=input_fn, output=output)
     except CliError as error:
-        output(f"error: {error}")
+        _emit_output(output, f"error: {error}")
         return 2
     return 1
 
@@ -113,37 +129,37 @@ def run_debugger(
     """Navigate an immutable debugger session using n, p, g, and q commands."""
 
     if not session.has_steps:
-        output("Trace contains no operation steps.")
+        _emit_output(output, "Trace contains no operation steps.")
         return
 
-    output(render_trace_step(session.current_view))
-    output("Commands: n next, p previous, g N go to one-based step N, q quit")
+    _emit_output(output, render_trace_step(session.current_view))
+    _emit_output(output, "Commands: n next, p previous, g N go to one-based step N, q quit")
     while True:
         try:
             command = input_fn("debug> ").strip()
         except EOFError:
-            output("Debugger input ended.")
+            _emit_output(output, "Debugger input ended.")
             return
         if command == "q":
             return
         if command == "n":
             if session.current_step_index == session.step_count - 1:
-                output("Already at the final step.")
+                _emit_output(output, "Already at the final step.")
             else:
                 session = session.next()
-                output(render_trace_step(session.current_view))
+                _emit_output(output, render_trace_step(session.current_view))
             continue
         if command == "p":
             if session.current_step_index == 0:
-                output("Already at the first step.")
+                _emit_output(output, "Already at the first step.")
             else:
                 session = session.previous()
-                output(render_trace_step(session.current_view))
+                _emit_output(output, render_trace_step(session.current_view))
             continue
         if command.startswith("g "):
             session = _go_to_debug_step(session, command[2:].strip(), output=output)
             continue
-        output("Unknown command. Use n, p, g N, or q.")
+        _emit_output(output, "Unknown command. Use n, p, g N, or q.")
 
 
 def _run_file(
@@ -156,23 +172,23 @@ def _run_file(
     program = load_program(path)
     if not trace_requested:
         result = run(program)
-        output(result.circuit)
-        output("")
-        output(result.report)
+        _emit_output(output, result.circuit)
+        _emit_output(output, "")
+        _emit_output(output, result.report)
         return 0
 
     session = _build_debugger_session(program)
     if step_number is not None:
         view = _view_for_display_step(session, step_number)
-        output(render_trace_step(view))
+        _emit_output(output, render_trace_step(view))
         return 0
     if not session.has_steps:
-        output("Trace contains no operation steps.")
+        _emit_output(output, "Trace contains no operation steps.")
         return 0
     for step_index in range(session.step_count):
         if step_index:
-            output("")
-        output(render_trace_step(session.view_at(step_index)))
+            _emit_output(output, "")
+        _emit_output(output, render_trace_step(session.view_at(step_index)))
     return 0
 
 
@@ -221,8 +237,8 @@ def _go_to_debug_step(
         step_number = int(argument)
         view = _view_for_display_step(session, step_number)
     except (ValueError, CliError):
-        output(f"Enter a step number between 1 and {session.step_count}.")
+        _emit_output(output, f"Enter a step number between 1 and {session.step_count}.")
         return session
     session = session.go_to(view.step_index)
-    output(render_trace_step(session.current_view))
+    _emit_output(output, render_trace_step(session.current_view))
     return session

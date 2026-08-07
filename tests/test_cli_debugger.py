@@ -185,6 +185,31 @@ class CliDebuggerTests(unittest.TestCase):
         self.assertEqual(missing_program_exit_code, 2)
         self.assertIn("must define a top-level Program named 'program'", output[-1])
 
+    def test_demo_falls_back_to_ascii_when_output_encoding_rejects_unicode(self) -> None:
+        class Cp1252Output:
+            def __init__(self) -> None:
+                self.messages: list[str] = []
+
+            def __call__(self, message: str) -> None:
+                message.encode("cp1252")
+                self.messages.append(message)
+
+        output = Cp1252Output()
+
+        exit_code = main(["demo", "bell"], output=output)
+
+        self.assertEqual(exit_code, 0)
+        rendered = "\n".join(output.messages)
+        self.assertIn("q0:", rendered)
+        self.assertIn("q1:", rendered)
+        self.assertIn("-[H]-", rendered)
+        self.assertIn("o", rendered)
+        self.assertIn("[X]", rendered)
+        self.assertNotIn("─", rendered)
+        self.assertNotIn("═", rendered)
+        self.assertNotIn("│", rendered)
+        self.assertNotIn("●", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

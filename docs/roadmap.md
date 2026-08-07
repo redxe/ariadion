@@ -32,16 +32,18 @@
   and physical versus readout-reported distributions
 - explicit simulation backend capabilities, inspectable selection plans, and
 	optional NumPy `complex128` local kernels while preserving reference semantics
+- operation scheduling with executable T1/T2 idle decoherence
+- immutable noise-impact explanations and bare-execution reliability estimates
 
-## Next sequence
+## Current sequence status
 
-The next implementation work must preserve this order:
+The reliability sequence has completed its first three slices:
 
 1. Add scheduling and T1/T2 idle decoherence. (complete)
-2. Add noise-impact explanations.
-3. Add bare reliability estimation.
+2. Add noise-impact explanations. (complete)
+3. Add bare reliability estimation. (complete)
 4. Add pluggable protection-planning interfaces, then encoded-QEC simulation and
-	decoder integration later.
+	decoder integration later. (deferred; keep separate from release foundations)
 
 After the noise-channel and density-matrix work has established a clean execution
 model, return to classical feedback, branching, and conditional gates.
@@ -175,12 +177,12 @@ model, return to classical feedback, branching, and conditional gates.
 	precision, scheduling, and T1/T2 execution
 - add reference/NumPy parity coverage and manual non-CI kernel benchmarks
 
-## Milestone 5 — scheduling and reliability planning
+## Milestone 5 — scheduling and reliability planning — partial
 
-- schedule operations and model T1/T2 idle decoherence
-- explain the modeled noise impact in execution artifacts
+- schedule operations and model T1/T2 idle decoherence — complete
+- explain the modeled noise impact in execution artifacts — complete
 - define leakage, correlation, and device-profile ingestion contracts
-- estimate bare-execution reliability against explicit goals
+- estimate bare-execution reliability against explicit goals — complete
 - add pluggable protection-planning interfaces and Pareto resource reporting
 - add encoded-QEC simulation and decoder integration only after these earlier slices
 
