@@ -112,6 +112,19 @@ return aliases are projected, so one physical result is never independently
 noisified twice. Without readout noise the two distributions are equal. Readout
 noise never changes the retained density matrix.
 
+`DensityMatrixResult` now also records immutable modeled noise-application
+evidence: `gate_noise_events` for configured post-gate channels and
+`idle_decoherence_events` for schedule-derived idle intervals. These are evidence
+records for what executable model applications were performed; they are not
+standalone causal attribution percentages.
+
+Runtime exposes `build_density_noise_impact_report(...)` as an explicit,
+read-only projection from a completed `DensityMatrixLogicalRunResult` plus its
+`DensityMatrixExecutionRequest`. It recomputes a matched ideal baseline by
+re-executing the same compiled circuit with executable noise disabled, then
+packages ideal/noisy/reported comparisons and modeled event evidence through
+Theonoe's density noise-impact contracts.
+
 ## Reset
 
 `RESET` is a non-unitary IR operation with one uncontrolled target. Exact
@@ -160,6 +173,11 @@ channel representation exists. `BinaryReadoutChannel` instead models the classic
 outcome probabilities $P(\widetilde{b}=1\mid b=0)$ and
 $P(\widetilde{b}=0\mid b=1)$; it is model-level post-observation data, not a
 density-matrix gate channel.
+
+For inspectability, every executed one-qubit channel application is recorded as a
+`GateNoiseApplicationEvent` with operation ID, target slot, gate category,
+channel snapshot, and deterministic application order under the fixed
+`ideal_then_channel` ordering.
 
 > A noise profile describes assumptions. An executable noise model defines
 > mathematical channels that a simulator can apply.

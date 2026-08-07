@@ -24,6 +24,7 @@ from ariadion_simulator import (
     DensityMatrixExecutionRequest,
     DensityMatrixResult,
     DensityMatrixTerminalObservationError,
+    GateNoiseApplicationEvent,
     ExactResetUnsupportedError,
     ExactTerminalObservationError,
     IdleDecoherenceEvent,
@@ -196,6 +197,7 @@ class NumpyDensityMatrixBackend:
             }
         slot_last_end: dict[int, float] = {s: 0.0 for s in range(circuit.qubit_count)}
         decoherence_events: list[IdleDecoherenceEvent] = []
+        gate_noise_events: list[GateNoiseApplicationEvent] = []
 
         for step_index, operation in enumerate(circuit.operations):
             if terminal_observation is not None and operation.opcode is not OpCode.MEASURE:
@@ -284,6 +286,15 @@ class NumpyDensityMatrixBackend:
                     qubit_count=circuit.qubit_count,
                     channel=channel,
                 )
+                gate_noise_events.append(
+                    GateNoiseApplicationEvent(
+                        operation_id=operation.id,
+                        target_slot=operation.targets[0],
+                        gate=gate,
+                        channel=channel,
+                        application_order=len(gate_noise_events),
+                    )
+                )
 
         # Apply remaining idle time to all slots that have not reached peak_duration_ns.
         if apply_idle and request.schedule is not None and request.idle_decoherence is not None:
@@ -330,6 +341,7 @@ class NumpyDensityMatrixBackend:
             circuit=circuit,
             density_matrix=matrix,
             idle_decoherence_events=tuple(decoherence_events),
+            gate_noise_events=tuple(gate_noise_events),
         )
 
 

@@ -141,6 +141,11 @@ its matched channel, and executes ideal `CX`. It has no two-qubit noise,
 device-calibration ingestion, scheduling, code-distance selection, surface-code
 layout, or physical-source-`Qubit` mapping.
 
+Simulator density execution now emits immutable noise-application evidence
+(`GateNoiseApplicationEvent` and `IdleDecoherenceEvent`). Runtime remains the
+orchestration boundary: it owns ideal/noisy/reported comparison assembly, while
+Theonoe owns read-only mixed-state noise-impact metrics/explanations.
+
 > A noise profile describes assumptions. An executable noise model defines
 > mathematical channels that a simulator can apply.
 

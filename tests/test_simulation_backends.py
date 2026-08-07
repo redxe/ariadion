@@ -34,11 +34,20 @@ from ariadion_simulator import (
     simulate,
     simulate_density_matrix,
 )
-from ariadion_simulator_numpy import (
-    NUMPY_COMPLEX_DTYPE,
-    NumpyDensityMatrixBackend,
-    NumpyStateVectorBackend,
-)
+
+try:
+    from ariadion_simulator_numpy import (
+        NUMPY_COMPLEX_DTYPE,
+        NumpyDensityMatrixBackend,
+        NumpyStateVectorBackend,
+    )
+
+    HAS_NUMPY_SIMULATOR = True
+except ModuleNotFoundError:  # pragma: no cover - exercised in dependency-minimal CI
+    NUMPY_COMPLEX_DTYPE = None  # type: ignore[assignment]
+    NumpyDensityMatrixBackend = None  # type: ignore[assignment]
+    NumpyStateVectorBackend = None  # type: ignore[assignment]
+    HAS_NUMPY_SIMULATOR = False
 from daidalon import compile_logical_module
 
 
@@ -123,6 +132,9 @@ class SimulationBackendContractTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "does not support"):
             ReferenceStateVectorBackend().plan(circuit, query=SimulationQuery.SAMPLES)
+        if not HAS_NUMPY_SIMULATOR:
+            self.skipTest("requires optional NumPy simulator backend")
+        assert NumpyStateVectorBackend is not None
         with self.assertRaisesRegex(ValueError, "does not accept execution options"):
             NumpyStateVectorBackend().execute(
                 circuit,
@@ -166,6 +178,7 @@ class SimulationBackendContractTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(HAS_NUMPY_SIMULATOR, "requires optional NumPy simulator backend")
 class NumpyBackendParityTests(unittest.TestCase):
     def test_numpy_state_vector_matches_reference_for_local_and_controlled_gates(self) -> None:
         circuits = (
@@ -194,6 +207,7 @@ class NumpyBackendParityTests(unittest.TestCase):
         )
 
         backend = NumpyStateVectorBackend()
+        assert NUMPY_COMPLEX_DTYPE is not None
         self.assertEqual(NUMPY_COMPLEX_DTYPE.name, "complex128")
         for circuit in circuits:
             with self.subTest(circuit=circuit.name):

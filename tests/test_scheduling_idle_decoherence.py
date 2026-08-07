@@ -37,7 +37,15 @@ from ariadion_simulator import (
     simulate_density_matrix,
     validate_density_matrix,
 )
-from ariadion_simulator_numpy import NumpyDensityMatrixBackend
+
+try:
+    from ariadion_simulator_numpy import NumpyDensityMatrixBackend, NumpyStateVectorBackend
+
+    HAS_NUMPY_SIMULATOR = True
+except ModuleNotFoundError:  # pragma: no cover - exercised in dependency-minimal CI
+    NumpyDensityMatrixBackend = None  # type: ignore[assignment]
+    NumpyStateVectorBackend = None  # type: ignore[assignment]
+    HAS_NUMPY_SIMULATOR = False
 
 
 def _op(
@@ -603,6 +611,7 @@ class PhysicalDensityEffectsTests(unittest.TestCase):
         self.assertGreater(purity_ideal, purity_noisy)
 
 
+@unittest.skipUnless(HAS_NUMPY_SIMULATOR, "requires optional NumPy simulator backend")
 class ReferenceNumpyParityTests(unittest.TestCase):
     def _assert_matrix_close(self, left: tuple, right: tuple, *, places: int = 10) -> None:
         for row_l, row_r in zip(left, right, strict=True):
@@ -667,6 +676,7 @@ class DensityValidationTests(unittest.TestCase):
         with self.assertRaises(DensityMatrixInvariantError):
             validate_density_matrix(non_psd, qubit_count=1)
 
+    @unittest.skipUnless(HAS_NUMPY_SIMULATOR, "requires optional NumPy simulator backend")
     def test_numpy_trusted_result_skips_psd_audit(self) -> None:
         from ariadion_simulator import density_matrix as density_module
 
@@ -682,6 +692,7 @@ class DensityValidationTests(unittest.TestCase):
             return original(*args, **kwargs)  # type: ignore[arg-type]
 
         with patch.object(density_module, "_validate_positive_semidefinite", counting_psd):
+            assert NumpyDensityMatrixBackend is not None
             NumpyDensityMatrixBackend().execute(circuit)
 
         self.assertEqual(call_count, 0)
@@ -698,7 +709,10 @@ class CapabilityBehaviorTests(unittest.TestCase):
 
     def test_statevector_backends_declare_no_noise_features(self) -> None:
         from ariadion_simulator import ReferenceStateVectorBackend
-        from ariadion_simulator_numpy import NumpyStateVectorBackend
+
+        if not HAS_NUMPY_SIMULATOR:
+            self.skipTest("requires optional NumPy simulator backend")
+        assert NumpyStateVectorBackend is not None
 
         for backend in (ReferenceStateVectorBackend(), NumpyStateVectorBackend()):
             with self.subTest(backend=backend.backend_id):

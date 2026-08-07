@@ -88,3 +88,28 @@ inspection. `rotation_explanation` is an additive optional step field. The curre
 `INSPECTION_SCHEMA_VERSION` is $3$ because inspection serializes structured reset
 evidence in addition to the call-stack provenance. Older inspection schema versions
 are rejected rather than silently interpreted as the current shape.
+
+## Density noise-impact reports
+
+Theonoe also provides immutable mixed-state noise-impact reporting for
+density-matrix execution artifacts. This contract is separate from state-vector
+trace inspection: it compares one matched ideal baseline density matrix against a
+noisy density matrix and, when present, contrasts physical and readout-reported
+classical distributions.
+
+Reported metrics include Hilbert-Schmidt distance, computational-basis
+population TVD, l1 coherence values/deltas, purity values/deltas, physical output
+TVD, and readout-distortion TVD. Computational-basis population and l1 coherence
+metrics are explicitly basis dependent.
+
+The report also carries structured modeled-event findings from runtime/simulator
+artifacts:
+
+- gate-channel applications (`GateNoiseApplicationEvent`),
+- schedule-derived idle-decoherence intervals (`IdleDecoherenceEvent`),
+- optional readout-channel distortion evidence.
+
+These findings provide inspectable modeled evidence and parameters. They do not
+claim additive causal decomposition of total state deviation across events.
+Readout distortion is reported as a classical output effect and is not represented
+as quantum-state damage in the retained density matrix.

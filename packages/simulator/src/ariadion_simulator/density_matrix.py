@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from math import cos, isclose, isfinite, sin, sqrt
 from typing import Final, TypeAlias
 
+from ariadion_core import canonical_json, require_nonempty_identifier
 from ariadion_ir import CircuitIR, IrOperationId, OpCode, Operation
 from ariadion_noise import (
     ExecutableNoiseModel,
@@ -108,12 +109,61 @@ class DensityMatrixExecutionRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class GateNoiseApplicationEvent:
+    """Immutable evidence for one configured post-gate channel application."""
+
+    operation_id: IrOperationId
+    target_slot: int
+    gate: OneQubitGate
+    channel: QuantumChannel
+    application_order: int
+    application_ordering: str = "ideal_then_channel"
+
+    def __post_init__(self) -> None:
+        require_nonempty_identifier(self.operation_id, label="gate-noise operation ID")
+        if (
+            isinstance(self.target_slot, bool)
+            or not isinstance(self.target_slot, int)
+            or self.target_slot < 0
+        ):
+            raise ValueError("gate-noise target_slot must be a non-negative integer")
+        if not isinstance(self.gate, OneQubitGate):
+            raise ValueError("gate-noise gate must be OneQubitGate")
+        if not isinstance(self.channel, QuantumChannel):
+            raise ValueError("gate-noise channel must be QuantumChannel")
+        if (
+            isinstance(self.application_order, bool)
+            or not isinstance(self.application_order, int)
+            or self.application_order < 0
+        ):
+            raise ValueError("gate-noise application_order must be a non-negative integer")
+        if self.application_ordering != "ideal_then_channel":
+            raise ValueError(
+                "gate-noise application_ordering must be 'ideal_then_channel'"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "operation_id": self.operation_id,
+            "target_slot": self.target_slot,
+            "gate": self.gate.value,
+            "channel": self.channel.to_dict(),
+            "application_order": self.application_order,
+            "application_ordering": self.application_ordering,
+        }
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
 class DensityMatrixResult:
     """A final exact mixed state distinct from state-vector amplitudes."""
 
     circuit: CircuitIR
     density_matrix: DensityMatrix
     idle_decoherence_events: tuple[IdleDecoherenceEvent, ...] = ()
+    gate_noise_events: tuple[GateNoiseApplicationEvent, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.circuit, CircuitIR):
@@ -130,6 +180,13 @@ class DensityMatrixResult:
                 "density-matrix result idle_decoherence_events must be a tuple of "
                 "IdleDecoherenceEvent values"
             )
+        if not isinstance(self.gate_noise_events, tuple) or not all(
+            isinstance(event, GateNoiseApplicationEvent) for event in self.gate_noise_events
+        ):
+            raise DensityMatrixInvariantError(
+                "density-matrix result gate_noise_events must be a tuple of "
+                "GateNoiseApplicationEvent values"
+            )
 
     @property
     def probabilities(self) -> tuple[float, ...]:
@@ -144,6 +201,7 @@ class DensityMatrixResult:
         circuit: CircuitIR,
         density_matrix: DensityMatrix,
         idle_decoherence_events: tuple[IdleDecoherenceEvent, ...] = (),
+        gate_noise_events: tuple[GateNoiseApplicationEvent, ...] = (),
     ) -> DensityMatrixResult:
         """Construct a result from trusted simulator evolution without PSD audit.
 
@@ -165,11 +223,19 @@ class DensityMatrixResult:
                 "density-matrix result idle_decoherence_events must be a tuple of "
                 "IdleDecoherenceEvent values"
             )
+        if not isinstance(gate_noise_events, tuple) or not all(
+            isinstance(event, GateNoiseApplicationEvent) for event in gate_noise_events
+        ):
+            raise DensityMatrixInvariantError(
+                "density-matrix result gate_noise_events must be a tuple of "
+                "GateNoiseApplicationEvent values"
+            )
 
         result = object.__new__(cls)
         object.__setattr__(result, "circuit", circuit)
         object.__setattr__(result, "density_matrix", density_matrix)
         object.__setattr__(result, "idle_decoherence_events", idle_decoherence_events)
+        object.__setattr__(result, "gate_noise_events", gate_noise_events)
         return result
 
 
@@ -218,6 +284,7 @@ def simulate_density_matrix(
         }
     slot_last_end: dict[int, float] = {s: 0.0 for s in range(circuit.qubit_count)}
     decoherence_events: list[IdleDecoherenceEvent] = []
+    gate_noise_events: list[GateNoiseApplicationEvent] = []
 
     for step_index, operation in enumerate(circuit.operations):
         if terminal_observation is not None and operation.opcode is not OpCode.MEASURE:
@@ -283,6 +350,15 @@ def simulate_density_matrix(
                         target=operation.targets[0],
                         channel=channel,
                     )
+                    gate_noise_events.append(
+                        GateNoiseApplicationEvent(
+                            operation_id=operation.id,
+                            target_slot=operation.targets[0],
+                            gate=gate,
+                            channel=channel,
+                            application_order=len(gate_noise_events),
+                        )
+                    )
         # Cheap O(n^2) invariant check after each step; PSD runs once at result construction.
         _validate_density_matrix_invariants(density, qubit_count=circuit.qubit_count)
 
@@ -317,6 +393,7 @@ def simulate_density_matrix(
         circuit=circuit,
         density_matrix=tuple(tuple(row) for row in density),
         idle_decoherence_events=tuple(decoherence_events),
+        gate_noise_events=tuple(gate_noise_events),
     )
 
 
@@ -644,6 +721,7 @@ __all__ = [
     "DensityMatrixInvariantError",
     "DensityMatrixResult",
     "DensityMatrixTerminalObservationError",
+    "GateNoiseApplicationEvent",
     "measurement_probabilities",
     "simulate_density_matrix",
     "validate_density_matrix",
