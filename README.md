@@ -1,423 +1,168 @@
 # Ariadion
 
-**A thread through quantum complexity.**
+[![CI](https://github.com/redxe/ariadion/actions/workflows/ci.yml/badge.svg)](https://github.com/redxe/ariadion/actions/workflows/ci.yml)
+[![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://github.com/redxe/ariadion/actions/workflows/ci.yml)
+[![Tag: v0.1.0rc1](https://img.shields.io/badge/tag-v0.1.0rc1-informational)](https://github.com/redxe/ariadion/tree/v0.1.0rc1)
 
-Ariadion is an early-stage, basis-aware quantum programming platform designed to make quantum programs visible, understandable, and playable. The repository contains a small but working vertical slice:
+Ariadion is a Python-first quantum programming platform focused on preserving intent, execution evidence, and inspectable provenance through compilation and simulation.
 
-1. capture a safe subset of a Python quantum function or describe a compatibility builder program;
-2. lower it through the **Daidalon** compiler into semantic circuit IR;
-3. execute it with reference exact state-vector, sampled-trajectory, or small
-  density-matrix simulation;
-4. inspect amplitudes, probabilities, phase, and entanglement hints with **Theonoe**;
-5. render a synchronized ASCII circuit view.
+> Status: **technical release candidate (`0.1.0rc1`)**. This is not a production `1.0` release.
 
-> Status: foundation / pre-alpha. APIs are intentionally small and expected to evolve.
+## Why Ariadion exists
 
-## Naming
+Many quantum tools make circuit construction and execution approachable, but it is still easy to lose the thread between:
 
-- **Ariadion** — the platform, language, runtime, and public SDK. Inspired by Ariadne's thread through the Labyrinth.
-- **Daidalon** — the compiler and synthesis engine. Inspired by Daedalus, the legendary builder.
-- **Theonoe** — the debugger and state-inspection engine. Named for the prophetic figure associated with hidden knowledge.
+- original program intent;
+- compiler decisions;
+- backend and noise assumptions;
+- execution provenance;
+- evidence supporting reliability conclusions.
 
-## Quick start
+Ariadion treats those relationships as first-class, inspectable contracts rather than implicit side effects.
 
-The reference SDK and CLI support Python 3.11 and 3.12. No third-party runtime
-dependencies are required for the current reference implementation.
+## What exists today
 
-### Clean installation from built wheels
+| Area | Current capability (implemented) |
+| --- | --- |
+| Programming and semantics | Python source capture without executing the quantum function body; `LogicalModule` and typed semantic contracts; invocation expansion; lifetime and release analysis. |
+| Compilation | Daidalon compiler; allocation and readout planning; `CircuitIR`; logical-operation provenance. |
+| Execution | Explicit backend selection; reference and optional NumPy state-vector execution; sampled trajectories; density-matrix execution; scheduling; gate, idle/T1/T2, and readout noise. |
+| Evidence and understanding | Immutable results; source-to-operation provenance; execution traces where supported; Theonoe state and transition inspection; noise-impact reports; model-relative bare-reliability reports; derived protection-requirement reports. |
+| Interfaces and quality | Public Python SDK; CLI demo path; deterministic JSON reports; 415-test suite; Python 3.11/3.12 CI; clean-wheel installation smoke tests. |
 
-From a repository checkout, the release smoke command builds every workspace
-distribution into a new, empty wheelhouse. It then creates a fresh virtual
-environment outside the checkout, installs `ariadion` and `ariadion-cli` using
-only that wheelhouse, runs an SDK Bell-state check, and executes
-`ariadion demo bell`:
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+    A[Entry\npackages/sdk\napps/cli] --> B[Python frontend\npackages/frontend-python]
+    B --> C[Meaning\npackages/language\npackages/semantics]
+    C --> D[Compile\npackages/daidalon\npackages/ir]
+    D --> E[Execute\npackages/runtime\npackages/simulator\npackages/simulator-numpy\npackages/noise]
+    E --> F[Understand\npackages/theonoe\npackages/visualization]
+    G[Source syntax contracts\npackages/syntax] -. future .-> C
+```
+
+The Python frontend (`packages/frontend-python`) is the currently implemented source-to-semantics path. `packages/syntax` currently contains syntax-node and token contracts, not a lexer or parser. It remains separate from the active Python frontend path; any future integration with that path is deferred.
+
+Source intent remains separate from compiler choices, numerical realization, and explanation artifacts.
+
+## Five-minute quick start
+
+From the repository root using the documented `uv` workspace flow:
 
 ```bash
-python tools/release_smoke.py --wheelhouse build/release-wheels
+uv sync --all-packages
+uv run python tools/run_example.py examples/bell.py
+uv run ariadion demo bell
+uv run python tools/test.py
 ```
 
-The wheelhouse path must be absent or empty so stale artifacts cannot satisfy the
-installation. To inspect the installation manually, create a virtual environment
-outside the checkout and install from the generated artifacts:
+Release-candidate installability smoke checks:
 
-```text
-python -m venv <outside-checkout-venv>
-<venv-python> -m pip install --no-index --find-links build/release-wheels ariadion ariadion-cli
-<venv-ariadion> demo bell
-```
-
-The optional NumPy package remains outside the reference SDK dependency closure.
-Validate its separate install and explicit backend execution with a new, empty
-wheelhouse:
+Each destination must be absent or empty — the tool rejects populated wheelhouses by design. Use a new, uniquely named directory each time.
 
 ```bash
-python tools/release_smoke.py --wheelhouse build/numpy-release-wheels --with-numpy
+uv run python tools/release_smoke.py --wheelhouse build/smoke-base-$(date +%Y%m%d)-01
+uv run python tools/release_smoke.py --wheelhouse build/smoke-numpy-$(date +%Y%m%d)-01 --with-numpy
 ```
 
-For reproducible release gating, this smoke path pins the acquired NumPy wheel to
-`2.4.6` today while the optional package itself keeps its broader compatibility
-declaration.
+Rerunning with the same non-empty destination will fail. Clear or rename the directory first.
 
-### Development workflow
-
-Use the repository-local tooling from the workspace root:
-
-```bash
-python tools/run_example.py examples/bell.py
-python tools/test.py
-```
-
-Repository tests use source paths and are not evidence that built distributions
-install correctly. Use the separate release smoke workflow above for packaging
-and clean-environment installation proof.
-
-Trace navigation is available through the CLI for files exposing a top-level
-`program` builder:
-
-```bash
-ariadion run examples/bell.py --trace
-ariadion run examples/bell.py --step 1
-ariadion debug examples/bell.py
-```
-
-The interactive debugger accepts `n` (next), `p` (previous), `g N` (go to a
-one-based step), and `q` (quit).
-
-Rotations use explicit source-unit angles and retain canonical radians through
-execution and trace rendering:
+## Small public API example
 
 ```python
-from ariadion import Program, deg, rad, turns
-
-program = Program(3, name="rotations")
-program.rx(0, deg(190))
-program.ry(1, rad(2))
-program.rz(2, turns(0.25))
-```
-
-Bare numeric rotation values are rejected by the compiler so Ariadion never has
-to guess their unit.
-
-## Captured quantum functions
-
-Ariadion reads the Python AST of a quantum function. It does not execute the
-function body to construct the program. The initial `@quantum` frontend supports
-local `Qubit()` declarations, aliases, gate/observation/reset markers, explicit-unit
-rotations, and typed terminal returns:
-
-```python
-from ariadion import Bit, Qubit, basis, cx, h, quantum, run
-
-
-@quantum(basis=basis.z)
-def bell() -> tuple[Bit, Bit]:
-    left = Qubit()
-    right = Qubit()
-    h(left)
-    cx(left, right)
-    return left, right
-
-
-result = run(bell)
-```
-
-`result.classical_output_distribution` retains the exact joint Bell distribution:
-$00 \,\mapsto\, 0.5$, $01 \,\mapsto\, 0$, $10 \,\mapsto\, 0$, and
-$11 \,\mapsto\, 0.5$.
-
-Inferred observation handles ordinary classical returns. Explicit `observe()`
-exists when observation timing itself is part of the algorithm:
-
-```python
-from ariadion import Bit, Qubit, h, observe, quantum, reset
-
-
-@quantum
-def observe_then_reset() -> Bit:
-  value = Qubit()
-  h(value)
-  result = observe(value)
-  reset(value)
-  return result
-```
-
-`reset(q)` changes the state of the existing managed quantum value to
-$|0\rangle$; it does not create a new `Qubit`. Both functions are AST markers and
-cannot execute as ordinary Python.
-
-## Exact analysis and sampled trajectories
-
-`run()` remains exact state-vector execution by default. It reports analytical
-terminal measurement probabilities and preserves its retained analytical state; it
-does not collapse a measurement and rejects a later gate with `A202`. General
-`RESET` is rejected in exact pure-state-vector mode with `A203` because an
-entangled reset is not a unitary pure-state evolution.
-
-Pass an explicit `SampledExecutionRequest` to execute independent, seeded sampled
-trajectories instead:
-
-```python
-from ariadion import SampledExecutionRequest, run
-
-sampled = run(bell, execution=SampledExecutionRequest(shots=1_000, seed=42))
-assert sampled.classical_output is not None
-print(sampled.classical_output.counts)
-```
-
-Sampled `MEASURE` produces one outcome and collapses the state before later
-operations execute. `RESET` is available only in this sampled IR execution path:
-it samples and collapses its target, conditionally applies `X`, and leaves that
-target in $|0\rangle$. A reset can disturb correlations with any qubits that were
-entangled with the target. Sampled results use distinct public result types and
-empirical counts; they do not expose exact probability distributions. A captured
-sampled trace describes exactly one trajectory, so trace capture with more than
-one shot is rejected with `A204`.
-
-The source markers do not choose execution mode. Running `observe_then_reset`
-with default exact state-vector execution raises `A203` for reset, and an exact
-quantum operation after `observe()` raises `A202`.
-
-## Exact noisy density matrices
-
-Use `DensityMatrixExecutionRequest` with provider-neutral `OneQubitGate` channel
-bindings to execute a small exact mixed-state circuit. The ideal supported gate
-runs first, then its matched one-qubit Kraus channel. `CX` is ideal-only in this
-first slice.
-
-```python
-from ariadion import (
-  Bit,
-  BitFlipChannel,
-  DensityMatrixExecutionRequest,
-  ExecutableNoiseModel,
-  GateChannelBinding,
-  OneQubitGate,
-  Qubit,
-  quantum,
-  run,
-  x,
-)
-
-
-@quantum
-def noisy_one() -> Bit:
-  value = Qubit()
-  x(value)
-  return value
-
-
-execution = DensityMatrixExecutionRequest(
-  ExecutableNoiseModel(
-    gate_channels=(
-      GateChannelBinding(OneQubitGate.X, BitFlipChannel(0.1)),
-    ),
-  )
-)
-result = run(noisy_one, execution=execution)
-```
-
-For logical classical returns, density results expose both
-`physical_classical_output_distribution` and
-`reported_classical_output_distribution`. A model-level `BinaryReadoutChannel`
-changes only the reported distribution, never `result.simulation.density_matrix`.
-Exact density observations remain terminal. Density execution supports exact reset,
-including entangled targets, but currently rejects enabled amplitude trace capture
-with `A205` rather than fabricating state-vector snapshots.
-
-## Explicit simulation backends
-
-The default `run()` path remains the transparent reference simulator. Internally,
-the reference state-vector, sampled trajectory, and density-matrix engines are
-available through explicit capability-backed selections with inspectable plans;
-there is no automatic performance-backend selection. The optional
-`ariadion-simulator-numpy` package adds caller-selected NumPy CPU `complex128`
-kernels while preserving tuple-based Ariadion results and the same exact/noisy
-semantics. It does not make NumPy a dependency of the reference package.
-
-The manual, non-CI [simulation-kernel benchmark](benchmarks/simulation_kernels.py)
-compares explicitly selected reference and optional NumPy backends. It reports wall
-time, modeled state bytes, and Python allocation peaks, but intentionally makes no
-speedup assertion.
-
-Captured quantum functions can now compose through explicit logical bindings:
-
-```python
-from ariadion import Bit, Qubit, cx, h, quantum, run
-
-
-@quantum
-def entangle(left: Qubit, right: Qubit) -> None:
-  h(left)
-  cx(left, right)
-
-
-@quantum
-def bell() -> tuple[Bit, Bit]:
-  left = Qubit()
-  right = Qubit()
-  entangle(left, right)
-  return left, right
-
-
-result = run(bell)
-```
-
-The `entangle(left, right)` call remains a `LogicalCallOperation` rather than
-textual substitution. Ariadion binds callee parameters as aliases to `bell`'s
-existing logical values, then Daidalon materializes invocation-aware logical
-values before allocation:
-
-```text
-Python functions -> LogicalModule -> call expansion / logical instantiation
--> ExpandedLogicalProgram -> lifetime and release-safety analysis
--> logical-slot allocation
--> CircuitIR
-```
-
-A qubit declaration inside a reusable quantum function is a definition. Each
-function invocation instantiates that declaration as a distinct logical quantum
-value unless the value is a bound parameter alias. The allocation policy is still
-conservative: `expanded-dense-no-reuse-v1` allocates every expanded value to a
-dense slot. `peak_semantically_live_values` is source-semantic evidence, while
-`peak_live_qubits` is the width actually allocated by the selected policy.
-
-> **Quantum liveness is not quantum reusability. A value may become unreachable
-> while its state remains entangled with live values. Reusing its execution slot
-> requires a proven-clean state or an explicit discard/reset capability.**
-
-The compiler records separate release evidence for every expanded value. Returned
-values and borrowed entry parameters are `retained`; other local values are
-`discard_required`. `discard_required` never authorizes slot reuse. The current
-allocation policies intentionally remain dense and non-reusing.
-
-Scalar `Qubit` call results are supported through one assignment target:
-
-```python
-@quantum
-def prepare() -> Qubit:
-  value = Qubit()
-  h(value)
-  return value
-
-
-@quantum
-def use_prepared() -> Qubit:
-  value = prepare()
-  z(value)
-  return value
-```
-
-Returning a `Qubit` transfers the same logical quantum value across the function
-boundary. It never copies quantum state. A bare call still requires a `None`
-return; classical and tuple call results, callee observations, and external
-quantum-state injection remain deferred. Generated IR retains the definition
-source for a callee operation and a separate structured invocation frame for each
-call site.
-
-Rotations retain their written unit and lower to canonical radians without calling
-the angle helper as ordinary Python:
-
-```python
-from ariadion import Qubit, deg, quantum, run, rx
-
-
-@quantum
-def rotate() -> Qubit:
-    target = Qubit()
-    rx(target, deg(190))
-    return target
-
-
-result = run(rotate)
-```
-
-Quantum parameters are captured as unresolved logical inputs. They are not
-silently initialized to $|0\rangle$, so an independently executed function with a
-parameter fails with diagnostic code `P113` until a caller composition supplies
-that value:
-
-```python
-from ariadion import Qubit, deg, quantum, rx
-
-
-@quantum
-def rotate_input(target: Qubit) -> Qubit:
-    rx(target, deg(190))
-    return target
-```
-
-Composition binds only a callee's parameter to an existing caller logical value.
-It does not bind parameters of the entry function to external runtime state.
-
-When a trace is inspected, rotation steps also carry a structured explanation:
-exact probability, relative-phase, and global-phase facts are separate from a
-clearly labeled educational Bloch-sphere interpretation. The CLI renders both
-sections, while Studio can consume the same structured data directly.
-
-Or use the modules directly:
-
-```python
-from ariadion import Program, TraceCaptureOptions, inspect_execution_trace, run
+from ariadion import Program, run
 
 program = Program(2, name="bell")
 program.h(0).cx(0, 1)
 
-result = run(program, trace=TraceCaptureOptions(enabled=True))
-print(result.circuit)
-print(result.report)
+result = run(program)
+probabilities = result.simulation.probabilities
 
-trace = result.trace
-assert trace is not None
-print(trace.steps[0].after.amplitudes)
-
-trace_inspection = inspect_execution_trace(trace)
-print(trace_inspection.steps[0].transition.basis_state_changes)
-print(trace_inspection.steps[0].rotation_explanation)
+assert abs(probabilities[0] - 0.5) < 1e-9
+assert abs(probabilities[3] - 0.5) < 1e-9
 ```
 
-Expected probabilities:
+Expected distribution for the Bell state is 0.5 on `|00>` and 0.5 on `|11>`.
 
-```text
-|00>  0.500000
-|11>  0.500000
+## Evidence workflow
+
+The complete supported noise-impact → bare-reliability → protection-requirement reporting path currently requires all of the following:
+
+- a **reference density-matrix logical execution**;
+- a **classical-only return shape**; and
+- **at least one classical return leaf**.
+
+Quantum-only and hybrid return shapes may produce unsupported report evidence, but they do not produce a supported bare-reliability verdict. State-vector, sampled, NumPy-backend, and arbitrary-backend results support result inspection and provenance, but do not feed the complete supported reporting path today.
+
+```mermaid
+flowchart LR
+    P[Program] --> L[Logical intent]
+    L --> C[CircuitIR]
+    C --> X[Reference density-matrix\nexecution]
+    X --> R[Result + provenance]
+    R --> N[Noise-impact report]
+    N --> B[Bare reliability\nreport]
+    B --> Q[Protection requirement\nreport]
 ```
+
+Sequence summary (reference density-matrix logical path):
+
+1. Define program intent.
+2. Capture and compile into logical and IR artifacts.
+3. Execute with an explicit `DensityMatrixExecutionRequest` using the reference backend.
+4. Inspect immutable results and provenance.
+5. Derive a noise-impact explanation from the ideal-vs-noisy comparison.
+6. Derive a bare-reliability estimate against an explicit `ReliabilityGoal`.
+7. Derive a protection-requirement report from that bare-reliability evidence.
+
+The protection-requirement report produces one of three outcomes:
+
+- **NO_PROTECTION_REQUIRED** — Supported evidence is not **VIOLATED**. This includes **SATISFIED** and the within-tolerance **NOT_EVALUATED** case.
+- **PROTECTION_REQUIRED** — Supported evidence is **VIOLATED**.
+- **NOT_ASSESSED** — The underlying bare-reliability evidence is **INCOMPLETE_MODEL**, **INDETERMINATE**, or **UNSUPPORTED**.
+
+The report states whether modeled bare execution meets a stated goal. It does not design a QEC strategy. Explicit backend selection (state-vector, sampled, NumPy, density-matrix) remains a general execution capability documented separately in the specification and architecture.
+
+Note: Mermaid diagrams render on GitHub. Support for package-index long-description rendering is deferred packaging work.
 
 ## Repository map
 
-```text
-packages/
-  sdk/             Ariadion public facade
-  core/            shared identity and source-location contracts
-  language/        Python-first program model
-  noise/           neutral typed executable noise-channel contracts
-  semantics/       pre-allocation logical quantum-value contracts
-  frontend-python/ safe valid-Python AST capture into logical semantics
-  syntax/          immutable Python-extension source and compatibility AST contracts
-  ir/              semantic circuit IR
-  daidalon/        compiler and validation passes
-  runtime/         orchestration layer
-  simulator/       dependency-free state-vector and exact density-matrix simulators
-  theonoe/         debugger and state inspector
-  visualization/   circuit/state renderers
-apps/
-  cli/             command-line shell
-  studio/          IDE product shell and design notes
-specs/              language and IR contracts
-docs/               architecture, naming, and roadmap
-examples/            runnable programs
-tests/               vertical-slice tests
-```
+| Package | Role |
+| --- | --- |
+| `packages/core` | Shared identity and source-location contracts. |
+| `packages/language` | Public language and builder-facing contracts. |
+| `packages/frontend-python` | Safe Python AST capture frontend. |
+| `packages/syntax` | Immutable source syntax contracts. |
+| `packages/semantics` | Pre-allocation logical semantics and typed contracts. |
+| `packages/daidalon` | Compiler and synthesis engine. |
+| `packages/ir` | Semantic intermediate representation. |
+| `packages/runtime` | Runtime orchestration and execution dispatch. |
+| `packages/simulator` | Reference state-vector and exact density simulators. |
+| `packages/simulator-numpy` | Optional NumPy `complex128` simulation backend. |
+| `packages/noise` | Provider-neutral executable noise contracts. |
+| `packages/theonoe` | Inspection and debugging engine. |
+| `packages/sdk` | Public Python SDK (`ariadion`). |
+| `packages/visualization` | Circuit and state visualization helpers. |
+| `apps/cli` | CLI entrypoints and demo workflows. |
 
-## Design principles
+## Honest current boundaries
 
-- **Python-simple:** useful programs should read like ordinary Python.
-- **Quantum-explicit:** basis, phase, measurement, and ownership semantics should never be silently guessed.
-- **Visible by default:** every compilation and execution artifact should be inspectable.
-- **Provider-neutral:** semantic IR sits between source code and simulator or hardware backends.
-- **Teach through execution:** tutorials and diagnostics should use the same runtime as real projects.
+- Local simulation only.
+- No hardware-provider integration yet.
+- Backend selection is explicit rather than automatic.
+- State-vector and density-matrix simulation scale exponentially.
+- No encoded-QEC planner or protection-strategy recommender yet.
+- Studio is future work.
+- This release is a technical RC (`0.1.0rc1`), not production `1.0`.
 
-See [`docs/architecture.md`](docs/architecture.md), [the object-model design
-guide](docs/object-model.md), [the debugger provenance guide](docs/debugger.md),
-[`specs/language.md`](specs/language.md), [the
-Python-extension syntax specification](specs/syntax.md), [`specs/runtime.md`](specs/runtime.md),
-[`specs/inspection.md`](specs/inspection.md), and [`specs/debugger.md`](specs/debugger.md).
+## Project status and navigation
+
+- Architecture: [docs/architecture.md](docs/architecture.md)
+- Roadmap: [docs/roadmap.md](docs/roadmap.md)
+- Specifications: [specs](specs)
+- Research notes: [docs/research](docs/research)
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
+- Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
+- RC tag: [v0.1.0rc1](https://github.com/redxe/ariadion/tree/v0.1.0rc1)
