@@ -1,9 +1,9 @@
 [project]
 name = "ariadion-semantics"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Pre-allocation logical quantum semantics for Ariadion"
 requires-python = ">=3.11"
-dependencies = ["ariadion-core", "ariadion-language", "ariadion-noise"]
+dependencies = ["ariadion-core==0.1.0rc1", "ariadion-language==0.1.0rc1", "ariadion-noise==0.1.0rc1"]
 
 [build-system]
 requires = ["setuptools>=68"]

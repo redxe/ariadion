@@ -1,12 +1,12 @@
 [project]
 name = "ariadion-frontend-python"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Safe Python AST capture for Ariadion quantum functions"
 requires-python = ">=3.11"
 dependencies = [
-  "ariadion-core",
-  "ariadion-language",
-  "ariadion-semantics",
+  "ariadion-core==0.1.0rc1",
+  "ariadion-language==0.1.0rc1",
+  "ariadion-semantics==0.1.0rc1",
 ]
 
 [build-system]

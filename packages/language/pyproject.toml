@@ -1,9 +1,9 @@
 [project]
 name = "ariadion-language"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Python-first language model for Ariadion"
 requires-python = ">=3.11"
-dependencies = ["ariadion-core"]
+dependencies = ["ariadion-core==0.1.0rc1"]
 
 [build-system]
 requires = ["setuptools>=68"]

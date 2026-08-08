@@ -1,18 +1,18 @@
 [project]
 name = "ariadion-runtime"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Runtime orchestration for Ariadion"
 requires-python = ">=3.11"
 dependencies = [
-  "ariadion-core",
-  "ariadion-ir",
-  "ariadion-language",
-  "ariadion-noise",
-  "ariadion-semantics",
-  "daidalon",
-  "ariadion-simulator",
-  "theonoe",
-  "ariadion-visualization",
+  "ariadion-core==0.1.0rc1",
+  "ariadion-ir==0.1.0rc1",
+  "ariadion-language==0.1.0rc1",
+  "ariadion-noise==0.1.0rc1",
+  "ariadion-semantics==0.1.0rc1",
+  "daidalon==0.1.0rc1",
+  "ariadion-simulator==0.1.0rc1",
+  "theonoe==0.1.0rc1",
+  "ariadion-visualization==0.1.0rc1",
 ]
 
 [build-system]

@@ -1,14 +1,14 @@
 [project]
 name = "ariadion"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Python SDK for visible, basis-aware quantum programming"
 requires-python = ">=3.11"
 dependencies = [
-  "ariadion-frontend-python",
-  "ariadion-language",
-  "ariadion-noise",
-  "ariadion-runtime",
-  "ariadion-semantics",
+  "ariadion-frontend-python==0.1.0rc1",
+  "ariadion-language==0.1.0rc1",
+  "ariadion-noise==0.1.0rc1",
+  "ariadion-runtime==0.1.0rc1",
+  "ariadion-semantics==0.1.0rc1",
 ]
 
 [build-system]

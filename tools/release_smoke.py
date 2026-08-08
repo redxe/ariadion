@@ -192,6 +192,114 @@ def numpy_smoke_script() -> str:
     ).strip()
 
 
+def installed_report_smoke_script() -> str:
+    lines = [
+        "import json",
+        "",
+        "from ariadion import Bit, Qubit, x",
+        "from ariadion_frontend_python import PythonFunctionSource, explicit_quantum_function",
+        "from ariadion_runtime import (",
+        "    DensityMatrixExecutionRequest,",
+        "    build_bare_reliability_report,",
+        "    build_density_noise_impact_report,",
+        "    run_logical_module,",
+        ")",
+        "from ariadion_semantics import ClassicalAcceptanceCriterion, ReliabilityGoal",
+        "from theonoe import (",
+        "    BARE_RELIABILITY_SCHEMA_VERSION,",
+        "    NOISE_IMPACT_SCHEMA_VERSION,",
+        "    PROTECTION_REQUIREMENT_SCHEMA_VERSION,",
+        "    BareReliabilityDistributionKind,",
+        "    BareReliabilityGoalVerdict,",
+        "    BareReliabilityReport,",
+        "    BareReliabilityStatus,",
+        "    NoiseImpactReport,",
+        "    ProtectionNeedVerdict,",
+        "    ProtectionRequirementReport,",
+        "    build_protection_requirement_report,",
+        ")",
+        "",
+        "",
+        "def _source_placeholder() -> None:",
+        "    return None",
+        "",
+        "",
+        "_deterministic_one = explicit_quantum_function(",
+        "    _source_placeholder,",
+        "    PythonFunctionSource(",
+        "        text=(",
+        "            \"def deterministic_one() -> Bit:\\n\"",
+        "            \"    value = Qubit()\\n\"",
+        "            \"    x(value)\\n\"",
+        "            \"    return value\\n\"",
+        "        ),",
+        "        file=\"release_smoke_installed_report.py\",",
+        "        starting_line=1,",
+        "        module_name=\"release_smoke\",",
+        "        qualified_name=\"deterministic_one\",",
+        "    ),",
+        ")",
+        "",
+        "",
+        "run = run_logical_module(",
+        "    _deterministic_one.to_logical_module(),",
+        "    execution=DensityMatrixExecutionRequest(),",
+        ")",
+        "",
+        "noise_impact = build_density_noise_impact_report(run)",
+        "if not isinstance(noise_impact, NoiseImpactReport):",
+        "    raise SystemExit('installed report smoke expected NoiseImpactReport')",
+        "if noise_impact.schema_version != NOISE_IMPACT_SCHEMA_VERSION:",
+        "    raise SystemExit('installed report smoke noise-impact schema_version mismatch')",
+        "noise_payload = json.loads(noise_impact.to_json())",
+        "if noise_payload['schema_version'] != NOISE_IMPACT_SCHEMA_VERSION:",
+        "    raise SystemExit('installed report smoke noise-impact JSON schema marker mismatch')",
+        "for key in ('comparison', 'metrics', 'event_findings'):",
+        "    if key not in noise_payload:",
+        "        raise SystemExit(f\"installed report smoke noise-impact missing key: {key}\")",
+        "",
+        "bare_reliability = build_bare_reliability_report(",
+        "    run,",
+        "    goal=ReliabilityGoal(0.1),",
+        "    acceptance=ClassicalAcceptanceCriterion(1, ((1,),)),",
+        "    distribution_kind=BareReliabilityDistributionKind.PHYSICAL_OUTPUT,",
+        ")",
+        "if not isinstance(bare_reliability, BareReliabilityReport):",
+        "    raise SystemExit('installed report smoke expected BareReliabilityReport')",
+        "if bare_reliability.schema_version != BARE_RELIABILITY_SCHEMA_VERSION:",
+        "    raise SystemExit('installed report smoke bare-reliability schema_version mismatch')",
+        "if bare_reliability.status is not BareReliabilityStatus.SUPPORTED:",
+        "    raise SystemExit('installed report smoke expected supported bare reliability status')",
+        "if bare_reliability.goal_verdict is not BareReliabilityGoalVerdict.SATISFIED:",
+        "    raise SystemExit('installed report smoke expected satisfied bare reliability verdict')",
+        "bare_payload = json.loads(bare_reliability.to_json())",
+        "if bare_payload['schema_version'] != BARE_RELIABILITY_SCHEMA_VERSION:",
+        "    raise SystemExit('installed report smoke bare-reliability JSON schema marker mismatch')",
+        "for key in ('status', 'goal_verdict', 'supporting_noise_impact'):",
+        "    if key not in bare_payload:",
+        "        raise SystemExit(f\"installed report smoke bare-reliability missing key: {key}\")",
+        "",
+        "protection_requirement = build_protection_requirement_report(bare_reliability)",
+        "if not isinstance(protection_requirement, ProtectionRequirementReport):",
+        "    raise SystemExit('installed report smoke expected ProtectionRequirementReport')",
+        "if protection_requirement.schema_version != PROTECTION_REQUIREMENT_SCHEMA_VERSION:",
+        "    raise SystemExit('installed report smoke protection-requirement schema_version mismatch')",
+        "if protection_requirement.status is not BareReliabilityStatus.SUPPORTED:",
+        "    raise SystemExit('installed report smoke expected supported protection status')",
+        "if protection_requirement.need_verdict is not ProtectionNeedVerdict.NO_PROTECTION_REQUIRED:",
+        "    raise SystemExit('installed report smoke expected no_protection_required verdict')",
+        "protection_payload = json.loads(protection_requirement.to_json())",
+        "if protection_payload['schema_version'] != PROTECTION_REQUIREMENT_SCHEMA_VERSION:",
+        "    raise SystemExit('installed report smoke protection-requirement JSON schema marker mismatch')",
+        "for key in ('status', 'need_verdict', 'supporting_bare_reliability'):",
+        "    if key not in protection_payload:",
+        "        raise SystemExit(f\"installed report smoke protection-requirement missing key: {key}\")",
+        "",
+        "print('installed-report-smoke-ok')",
+    ]
+    return "\n".join(lines)
+
+
 def cli_smoke_command(venv_dir: Path) -> list[str]:
     if os.name == "nt":
         return [str(venv_dir / "Scripts" / "ariadion.exe")]
@@ -288,6 +396,15 @@ def _extract_numpy_version(output: str) -> str:
     raise ReleaseSmokeError("optional NumPy smoke did not report the resolved NumPy version")
 
 
+def _assert_numpy_version_matches_pin(version: str) -> None:
+    if version != RELEASE_SMOKE_NUMPY_VERSION:
+        raise ReleaseSmokeError(
+            "optional NumPy smoke resolved "
+            f"numpy {version}, expected pinned {RELEASE_SMOKE_NUMPY_VERSION}; "
+            "rebuild the wheelhouse and rerun release smoke"
+        )
+
+
 def run_release_smoke(
     *,
     root: Path | None = None,
@@ -375,10 +492,16 @@ def run_release_smoke(
         except ReleaseSmokeError as exc:
             raise ReleaseSmokeError(f"CLI smoke test failed: {exc}") from exc
 
+        try:
+            _run_command([str(venv_python), "-c", installed_report_smoke_script()], cwd=smoke_dir)
+        except ReleaseSmokeError as exc:
+            raise ReleaseSmokeError(f"installed report smoke test failed: {exc}") from exc
+
         if with_numpy:
             try:
                 numpy_result = _run_command([str(venv_python), "-c", numpy_smoke_script()], cwd=smoke_dir)
                 numpy_version = _extract_numpy_version(numpy_result.stdout)
+                _assert_numpy_version_matches_pin(numpy_version)
             except ReleaseSmokeError as exc:
                 raise ReleaseSmokeError(f"optional NumPy smoke test failed: {exc}") from exc
     finally:
@@ -440,6 +563,7 @@ def main() -> int:
     print(f"Virtualenv: {result['venv_dir']}")
     print("SDK smoke: passed")
     print("CLI smoke: passed")
+    print("Installed report smoke: passed")
     if result["with_numpy"]:
         print(
             "Optional NumPy backend smoke: passed "

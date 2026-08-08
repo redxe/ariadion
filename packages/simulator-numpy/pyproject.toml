@@ -1,12 +1,12 @@
 [project]
 name = "ariadion-simulator-numpy"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Optional NumPy complex128 simulation kernels for Ariadion"
 requires-python = ">=3.11"
 dependencies = [
-  "ariadion-ir",
-  "ariadion-noise",
-  "ariadion-simulator",
+  "ariadion-ir==0.1.0rc1",
+  "ariadion-noise==0.1.0rc1",
+  "ariadion-simulator==0.1.0rc1",
   "numpy>=1.26",
 ]
 
