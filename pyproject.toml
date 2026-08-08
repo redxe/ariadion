@@ -1,6 +1,6 @@
 [project]
 name = "ariadion-workspace"
-version = "0.1.0rc1"
+version = "0.1.0rc2"
 description = "Ariadion quantum programming platform workspace"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }

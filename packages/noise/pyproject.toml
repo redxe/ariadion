@@ -1,12 +1,33 @@
 [project]
 name = "ariadion-noise"
-version = "0.1.0rc1"
+version = "0.1.0rc2"
 description = "Provider-neutral executable noise-channel contracts for Ariadion"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{name = "Vi Connelly"}]
 requires-python = ">=3.11"
-dependencies = ["ariadion-core==0.1.0rc1"]
+dependencies = ["ariadion-core==0.1.0rc2"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/redxe/ariadion"
+Repository = "https://github.com/redxe/ariadion"
+Issues = "https://github.com/redxe/ariadion/issues"
+Changelog = "https://github.com/redxe/ariadion/blob/main/CHANGELOG.md"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

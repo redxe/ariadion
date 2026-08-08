@@ -1,40 +1,64 @@
 from __future__ import annotations
 
+import ast
+import contextlib
+import io
+import json
 import os
 import re
-import subprocess
 import shutil
+import stat
+import subprocess
 import sys
+import tarfile
 import tempfile
 import tomllib
 import unittest
+import warnings
+import zipfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from tools.release_smoke import (
+    EXPECTED_RC2_DEPENDENCY_GRAPH,
+    PUBLISHABLE_DISTRIBUTION_COUNT,
+    RELEASE_SMOKE_MINIMUM_NUMPY_VERSION,
     RELEASE_SMOKE_NUMPY_VERSION,
+    ROOT,
     ReleaseSmokeError,
-    _assert_numpy_version_matches_pin,
     _assert_cli_smoke_output,
+    _assert_numpy_version_matches_pin,
     _extract_numpy_version,
     _is_within,
     _missing_distribution_wheels,
     _subprocess_environment,
+    _validate_argument_combinations,
+    all_imports_smoke_script,
+    authoritative_distribution_records,
+    build_argument_parser,
+    build_sdist_command,
     build_wheel_command,
     cli_smoke_command,
-    download_numpy_command,
     discover_workspace_distributions,
+    download_numpy_command,
+    generate_sha256_manifest,
+    install_all_distributions_command,
     install_from_wheelhouse_command,
     installed_report_smoke_script,
+    main,
     numpy_smoke_script,
     publishable_distributions,
     run_release_smoke,
+    runtime_version_check_script,
     sdk_smoke_script,
+    twine_check_command,
+    validate_artifact_set,
 )
 
 
 class ReleaseFoundationsTests(unittest.TestCase):
-    _EXPECTED_RC_VERSION = "0.1.0rc1"
+    _EXPECTED_RC_VERSION = "0.1.0rc2"
     _EXPECTED_PUBLISHABLE = {
         "ariadion",
         "ariadion-cli",
@@ -64,7 +88,280 @@ class ReleaseFoundationsTests(unittest.TestCase):
 
     def _dependency_name(self, dependency: str) -> str:
         token = dependency.split(";", 1)[0].strip()
-        return re.split(r"[ <>=!~\[]", token, 1)[0]
+        return re.split(r"[ <>=!~\[]", token, maxsplit=1)[0]
+
+    def _artifact_fixture(self) -> dict[str, Any]:
+        """Create a valid, local 15-distribution source and artifact release set."""
+        root = Path(tempfile.mkdtemp(prefix="ariadion-artifact-fixture-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        canonical_license = b"Synthetic Apache-2.0 license payload\n"
+        (root / "LICENSE").write_bytes(canonical_license)
+
+        names = sorted(EXPECTED_RC2_DEPENDENCY_GRAPH)
+        fixture: dict[str, Any] = {
+            "root": root,
+            "license": canonical_license,
+            "records": {},
+            "distributions": [],
+            "wheel_paths": {},
+            "sdist_paths": {},
+            "wheels": [],
+            "sdists": [],
+        }
+        for index, name in enumerate(names):
+            import_name = name.replace("-", "_")
+            dependencies = list(EXPECTED_RC2_DEPENDENCY_GRAPH[name])
+            package_root = root / "sources" / f"package_{index:02d}"
+            package_root.mkdir(parents=True)
+            readme = f"# {name}\n\nSynthetic artifact fixture for {name}."
+            summary = f"Synthetic {name} distribution."
+            (package_root / "README.md").write_text(readme, encoding="utf-8")
+            (package_root / "LICENSE").write_bytes(canonical_license)
+            source_package = package_root / "src" / import_name
+            source_package.mkdir(parents=True)
+            (source_package / "__init__.py").write_text("", encoding="utf-8")
+            pyproject = "\n".join(
+                [
+                    "[project]",
+                    f"name = {json.dumps(name)}",
+                    'version = "0.1.0rc2"',
+                    f"description = {json.dumps(summary)}",
+                    'readme = "README.md"',
+                    'requires-python = ">=3.11"',
+                    'license = "Apache-2.0"',
+                    'license-files = ["LICENSE"]',
+                    'authors = [{ name = "Vi Connelly" }]',
+                    'classifiers = ["Programming Language :: Python :: 3.11"]',
+                    f"dependencies = {json.dumps(dependencies)}",
+                    "",
+                    "[project.urls]",
+                    'Homepage = "https://example.invalid/home"',
+                    'Repository = "https://example.invalid/repository"',
+                    "",
+                ]
+            )
+            pyproject_path = package_root / "pyproject.toml"
+            pyproject_path.write_text(pyproject, encoding="utf-8")
+            record = {
+                "name": name,
+                "import_name": import_name,
+                "summary": summary,
+                "readme": readme,
+                "dependencies": dependencies,
+                "path": package_root,
+                "pyproject_path": pyproject_path,
+            }
+            fixture["records"][name] = record
+            fixture["distributions"].append(
+                {
+                    "name": name,
+                    "path": package_root,
+                    "pyproject_path": pyproject_path,
+                }
+            )
+
+        for name in names:
+            self._write_fixture_wheel(fixture, name)
+            self._write_fixture_sdist(fixture, name)
+        return fixture
+
+    def _fixture_metadata(
+        self,
+        record: dict[str, Any],
+        overrides: dict[str, Any] | None = None,
+    ) -> str:
+        values: dict[str, list[str]] = {
+            "Metadata-Version": ["2.4"],
+            "Name": [record["name"]],
+            "Version": ["0.1.0rc2"],
+            "Summary": [record["summary"]],
+            "Requires-Python": [">=3.11"],
+            "Description-Content-Type": ["text/markdown"],
+            "License-Expression": ["Apache-2.0"],
+            "License-File": ["LICENSE"],
+            "Author": ["Vi Connelly"],
+            "Project-URL": [
+                "Homepage, https://example.invalid/home",
+                "Repository, https://example.invalid/repository",
+            ],
+            "Classifier": ["Programming Language :: Python :: 3.11"],
+            "Requires-Dist": list(record["dependencies"]),
+        }
+        description = record["readme"]
+        if overrides:
+            description = overrides.get("__description__", description)
+            for header, replacement in overrides.items():
+                if header == "__description__":
+                    continue
+                if replacement is None:
+                    values[header] = []
+                elif isinstance(replacement, list):
+                    values[header] = replacement
+                else:
+                    values[header] = [replacement]
+        headers = [
+            f"{header}: {value}"
+            for header, header_values in values.items()
+            for value in header_values
+        ]
+        return "\n".join(headers) + "\n\n" + description
+
+    def _replace_fixture_path(
+        self,
+        fixture: dict[str, Any],
+        *,
+        kind: str,
+        name: str,
+        path: Path,
+    ) -> None:
+        mapping_name = f"{kind}_paths"
+        paths_name = f"{kind}s"
+        previous = fixture[mapping_name].get(name)
+        fixture[mapping_name][name] = path
+        if previous is None:
+            fixture[paths_name].append(path)
+        else:
+            fixture[paths_name] = [path if item == previous else item for item in fixture[paths_name]]
+
+    def _write_fixture_wheel(
+        self,
+        fixture: dict[str, Any],
+        name: str,
+        *,
+        filename: str | None = None,
+        metadata_overrides: dict[str, Any] | None = None,
+        license_payload: bytes | None = None,
+        include_license: bool = True,
+        legacy_license: bool = False,
+        extra_license_members: list[str] | None = None,
+        include_import: bool = True,
+        import_variant: str = "regular",
+        include_entry_points: bool = True,
+        entry_points: str | None = None,
+        duplicate_entry_points: bool = False,
+        malformed: bool = False,
+    ) -> Path:
+        record = fixture["records"][name]
+        component = re.sub(r"[-.]+", "_", name)
+        dist_info = f"{component}-0.1.0rc2.dist-info"
+        path = fixture["root"] / "wheels" / (
+            filename or f"{component}-0.1.0rc2-py3-none-any.whl"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if malformed:
+            path.write_bytes(b"not a wheel archive")
+            self._replace_fixture_path(fixture, kind="wheel", name=name, path=path)
+            return path
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(
+                f"{dist_info}/METADATA",
+                self._fixture_metadata(record, metadata_overrides),
+            )
+            if include_license:
+                archive.writestr(
+                    f"{dist_info}/licenses/LICENSE",
+                    fixture["license"] if license_payload is None else license_payload,
+                )
+            if legacy_license:
+                archive.writestr(f"{dist_info}/LICENSE", fixture["license"])
+            for extra_member in extra_license_members or []:
+                archive.writestr(extra_member, fixture["license"])
+            init_member = f"{record['import_name']}/__init__.py"
+            if include_import:
+                if import_variant == "regular":
+                    archive.writestr(init_member, "")
+                elif import_variant == "directory":
+                    info = zipfile.ZipInfo(init_member)
+                    info.create_system = 3
+                    info.external_attr = (stat.S_IFDIR | 0o755) << 16
+                    archive.writestr(info, b"")
+                else:
+                    raise AssertionError(f"unknown import fixture variant: {import_variant}")
+            if name == "ariadion-cli" and include_entry_points:
+                entry_point_member = f"{dist_info}/entry_points.txt"
+                entry_point_payload = (
+                    entry_points or "[console_scripts]\nariadion = ariadion_cli:main\n"
+                )
+                archive.writestr(
+                    entry_point_member,
+                    entry_point_payload,
+                )
+                if duplicate_entry_points:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        archive.writestr(entry_point_member, entry_point_payload)
+            elif name != "ariadion-cli" and entry_points is not None:
+                archive.writestr(f"{dist_info}/entry_points.txt", entry_points)
+        self._replace_fixture_path(fixture, kind="wheel", name=name, path=path)
+        return path
+
+    def _write_fixture_sdist(
+        self,
+        fixture: dict[str, Any],
+        name: str,
+        *,
+        filename: str | None = None,
+        metadata_overrides: dict[str, Any] | None = None,
+        license_payload: bytes | None = None,
+        include_license: bool = True,
+        include_import: bool = True,
+        import_variant: str = "regular",
+        root_name: str | None = None,
+        malformed: bool = False,
+    ) -> Path:
+        record = fixture["records"][name]
+        component = re.sub(r"[-.]+", "_", name)
+        root = root_name or f"{component}-0.1.0rc2"
+        path = fixture["root"] / "sdists" / (
+            filename or f"{component}-0.1.0rc2.tar.gz"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if malformed:
+            path.write_bytes(b"not an sdist archive")
+            self._replace_fixture_path(fixture, kind="sdist", name=name, path=path)
+            return path
+
+        def add_regular_file(archive: tarfile.TarFile, member_name: str, payload: bytes) -> None:
+            info = tarfile.TarInfo(member_name)
+            info.size = len(payload)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(payload))
+
+        with tarfile.open(path, "w:gz") as archive:
+            add_regular_file(
+                archive,
+                f"{root}/PKG-INFO",
+                self._fixture_metadata(record, metadata_overrides).encode("utf-8"),
+            )
+            if include_license:
+                add_regular_file(
+                    archive,
+                    f"{root}/LICENSE",
+                    fixture["license"] if license_payload is None else license_payload,
+                )
+            init_member = f"{root}/src/{record['import_name']}/__init__.py"
+            if include_import:
+                if import_variant == "regular":
+                    add_regular_file(archive, init_member, b"")
+                elif import_variant == "symlink":
+                    info = tarfile.TarInfo(init_member)
+                    info.type = tarfile.SYMTYPE
+                    info.linkname = "elsewhere"
+                    archive.addfile(info)
+                else:
+                    raise AssertionError(f"unknown import fixture variant: {import_variant}")
+        self._replace_fixture_path(fixture, kind="sdist", name=name, path=path)
+        return path
+
+    def _assert_fixture_rejected(self, fixture: dict[str, Any], pattern: str) -> None:
+        with self.assertRaisesRegex(ReleaseSmokeError, pattern):
+            validate_artifact_set(
+                fixture["distributions"],
+                fixture["wheels"],
+                fixture["sdists"],
+                expected_version="0.1.0rc2",
+                canonical_license_path=fixture["root"] / "LICENSE",
+            )
 
     def test_discover_workspace_distributions(self) -> None:
         distributions = discover_workspace_distributions(Path(__file__).resolve().parents[1])
@@ -80,6 +377,54 @@ class ReleaseFoundationsTests(unittest.TestCase):
         names = {entry["name"] for entry in distributions}
         self.assertEqual(len(distributions), 15)
         self.assertSetEqual(names, self._EXPECTED_PUBLISHABLE)
+
+    def test_actual_source_metadata_forms_the_authoritative_release_set(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        records = authoritative_distribution_records(publishable_distributions(root))
+        self.assertEqual(len(records), PUBLISHABLE_DISTRIBUTION_COUNT)
+        self.assertSetEqual(
+            {record["name"] for record in records.values()},
+            self._EXPECTED_PUBLISHABLE,
+        )
+        self.assertSetEqual(set(EXPECTED_RC2_DEPENDENCY_GRAPH), self._EXPECTED_PUBLISHABLE)
+
+    def test_independent_dependency_graph_rejects_deleted_and_duplicated_source_edges(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        distributions = publishable_distributions(root)
+        ir_entry = next(entry for entry in distributions if entry["name"] == "ariadion-ir")
+        source_text = ir_entry["pyproject_path"].read_text(encoding="utf-8")
+        expected_dependency_line = 'dependencies = ["ariadion-core==0.1.0rc2"]'
+        self.assertIn(expected_dependency_line, source_text)
+        replacements = {
+            "deleted": "dependencies = []",
+            "duplicated": (
+                'dependencies = ["ariadion-core==0.1.0rc2", '
+                '"ariadion-core==0.1.0rc2"]'
+            ),
+        }
+        for label, replacement in replacements.items():
+            with self.subTest(source_mutation=label), tempfile.TemporaryDirectory() as temporary:
+                mutated_pyproject = Path(temporary) / "pyproject.toml"
+                mutated_pyproject.write_text(
+                    source_text.replace(expected_dependency_line, replacement, 1),
+                    encoding="utf-8",
+                )
+                mutated_distributions = [
+                    {
+                        **entry,
+                        "pyproject_path": (
+                            mutated_pyproject
+                            if entry["name"] == "ariadion-ir"
+                            else entry["pyproject_path"]
+                        ),
+                    }
+                    for entry in distributions
+                ]
+                with self.assertRaisesRegex(
+                    ReleaseSmokeError,
+                    "source dependency graph differs from the independent RC2 baseline",
+                ):
+                    authoritative_distribution_records(mutated_distributions)
 
     def test_publishable_distributions_use_rc_version(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -122,7 +467,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
                 external_by_path[relative] = external
         self.assertEqual(external_by_path, self._EXPECTED_EXTERNAL_DEPENDENCIES)
 
-    def test_build_system_constraints_remain_unchanged(self) -> None:
+    def test_build_system_requires_pep639_capable_setuptools(self) -> None:
         root = Path(__file__).resolve().parents[1]
         for pyproject_path in sorted(root.glob("**/pyproject.toml")):
             relative = str(pyproject_path.relative_to(root)).replace("\\", "/")
@@ -133,7 +478,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
                 continue
             self.assertIsInstance(build_system, dict)
             assert isinstance(build_system, dict)
-            self.assertEqual(build_system.get("requires"), ["setuptools>=68"])
+            self.assertEqual(build_system.get("requires"), ["setuptools>=77.0.3"])
 
     def test_build_wheel_command_uses_wheelhouse(self) -> None:
         wheelhouse = Path("/tmp/wheels")
@@ -166,6 +511,49 @@ class ReleaseFoundationsTests(unittest.TestCase):
         self.assertEqual(install[-1], "ariadion-simulator-numpy")
         self.assertIn("--only-binary=:all:", download)
         self.assertEqual(download[-1], f"numpy=={RELEASE_SMOKE_NUMPY_VERSION}")
+
+    def test_minimum_numpy_download_command_uses_declared_boundary(self) -> None:
+        command = download_numpy_command(
+            Path("/tmp/wheels"),
+            RELEASE_SMOKE_MINIMUM_NUMPY_VERSION,
+        )
+        self.assertEqual(
+            command[-1],
+            f"numpy=={RELEASE_SMOKE_MINIMUM_NUMPY_VERSION}",
+        )
+
+    def test_all_distribution_install_command_respects_optional_numpy_boundary(self) -> None:
+        distributions = [
+            {"name": "ariadion"},
+            {"name": "ariadion-cli"},
+            {"name": "ariadion-simulator-numpy"},
+            {"name": "ariadion-syntax"},
+        ]
+        base = install_all_distributions_command(
+            Path("/tmp/venv/python"),
+            Path("/tmp/wheels"),
+            distributions,
+            with_numpy=False,
+        )
+        numpy = install_all_distributions_command(
+            Path("/tmp/venv/python"),
+            Path("/tmp/wheels"),
+            distributions,
+            with_numpy=True,
+        )
+        self.assertNotIn("ariadion-simulator-numpy", base)
+        self.assertIn("ariadion-simulator-numpy", numpy)
+        self.assertIn("ariadion-syntax", base)
+        self.assertIn("--no-index", base)
+
+    def test_all_imports_smoke_script_imports_normalized_packages(self) -> None:
+        script = all_imports_smoke_script(
+            ["ariadion", "ariadion-cli", "ariadion-simulator-numpy"]
+        )
+        self.assertIn("ariadion_cli", script)
+        self.assertIn("ariadion_simulator_numpy", script)
+        self.assertIn("all-imports-smoke-ok", script)
+        compile(script, "<all-imports-smoke>", "exec")
 
     def test_cli_smoke_command_uses_windows_entrypoint(self) -> None:
         venv_dir = Path("/tmp/venv")
@@ -306,6 +694,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
 
             self.assertFalse(result["with_numpy"])
             self.assertIsNone(result["numpy_version"])
+            self.assertIsNotNone(result["runtime_version"])
             self.assertFalse(any("download" in command for command, _ in commands))
             self.assertFalse(any("ariadion-simulator-numpy" in " ".join(command) for command, _ in commands))
             expected_venv_python = str(
@@ -460,6 +849,526 @@ class ReleaseFoundationsTests(unittest.TestCase):
         self.assertTrue(result["distributions"])
         self.assertIn("ariadion", result["distributions"])
         self.assertIn("ariadion-cli", result["distributions"])
+
+    # ---------------------------------------------------------------------------
+    # RC2 regression tests: metadata completeness
+    # ---------------------------------------------------------------------------
+
+    def test_publishable_distributions_have_spdx_license_metadata(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for entry in publishable_distributions(root):
+            project = self._load_project_metadata(entry["pyproject_path"])
+            license_value = project.get("license")
+            self.assertIsNotNone(
+                license_value,
+                msg=f"{entry['name']}: license field is missing",
+            )
+            self.assertEqual(
+                license_value,
+                "Apache-2.0",
+                msg=f"{entry['name']}: expected SPDX license 'Apache-2.0', got {license_value!r}",
+            )
+
+    def test_publishable_distributions_have_license_files_configured(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        canonical_license = (root / "LICENSE").read_bytes()
+        for entry in publishable_distributions(root):
+            document = tomllib.loads(entry["pyproject_path"].read_text(encoding="utf-8"))
+            project = document.get("project", {})
+            assert isinstance(project, dict)
+            license_files = project.get("license-files")
+            self.assertIsNotNone(
+                license_files,
+                msg=f"{entry['name']}: license-files is missing",
+            )
+            self.assertIn(
+                "LICENSE",
+                license_files,
+                msg=f"{entry['name']}: LICENSE not in license-files",
+            )
+            package_dir = entry["pyproject_path"].parent
+            license_path = package_dir / "LICENSE"
+            self.assertTrue(
+                license_path.exists(),
+                msg=f"{entry['name']}: LICENSE file absent at {license_path}",
+            )
+            self.assertEqual(
+                license_path.read_bytes(),
+                canonical_license,
+                msg=f"{entry['name']}: LICENSE differs from the canonical root license",
+            )
+
+    def test_publishable_distributions_have_readme_configured(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for entry in publishable_distributions(root):
+            document = tomllib.loads(entry["pyproject_path"].read_text(encoding="utf-8"))
+            project = document.get("project", {})
+            assert isinstance(project, dict)
+            readme = project.get("readme")
+            self.assertIsNotNone(
+                readme,
+                msg=f"{entry['name']}: readme field is missing",
+            )
+            if isinstance(readme, str):
+                readme_path = entry["pyproject_path"].parent / readme
+                self.assertTrue(
+                    readme_path.exists(),
+                    msg=f"{entry['name']}: readme file {readme!r} does not exist at {readme_path}",
+                )
+
+    def test_public_package_readmes_are_pypi_safe(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for relative_path in ("packages/sdk/README.md", "apps/cli/README.md"):
+            readme = (root / relative_path).read_text(encoding="utf-8")
+            self.assertNotIn("```mermaid", readme.lower())
+            relative_links = re.findall(r"\[[^]]+\]\((?!https://)[^)]+\)", readme)
+            self.assertEqual(
+                relative_links,
+                [],
+                msg=f"{relative_path}: relative links are not PyPI-safe",
+            )
+            self.assertIn("0.1.0rc2", readme)
+            self.assertIn("not yet published", readme.lower())
+
+    def test_cli_entry_point_is_exact(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        project = self._load_project_metadata(root / "apps" / "cli" / "pyproject.toml")
+        self.assertEqual(project.get("scripts"), {"ariadion": "ariadion_cli:main"})
+
+    def test_publishable_distributions_have_author_vi_connelly(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for entry in publishable_distributions(root):
+            project = self._load_project_metadata(entry["pyproject_path"])
+            authors = project.get("authors")
+            self.assertIsInstance(
+                authors,
+                list,
+                msg=f"{entry['name']}: authors field is missing or not a list",
+            )
+            assert isinstance(authors, list)
+            author_names = [a.get("name") for a in authors if isinstance(a, dict)]
+            self.assertIn(
+                "Vi Connelly",
+                author_names,
+                msg=f"{entry['name']}: 'Vi Connelly' not found in authors",
+            )
+            self.assertFalse(
+                any("email" in author for author in authors if isinstance(author, dict)),
+                msg=f"{entry['name']}: author metadata must not include an email",
+            )
+
+    def test_publishable_distributions_have_required_project_urls(self) -> None:
+        required_keys = {"Homepage", "Repository", "Issues", "Changelog"}
+        root = Path(__file__).resolve().parents[1]
+        for entry in publishable_distributions(root):
+            document = tomllib.loads(entry["pyproject_path"].read_text(encoding="utf-8"))
+            urls = document.get("project", {}).get("urls", {})
+            assert isinstance(urls, dict)
+            for key in required_keys:
+                self.assertIn(
+                    key,
+                    urls,
+                    msg=f"{entry['name']}: project.urls is missing key {key!r}",
+                )
+            for url in urls.values():
+                self.assertIn(
+                    "github.com/redxe/ariadion",
+                    url,
+                    msg=f"{entry['name']}: URL {url!r} does not point to github.com/redxe/ariadion",
+                )
+
+    def test_publishable_distributions_have_required_classifiers(self) -> None:
+        required_fragments = [
+            "Development Status :: 3 - Alpha",
+            "Programming Language :: Python :: 3.11",
+            "Programming Language :: Python :: 3.12",
+            "Intended Audience :: Developers",
+            "Intended Audience :: Science/Research",
+            "Topic :: Scientific/Engineering",
+            "Operating System :: OS Independent",
+        ]
+        root = Path(__file__).resolve().parents[1]
+        for entry in publishable_distributions(root):
+            project = self._load_project_metadata(entry["pyproject_path"])
+            classifiers = project.get("classifiers", [])
+            assert isinstance(classifiers, list)
+            for fragment in required_fragments:
+                self.assertTrue(
+                    any(fragment in c for c in classifiers),
+                    msg=f"{entry['name']}: classifier {fragment!r} is absent",
+                )
+
+    def test_runtime_version_check_script_references_both_version_sources(self) -> None:
+        script = runtime_version_check_script()
+        self.assertIn("importlib.metadata", script)
+        self.assertIn('version("ariadion")', script)
+        self.assertIn("ariadion.__version__", script)
+        self.assertIn("version-check-ok:", script)
+
+    def test_runtime_version_check_script_compiles(self) -> None:
+        compile(runtime_version_check_script(), "<runtime-version-check>", "exec")
+
+    def test_sdk_public_version_matches_distribution_metadata(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        project = self._load_project_metadata(root / "packages" / "sdk" / "pyproject.toml")
+        module_path = root / "packages" / "sdk" / "src" / "ariadion" / "__init__.py"
+        module = ast.parse(module_path.read_text(encoding="utf-8"))
+        public_versions = [
+            node.value.value
+            for node in module.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "__version__"
+                for target in node.targets
+            )
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ]
+        self.assertEqual(public_versions, [project.get("version")])
+        self.assertEqual(public_versions, [self._EXPECTED_RC_VERSION])
+
+    def test_generate_sha256_manifest_is_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p1 = Path(tmp) / "a-0.1.0rc2-py3-none-any.whl"
+            p2 = Path(tmp) / "b-0.1.0rc2-py3-none-any.whl"
+            p1.write_bytes(b"abc")
+            p2.write_bytes(b"content-b")
+            manifest1 = generate_sha256_manifest([p2, p1])
+            manifest2 = generate_sha256_manifest([p1, p2])
+            self.assertEqual(manifest1, manifest2)
+            self.assertEqual(list(manifest1), sorted([p1.name, p2.name]))
+            self.assertEqual(
+                manifest1[p1.name],
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            )
+            duplicate_dir = Path(tmp) / "duplicate"
+            duplicate_dir.mkdir()
+            duplicate = duplicate_dir / p1.name
+            duplicate.write_bytes(b"different")
+            with self.assertRaisesRegex(ReleaseSmokeError, "duplicate filenames"):
+                generate_sha256_manifest([p1, duplicate])
+
+    def test_validate_artifact_set_accepts_a_complete_source_authoritative_fixture(self) -> None:
+        fixture = self._artifact_fixture()
+        result = validate_artifact_set(
+            fixture["distributions"],
+            fixture["wheels"],
+            fixture["sdists"],
+            expected_version="0.1.0rc2",
+            canonical_license_path=fixture["root"] / "LICENSE",
+        )
+        self.assertEqual(result["wheels"], PUBLISHABLE_DISTRIBUTION_COUNT)
+        self.assertEqual(result["sdists"], PUBLISHABLE_DISTRIBUTION_COUNT)
+        self.assertEqual(list(result["manifest"]), sorted(result["manifest"]))
+
+    def test_validate_artifact_set_rejects_wrong_wheel_count(self) -> None:
+        fixture = self._artifact_fixture()
+        fixture["wheels"] = fixture["wheels"][:-1]
+        self._assert_fixture_rejected(fixture, "expected 15 wheels")
+
+    def test_validate_artifact_set_rejects_wrong_sdist_count(self) -> None:
+        fixture = self._artifact_fixture()
+        fixture["sdists"] = fixture["sdists"][:-1]
+        self._assert_fixture_rejected(fixture, "expected 15 sdists")
+
+    def test_validate_artifact_set_rejects_workspace_artifact_case_and_separator_variant(self) -> None:
+        fixture = self._artifact_fixture()
+        original = fixture["wheel_paths"]["ariadion"]
+        workspace_artifact = original.with_name("Ariadion.Workspace-0.1.0rc2-py3-none-any.whl")
+        original.rename(workspace_artifact)
+        self._replace_fixture_path(
+            fixture,
+            kind="wheel",
+            name="ariadion",
+            path=workspace_artifact,
+        )
+        self._assert_fixture_rejected(fixture, "ariadion-workspace artifact")
+
+    def test_artifact_validator_rejects_missing_extra_wrong_and_conditional_internal_dependencies(self) -> None:
+        cases = {
+            "missing": [],
+            "extra": [
+                "ariadion-core==0.1.0rc2",
+                "ariadion-frontend-python==0.1.0rc2",
+            ],
+            "wrong-pin": ["ariadion-frontend-python==0.1.0rc1"],
+            "conditional": [
+                "ariadion-frontend-python==0.1.0rc2 ; python_version >= '3.11'"
+            ],
+        }
+        for label, requirements in cases.items():
+            with self.subTest(label=label):
+                fixture = self._artifact_fixture()
+                self._write_fixture_wheel(
+                    fixture,
+                    "ariadion",
+                    metadata_overrides={"Requires-Dist": requirements},
+                )
+                self._assert_fixture_rejected(
+                    fixture,
+                    "Requires-Dist|internal dependency",
+                )
+
+    def test_artifact_validator_rejects_duplicate_requires_dist_headers(self) -> None:
+        fixture = self._artifact_fixture()
+        self._write_fixture_wheel(
+            fixture,
+            "ariadion",
+            metadata_overrides={
+                "Requires-Dist": [
+                    "ariadion-frontend-python==0.1.0rc2",
+                    "ariadion-frontend-python==0.1.0rc2",
+                ]
+            },
+        )
+        self._assert_fixture_rejected(fixture, "unexpected Requires-Dist")
+
+    def test_artifact_validator_rejects_wrong_filename_and_metadata_version(self) -> None:
+        fixture = self._artifact_fixture()
+        self._write_fixture_wheel(
+            fixture,
+            "ariadion",
+            metadata_overrides={"Version": "0.1.0rc1"},
+        )
+        self._assert_fixture_rejected(fixture, "Version")
+
+        fixture = self._artifact_fixture()
+        self._write_fixture_wheel(
+            fixture,
+            "ariadion",
+            filename="ariadion-0.1.0rc1-py3-none-any.whl",
+        )
+        self._assert_fixture_rejected(fixture, "wheel filename")
+
+    def test_artifact_validator_rejects_duplicate_and_unknown_normalized_metadata_names(self) -> None:
+        fixture = self._artifact_fixture()
+        self._write_fixture_wheel(
+            fixture,
+            "ariadion-core",
+            metadata_overrides={"Name": "ariadion"},
+        )
+        self._assert_fixture_rejected(fixture, "duplicate normalized distribution names")
+
+        fixture = self._artifact_fixture()
+        self._write_fixture_wheel(
+            fixture,
+            "ariadion",
+            metadata_overrides={"Name": "unrecognized-package"},
+        )
+        self._assert_fixture_rejected(fixture, "unknown normalized metadata name")
+
+    def test_artifact_validator_rejects_malformed_archives(self) -> None:
+        fixture = self._artifact_fixture()
+        self._write_fixture_wheel(fixture, "ariadion", malformed=True)
+        self._assert_fixture_rejected(fixture, "not a zip file")
+
+        fixture = self._artifact_fixture()
+        self._write_fixture_sdist(fixture, "ariadion", malformed=True)
+        self._assert_fixture_rejected(fixture, "not a gzip file")
+
+    def test_artifact_validator_rejects_core_metadata_parity_failures(self) -> None:
+        cases = {
+            "wrong-requires-python": ({"Requires-Python": ">=3.10"}, "Requires-Python"),
+            "missing-description-content-type": ({"Description-Content-Type": None}, "Description-Content-Type"),
+            "wrong-description-content-type": ({"Description-Content-Type": "text/plain"}, "Description-Content-Type"),
+            "empty-description": ({"__description__": ""}, "Description payload is empty"),
+            "old-metadata-version": ({"Metadata-Version": "2.3"}, "PEP 639 minimum"),
+            "missing-license-expression": ({"License-Expression": None}, "License-Expression"),
+            "wrong-license-expression": ({"License-Expression": "MIT"}, "License-Expression"),
+            "missing-license-file-header": ({"License-File": None}, "License-File headers"),
+            "wrong-license-file-header": ({"License-File": ["COPYING"]}, "License-File headers"),
+        }
+        for label, (overrides, pattern) in cases.items():
+            with self.subTest(label=label):
+                fixture = self._artifact_fixture()
+                self._write_fixture_wheel(
+                    fixture,
+                    "ariadion",
+                    metadata_overrides=overrides,
+                )
+                self._assert_fixture_rejected(fixture, pattern)
+
+    def test_artifact_validator_rejects_sdist_core_metadata_parity_failures(self) -> None:
+        cases = {
+            "version": ({"Version": "0.1.0rc1"}, "Version"),
+            "requires-python": ({"Requires-Python": ">=3.10"}, "Requires-Python"),
+            "description-content-type": ({"Description-Content-Type": "text/plain"}, "Description-Content-Type"),
+            "license-expression": ({"License-Expression": "MIT"}, "License-Expression"),
+        }
+        for label, (overrides, pattern) in cases.items():
+            with self.subTest(sdist_metadata=label):
+                fixture = self._artifact_fixture()
+                self._write_fixture_sdist(
+                    fixture,
+                    "ariadion",
+                    metadata_overrides=overrides,
+                )
+                self._assert_fixture_rejected(fixture, pattern)
+
+    def test_artifact_validator_rejects_license_member_and_payload_failures(self) -> None:
+        cases: list[tuple[str, dict[str, Any], str]] = [
+            (
+                "missing-pep639-license",
+                {"include_license": False},
+                "sole PEP 639 license member",
+            ),
+            (
+                "legacy-wheel-license",
+                {"include_license": False, "legacy_license": True},
+                "legacy license member",
+            ),
+            (
+                "unexpected-pep639-license",
+                {
+                    "extra_license_members": [
+                        "unexpected-0.1.0rc2.dist-info/licenses/LICENSE"
+                    ]
+                },
+                "sole PEP 639 license member",
+            ),
+            (
+                "wheel-license-byte-mismatch",
+                {"license_payload": b"wrong license payload\n"},
+                "LICENSE payload differs",
+            ),
+        ]
+        for label, keyword_arguments, pattern in cases:
+            with self.subTest(label=label):
+                fixture = self._artifact_fixture()
+                self._write_fixture_wheel(fixture, "ariadion", **keyword_arguments)
+                self._assert_fixture_rejected(fixture, pattern)
+
+        fixture = self._artifact_fixture()
+        self._write_fixture_sdist(
+            fixture,
+            "ariadion",
+            license_payload=b"wrong license payload\n",
+        )
+        self._assert_fixture_rejected(fixture, "LICENSE payload differs")
+
+    def test_artifact_validator_rejects_wheel_and_sdist_import_structural_failures(self) -> None:
+        cases: list[tuple[str, str, dict[str, Any]]] = [
+            ("directory-only-wheel-init", "wheel", {"import_variant": "directory"}),
+            ("missing-wheel-init", "wheel", {"include_import": False}),
+            ("non-file-sdist-init", "sdist", {"import_variant": "symlink"}),
+        ]
+        for label, kind, keyword_arguments in cases:
+            with self.subTest(label=label):
+                fixture = self._artifact_fixture()
+                if kind == "wheel":
+                    self._write_fixture_wheel(fixture, "ariadion", **keyword_arguments)
+                else:
+                    self._write_fixture_sdist(fixture, "ariadion", **keyword_arguments)
+                self._assert_fixture_rejected(fixture, "__init__\\.py.*regular file|archive member")
+
+    def test_artifact_validator_rejects_malformed_duplicate_missing_wrong_section_and_wrong_target_cli_entry_points(self) -> None:
+        cases = {
+            "missing": {"include_entry_points": False},
+            "malformed": {"entry_points": "[console_scripts\nariadion = ariadion_cli:main\n"},
+            "duplicate-entry-file": {"duplicate_entry_points": True},
+            "wrong-section": {
+                "entry_points": "[gui_scripts]\nariadion = ariadion_cli:main\n"
+            },
+            "wrong-target": {
+                "entry_points": "[console_scripts]\nariadion = wrong_target:main\n"
+            },
+            "wrong-command-name": {
+                "entry_points": "[console_scripts]\nother = ariadion_cli:main\n"
+            },
+        }
+        for label, keyword_arguments in cases.items():
+            with self.subTest(label=label):
+                fixture = self._artifact_fixture()
+                self._write_fixture_wheel(
+                    fixture,
+                    "ariadion-cli",
+                    **keyword_arguments,
+                )
+                self._assert_fixture_rejected(fixture, "entry_points|console_scripts|CLI entry point")
+
+    def test_artifact_validator_rejects_non_cli_distribution_exposing_the_cli_target(self) -> None:
+        fixture = self._artifact_fixture()
+        self._write_fixture_wheel(
+            fixture,
+            "ariadion",
+            entry_points="[console_scripts]\nariadion = ariadion_cli:main\n",
+        )
+        self._assert_fixture_rejected(fixture, "non-CLI distribution")
+
+    def test_relative_artifact_invocation_resolves_outputs_outside_the_checkout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ariadion-outside-cwd-") as temporary:
+            outside = Path(temporary)
+            observed: dict[str, Any] = {}
+
+            def fake_validate_artifacts(**kwargs: Any) -> dict[str, Any]:
+                observed.update(kwargs)
+                return {"wheels": 15, "sdists": 15, "version": "0.1.0rc2", "manifest": {}}
+
+            with contextlib.chdir(outside):
+                with patch("tools.release_smoke.publishable_distributions", return_value=[]), patch(
+                    "tools.release_smoke._run_validate_artifacts",
+                    side_effect=fake_validate_artifacts,
+                ), patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "release_smoke.py",
+                        "--wheelhouse",
+                        "relative-wheelhouse",
+                        "--validate-artifacts",
+                        "relative-sdists",
+                    ],
+                ), patch("sys.stdout", new_callable=io.StringIO):
+                    self.assertEqual(main(), 0)
+        self.assertEqual(
+            observed["wheelhouse"],
+            outside / "relative-wheelhouse",
+        )
+        self.assertEqual(observed["sdist_dir"], outside / "relative-sdists")
+        self.assertEqual(observed["root"], ROOT.resolve())
+
+    def test_cli_rejects_incompatible_artifact_and_numpy_options(self) -> None:
+        parser = build_argument_parser()
+        self.assertIsNone(parser.parse_args(["--wheelhouse", "wheels"]).numpy_version)
+        invalid_argument_sets = [
+            ["--validate-artifacts", "sdists", "--list"],
+            ["--validate-artifacts", "sdists", "--with-numpy"],
+            ["--validate-artifacts", "sdists", "--numpy-version", "1.26.0"],
+            ["--validate-artifacts", "sdists", "--venv-dir", "venv"],
+            ["--numpy-version", "1.26.0"],
+        ]
+        for extra_arguments in invalid_argument_sets:
+            with self.subTest(arguments=extra_arguments):
+                args = parser.parse_args(["--wheelhouse", "wheels", *extra_arguments])
+                with patch("sys.stderr", new_callable=io.StringIO):
+                    with self.assertRaises(SystemExit):
+                        _validate_argument_combinations(parser, args)
+
+    def test_twine_check_command_uses_strict_flag(self) -> None:
+        artifacts = [Path("/tmp/a.whl"), Path("/tmp/b.tar.gz")]
+        command = twine_check_command(artifacts)
+        self.assertIn("--strict", command)
+        self.assertIn("twine", command)
+        self.assertIn("check", command)
+        for artifact in artifacts:
+            self.assertIn(str(artifact), command)
+
+    def test_build_sdist_command_uses_build_module(self) -> None:
+        member_dir = Path("/tmp/pkg")
+        sdist_dir = Path("/tmp/sdists")
+        command = build_sdist_command(member_dir, sdist_dir)
+        self.assertEqual(command[0], sys.executable)
+        self.assertIn("build", command)
+        self.assertIn("--sdist", command)
+        self.assertNotIn("--no-isolation", command)
+        self.assertIn(str(sdist_dir), command)
+        self.assertIn(str(member_dir), command)
+
+    def test_root_workspace_is_excluded_from_publishable_distributions(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        distributions = publishable_distributions(root)
+        names = {entry["name"] for entry in distributions}
+        self.assertNotIn("ariadion-workspace", names)
 
 
 if __name__ == "__main__":

@@ -1,19 +1,99 @@
 from __future__ import annotations
 
 import argparse
+import configparser
+import email.parser
+import hashlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import textwrap
 import tomllib
+import zipfile
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import InvalidWheelFilename, parse_wheel_filename
+from packaging.version import InvalidVersion, Version
+
 ROOT = Path(__file__).resolve().parents[1]
+PUBLISHABLE_DISTRIBUTION_COUNT = 15
+RELEASE_SMOKE_MINIMUM_NUMPY_VERSION = "1.26.0"
 RELEASE_SMOKE_NUMPY_VERSION = "2.4.6"
+PEP_639_METADATA_VERSION = Version("2.4")
+
+# This reviewed RC2 contract is intentionally authored separately from package
+# pyproject.toml files. Source/artifact parity alone cannot detect an edge
+# deleted, duplicated, conditionalized, redirected, or incorrectly pinned in both.
+EXPECTED_RC2_DEPENDENCY_GRAPH: dict[str, tuple[str, ...]] = {
+    "ariadion": (
+        "ariadion-frontend-python==0.1.0rc2",
+        "ariadion-language==0.1.0rc2",
+        "ariadion-noise==0.1.0rc2",
+        "ariadion-runtime==0.1.0rc2",
+        "ariadion-semantics==0.1.0rc2",
+    ),
+    "ariadion-cli": (
+        "ariadion==0.1.0rc2",
+        "ariadion-visualization==0.1.0rc2",
+    ),
+    "ariadion-core": (),
+    "ariadion-frontend-python": (
+        "ariadion-core==0.1.0rc2",
+        "ariadion-language==0.1.0rc2",
+        "ariadion-semantics==0.1.0rc2",
+    ),
+    "ariadion-ir": ("ariadion-core==0.1.0rc2",),
+    "ariadion-language": ("ariadion-core==0.1.0rc2",),
+    "ariadion-noise": ("ariadion-core==0.1.0rc2",),
+    "ariadion-runtime": (
+        "ariadion-core==0.1.0rc2",
+        "ariadion-ir==0.1.0rc2",
+        "ariadion-language==0.1.0rc2",
+        "ariadion-noise==0.1.0rc2",
+        "ariadion-semantics==0.1.0rc2",
+        "daidalon==0.1.0rc2",
+        "ariadion-simulator==0.1.0rc2",
+        "theonoe==0.1.0rc2",
+        "ariadion-visualization==0.1.0rc2",
+    ),
+    "ariadion-semantics": (
+        "ariadion-core==0.1.0rc2",
+        "ariadion-language==0.1.0rc2",
+        "ariadion-noise==0.1.0rc2",
+    ),
+    "ariadion-simulator": (
+        "ariadion-ir==0.1.0rc2",
+        "ariadion-noise==0.1.0rc2",
+    ),
+    "ariadion-simulator-numpy": (
+        "ariadion-ir==0.1.0rc2",
+        "ariadion-noise==0.1.0rc2",
+        "ariadion-simulator==0.1.0rc2",
+        "numpy>=1.26",
+    ),
+    "ariadion-syntax": ("ariadion-core==0.1.0rc2",),
+    "ariadion-visualization": ("ariadion-ir==0.1.0rc2",),
+    "daidalon": (
+        "ariadion-core==0.1.0rc2",
+        "ariadion-language==0.1.0rc2",
+        "ariadion-ir==0.1.0rc2",
+        "ariadion-semantics==0.1.0rc2",
+    ),
+    "theonoe": (
+        "ariadion-core==0.1.0rc2",
+        "ariadion-noise==0.1.0rc2",
+        "ariadion-semantics==0.1.0rc2",
+        "ariadion-simulator==0.1.0rc2",
+    ),
+}
 
 
 class ReleaseSmokeError(RuntimeError):
@@ -111,7 +191,10 @@ def build_venv_command(venv_dir: Path) -> list[str]:
     return [sys.executable, "-m", "venv", str(venv_dir)]
 
 
-def download_numpy_command(wheelhouse: Path) -> list[str]:
+def download_numpy_command(
+    wheelhouse: Path,
+    numpy_version: str = RELEASE_SMOKE_NUMPY_VERSION,
+) -> list[str]:
     return [
         sys.executable,
         "-m",
@@ -121,7 +204,7 @@ def download_numpy_command(wheelhouse: Path) -> list[str]:
         "--only-binary=:all:",
         "--dest",
         str(wheelhouse),
-        f"numpy=={RELEASE_SMOKE_NUMPY_VERSION}",
+        f"numpy=={numpy_version}",
     ]
 
 
@@ -146,6 +229,47 @@ def install_from_wheelhouse_command(
     if with_numpy:
         command.append("ariadion-simulator-numpy")
     return command
+
+
+def install_all_distributions_command(
+    venv_python: Path,
+    wheelhouse: Path,
+    distributions: list[dict[str, Any]],
+    *,
+    with_numpy: bool,
+) -> list[str]:
+    """Install every built distribution, excluding the optional NumPy package when absent."""
+    names = sorted(
+        entry["name"]
+        for entry in distributions
+        if with_numpy or entry["name"] != "ariadion-simulator-numpy"
+    )
+    return [
+        str(venv_python),
+        "-m",
+        "pip",
+        "--isolated",
+        "install",
+        "--no-index",
+        "--find-links",
+        str(wheelhouse),
+        *names,
+    ]
+
+
+def all_imports_smoke_script(distribution_names: list[str]) -> str:
+    """Return a script that imports each distribution's normalized top-level package."""
+    import_packages = sorted(name.replace("-", "_") for name in distribution_names)
+    return textwrap.dedent(
+        f"""
+        import importlib
+
+        packages = {import_packages!r}
+        for package in packages:
+            importlib.import_module(package)
+        print(f"all-imports-smoke-ok:{{len(packages)}}")
+        """
+    ).strip()
 
 
 def sdk_smoke_script() -> str:
@@ -397,12 +521,1184 @@ def _extract_numpy_version(output: str) -> str:
 
 
 def _assert_numpy_version_matches_pin(version: str) -> None:
-    if version != RELEASE_SMOKE_NUMPY_VERSION:
+    _assert_numpy_version_matches(version, RELEASE_SMOKE_NUMPY_VERSION)
+
+
+def _assert_numpy_version_matches(version: str, expected_version: str) -> None:
+    if version != expected_version:
+        expected_label = (
+            f"pinned {expected_version}"
+            if expected_version == RELEASE_SMOKE_NUMPY_VERSION
+            else f"requested {expected_version}"
+        )
         raise ReleaseSmokeError(
             "optional NumPy smoke resolved "
-            f"numpy {version}, expected pinned {RELEASE_SMOKE_NUMPY_VERSION}; "
+            f"numpy {version}, expected {expected_label}; "
             "rebuild the wheelhouse and rerun release smoke"
         )
+
+
+def build_sdist_command(member_dir: Path, sdist_dir: Path) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "build",
+        "--sdist",
+        "--outdir",
+        str(sdist_dir),
+        str(member_dir),
+    ]
+
+
+def twine_check_command(artifact_paths: list[Path]) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "twine",
+        "check",
+        "--strict",
+    ] + [str(p) for p in sorted(artifact_paths)]
+
+
+def runtime_version_check_script() -> str:
+    return textwrap.dedent(
+        """
+        import importlib.metadata
+        import ariadion
+        installed = importlib.metadata.version("ariadion")
+        runtime = ariadion.__version__
+        if installed != runtime:
+            raise SystemExit(
+                f"version mismatch: installed={installed!r}, "
+                f"ariadion.__version__={runtime!r}"
+            )
+        print(f"version-check-ok:{installed}")
+        """
+    ).strip()
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def generate_sha256_manifest(artifact_paths: list[Path]) -> dict[str, str]:
+    """Return a filename-sorted, portable SHA-256 manifest for regular artifact files."""
+    existing_paths = [path for path in artifact_paths if path.is_file()]
+    filenames = [path.name for path in existing_paths]
+    duplicates = sorted(name for name, count in Counter(filenames).items() if count > 1)
+    if duplicates:
+        raise ReleaseSmokeError(
+            "cannot generate SHA-256 manifest with duplicate filenames: "
+            + ", ".join(duplicates)
+        )
+    return {
+        path.name: _sha256_file(path)
+        for path in sorted(existing_paths, key=lambda artifact_path: artifact_path.name)
+    }
+
+
+RequirementKey = tuple[str, tuple[str, ...], str, str | None, str | None]
+
+
+def _normalize_description(value: str) -> str:
+    return value.replace("\r\n", "\n").rstrip()
+
+
+def _require_project_string(
+    project: dict[str, Any],
+    field: str,
+    *,
+    source_label: str,
+) -> str:
+    value = project.get(field)
+    if not isinstance(value, str) or not value:
+        raise ReleaseSmokeError(f"{source_label}: project.{field} must be a non-empty string")
+    return value
+
+
+def _parse_requirements(
+    values: list[str] | tuple[str, ...],
+    *,
+    context: str,
+) -> tuple[Requirement, ...]:
+    requirements: list[Requirement] = []
+    for value in values:
+        if not isinstance(value, str):
+            raise ReleaseSmokeError(f"{context}: requirement must be a string, got {value!r}")
+        try:
+            requirements.append(Requirement(value))
+        except InvalidRequirement as exc:
+            raise ReleaseSmokeError(f"{context}: invalid requirement {value!r}: {exc}") from exc
+    return tuple(requirements)
+
+
+def _requirement_key(requirement: Requirement) -> RequirementKey:
+    return (
+        _normalized_distribution_name(requirement.name),
+        tuple(sorted(_normalized_distribution_name(extra) for extra in requirement.extras)),
+        str(requirement.specifier),
+        requirement.url,
+        str(requirement.marker) if requirement.marker is not None else None,
+    )
+
+
+def _format_requirement_key(requirement_key: RequirementKey) -> str:
+    name, extras, specifier, url, marker = requirement_key
+    rendered = name
+    if extras:
+        rendered += "[" + ",".join(extras) + "]"
+    rendered += specifier
+    if url is not None:
+        rendered += f" @ {url}"
+    if marker is not None:
+        rendered += f" ; {marker}"
+    return rendered
+
+
+def _format_dependency_difference(
+    *,
+    source_label: str,
+    expected: Counter[RequirementKey],
+    actual: Counter[RequirementKey],
+) -> str:
+    missing = expected - actual
+    unexpected = actual - expected
+    details: list[str] = []
+    if missing:
+        details.append(
+            "missing="
+            + repr(sorted(_format_requirement_key(requirement) for requirement in missing.elements()))
+        )
+    if unexpected:
+        details.append(
+            "unexpected="
+            + repr(sorted(_format_requirement_key(requirement) for requirement in unexpected.elements()))
+        )
+    return (
+        f"{source_label}: source dependency graph differs from the independent RC2 "
+        "baseline: "
+        + "; ".join(details)
+    )
+
+
+def _expected_rc2_dependency_multisets() -> dict[str, Counter[RequirementKey]]:
+    """Return semantic requirement multisets from the fixed reviewed RC2 graph."""
+    return {
+        _normalized_distribution_name(distribution_name): Counter(
+            _requirement_key(requirement)
+            for requirement in _parse_requirements(
+                requirements,
+                context=f"independent RC2 dependency baseline for {distribution_name}",
+            )
+        )
+        for distribution_name, requirements in EXPECTED_RC2_DEPENDENCY_GRAPH.items()
+    }
+
+
+def _read_source_readme(
+    entry: dict[str, Any],
+    project: dict[str, Any],
+    *,
+    source_label: str,
+) -> str:
+    readme = project.get("readme")
+    if isinstance(readme, str):
+        readme_file = readme
+    elif isinstance(readme, dict):
+        readme_file = readme.get("file")
+        content_type = readme.get("content-type")
+        if content_type not in (None, "text/markdown"):
+            raise ReleaseSmokeError(
+                f"{source_label}: README content type must be text/markdown, got {content_type!r}"
+            )
+    else:
+        raise ReleaseSmokeError(f"{source_label}: project.readme must name a Markdown file")
+    if not isinstance(readme_file, str) or not readme_file:
+        raise ReleaseSmokeError(f"{source_label}: project.readme file is missing")
+    readme_path = Path(entry["path"]) / readme_file
+    if not readme_path.is_file():
+        raise ReleaseSmokeError(f"{source_label}: README file is missing: {readme_path}")
+    readme_text = _normalize_description(readme_path.read_text(encoding="utf-8"))
+    if not readme_text:
+        raise ReleaseSmokeError(f"{source_label}: README file is empty: {readme_path}")
+    return readme_text
+
+
+def _source_import_package(entry: dict[str, Any], *, source_label: str) -> str:
+    source_root = Path(entry["path"]) / "src"
+    init_files = sorted(
+        path
+        for path in source_root.glob("*/__init__.py")
+        if path.is_file()
+    )
+    if len(init_files) != 1:
+        raise ReleaseSmokeError(
+            f"{source_label}: expected exactly one src/<package>/__init__.py, "
+            f"found {len(init_files)}"
+        )
+    return init_files[0].parent.name
+
+
+def authoritative_distribution_records(
+    distributions: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Build the authoritative normalized-name mapping from source pyproject metadata."""
+    records: dict[str, dict[str, Any]] = {}
+    expected_dependency_multisets = _expected_rc2_dependency_multisets()
+    for entry in distributions:
+        pyproject_path = Path(entry["pyproject_path"])
+        source_label = str(pyproject_path)
+        document = _load_pyproject(pyproject_path)
+        project = document.get("project")
+        if not isinstance(project, dict):
+            raise ReleaseSmokeError(f"{source_label}: [project] metadata is missing")
+
+        name = _require_project_string(project, "name", source_label=source_label)
+        entry_name = entry.get("name")
+        if entry_name != name:
+            raise ReleaseSmokeError(
+                f"{source_label}: discovered name {entry_name!r} does not match project.name {name!r}"
+            )
+        normalized_name = _normalized_distribution_name(name)
+        if normalized_name in records:
+            previous = records[normalized_name]["pyproject_path"]
+            raise ReleaseSmokeError(
+                f"duplicate normalized publishable distribution name {normalized_name!r} "
+                f"in {previous} and {pyproject_path}"
+            )
+        if normalized_name not in expected_dependency_multisets:
+            raise ReleaseSmokeError(
+                f"{source_label}: distribution {name!r} is absent from the independent RC2 dependency baseline"
+            )
+
+        version = _require_project_string(project, "version", source_label=source_label)
+        summary = _require_project_string(project, "description", source_label=source_label)
+        requires_python = _require_project_string(
+            project,
+            "requires-python",
+            source_label=source_label,
+        )
+        if requires_python != ">=3.11":
+            raise ReleaseSmokeError(
+                f"{source_label}: requires-python must be exactly '>=3.11', got {requires_python!r}"
+            )
+        if project.get("license") != "Apache-2.0":
+            raise ReleaseSmokeError(
+                f"{source_label}: project.license must be 'Apache-2.0'"
+            )
+        if project.get("license-files") != ["LICENSE"]:
+            raise ReleaseSmokeError(
+                f"{source_label}: project.license-files must be exactly ['LICENSE']"
+            )
+        if project.get("authors") != [{"name": "Vi Connelly"}]:
+            raise ReleaseSmokeError(
+                f"{source_label}: project.authors must be exactly Vi Connelly without an email"
+            )
+
+        urls = project.get("urls")
+        if not isinstance(urls, dict) or not all(
+            isinstance(label, str) and isinstance(url, str) and label and url
+            for label, url in urls.items()
+        ):
+            raise ReleaseSmokeError(f"{source_label}: project.urls must be a string mapping")
+        classifiers = project.get("classifiers")
+        if not isinstance(classifiers, list) or not all(
+            isinstance(classifier, str) and classifier for classifier in classifiers
+        ):
+            raise ReleaseSmokeError(f"{source_label}: project.classifiers must be a string list")
+        dependencies = project.get("dependencies", [])
+        if not isinstance(dependencies, list):
+            raise ReleaseSmokeError(f"{source_label}: project.dependencies must be a list")
+        dependency_requirements = _parse_requirements(
+            dependencies,
+            context=f"{source_label}: project.dependencies",
+        )
+        actual_dependency_multiset = Counter(
+            _requirement_key(requirement) for requirement in dependency_requirements
+        )
+        expected_dependency_multiset = expected_dependency_multisets[normalized_name]
+        if actual_dependency_multiset != expected_dependency_multiset:
+            raise ReleaseSmokeError(
+                _format_dependency_difference(
+                    source_label=source_label,
+                    expected=expected_dependency_multiset,
+                    actual=actual_dependency_multiset,
+                )
+            )
+
+        records[normalized_name] = {
+            "name": name,
+            "normalized_name": normalized_name,
+            "path": Path(entry["path"]),
+            "pyproject_path": pyproject_path,
+            "version": version,
+            "summary": summary,
+            "requires_python": requires_python,
+            "readme_text": _read_source_readme(entry, project, source_label=source_label),
+            "import_name": _source_import_package(entry, source_label=source_label),
+            "project_urls": Counter((label, url) for label, url in urls.items()),
+            "classifiers": Counter(classifiers),
+            "dependency_requirements": dependency_requirements,
+        }
+    missing_baseline_distributions = sorted(set(expected_dependency_multisets) - set(records))
+    if missing_baseline_distributions:
+        raise ReleaseSmokeError(
+            "publishable source distributions missing from the independent RC2 dependency baseline: "
+            + ", ".join(missing_baseline_distributions)
+        )
+    return records
+
+
+def _single_metadata_value(
+    metadata: email.parser.Message,
+    header: str,
+    *,
+    artifact_name: str,
+    errors: list[str],
+) -> str | None:
+    values = metadata.get_all(header) or []
+    if len(values) != 1:
+        errors.append(
+            f"{artifact_name}: expected exactly one {header} header, found {len(values)}"
+        )
+        return None
+    return values[0]
+
+
+def _metadata_project_urls(
+    metadata: email.parser.Message,
+    *,
+    artifact_name: str,
+    errors: list[str],
+) -> Counter[tuple[str, str]]:
+    project_urls: Counter[tuple[str, str]] = Counter()
+    for value in metadata.get_all("Project-URL") or []:
+        label, separator, url = value.partition(",")
+        if not separator or not label.strip() or not url.strip():
+            errors.append(f"{artifact_name}: malformed Project-URL header {value!r}")
+            continue
+        project_urls[(label.strip(), url.strip())] += 1
+    return project_urls
+
+
+def _artifact_requirements(
+    metadata: email.parser.Message,
+    *,
+    artifact_name: str,
+    errors: list[str],
+) -> tuple[Requirement, ...]:
+    values = metadata.get_all("Requires-Dist") or []
+    requirements: list[Requirement] = []
+    for value in values:
+        try:
+            requirements.append(Requirement(value))
+        except InvalidRequirement as exc:
+            errors.append(f"{artifact_name}: invalid Requires-Dist {value!r}: {exc}")
+    return tuple(requirements)
+
+
+def _validate_dependency_metadata(
+    metadata: email.parser.Message,
+    *,
+    artifact_name: str,
+    expected_version: str,
+    record: dict[str, Any],
+    records_by_normalized_name: dict[str, dict[str, Any]],
+) -> list[str]:
+    errors: list[str] = []
+    actual_requirements = _artifact_requirements(
+        metadata,
+        artifact_name=artifact_name,
+        errors=errors,
+    )
+    expected_requirements = record["dependency_requirements"]
+    expected_multiset = Counter(_requirement_key(requirement) for requirement in expected_requirements)
+    actual_multiset = Counter(_requirement_key(requirement) for requirement in actual_requirements)
+    missing = expected_multiset - actual_multiset
+    unexpected = actual_multiset - expected_multiset
+    if missing:
+        errors.append(
+            f"{artifact_name}: missing Requires-Dist values: "
+            + ", ".join(
+                _format_requirement_key(requirement_key)
+                for requirement_key in sorted(missing.elements())
+            )
+        )
+    if unexpected:
+        errors.append(
+            f"{artifact_name}: unexpected Requires-Dist values: "
+            + ", ".join(
+                _format_requirement_key(requirement_key)
+                for requirement_key in sorted(unexpected.elements())
+            )
+        )
+
+    for requirement in actual_requirements:
+        normalized_name = _normalized_distribution_name(requirement.name)
+        if normalized_name not in records_by_normalized_name:
+            continue
+        violations: list[str] = []
+        if requirement.extras:
+            violations.append(f"unexpected extras {sorted(requirement.extras)}")
+        if str(requirement.specifier) != f"=={expected_version}":
+            violations.append(
+                f"specifier {str(requirement.specifier)!r}, expected '=={expected_version}'"
+            )
+        if requirement.url is not None:
+            violations.append(f"URL {requirement.url!r}")
+        if requirement.marker is not None:
+            violations.append(f"environment marker {str(requirement.marker)!r}")
+        if violations:
+            errors.append(
+                f"{artifact_name}: internal dependency {requirement.name!r} must be an "
+                f"unconditional exact RC pin; found " + "; ".join(violations)
+            )
+    return errors
+
+
+def _validate_core_metadata(
+    metadata: email.parser.Message,
+    *,
+    artifact_name: str,
+    expected_version: str,
+    record: dict[str, Any],
+    records_by_normalized_name: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Validate artifact Core Metadata exactly against its authoritative source record."""
+    errors: list[str] = []
+    expected_headers = {
+        "Name": record["name"],
+        "Version": record["version"],
+        "Summary": record["summary"],
+        "Requires-Python": record["requires_python"],
+        "Description-Content-Type": "text/markdown",
+        "License-Expression": "Apache-2.0",
+        "Author": "Vi Connelly",
+    }
+    for header, expected_value in expected_headers.items():
+        actual_value = _single_metadata_value(
+            metadata,
+            header,
+            artifact_name=artifact_name,
+            errors=errors,
+        )
+        if actual_value is not None and actual_value != expected_value:
+            errors.append(
+                f"{artifact_name}: {header} is {actual_value!r}, expected {expected_value!r}"
+            )
+
+    metadata_version = _single_metadata_value(
+        metadata,
+        "Metadata-Version",
+        artifact_name=artifact_name,
+        errors=errors,
+    )
+    if metadata_version is not None:
+        try:
+            if Version(metadata_version) < PEP_639_METADATA_VERSION:
+                errors.append(
+                    f"{artifact_name}: Metadata-Version {metadata_version!r} is below "
+                    f"the PEP 639 minimum {PEP_639_METADATA_VERSION}"
+                )
+        except InvalidVersion:
+            errors.append(f"{artifact_name}: invalid Metadata-Version {metadata_version!r}")
+
+    if record["version"] != expected_version:
+        errors.append(
+            f"{artifact_name}: authoritative source version {record['version']!r} "
+            f"does not equal expected {expected_version!r}"
+        )
+    license_files = metadata.get_all("License-File") or []
+    if license_files != ["LICENSE"]:
+        errors.append(
+            f"{artifact_name}: License-File headers are {license_files!r}, expected ['LICENSE']"
+        )
+    author_emails = metadata.get_all("Author-email") or []
+    if author_emails:
+        errors.append(f"{artifact_name}: Author-email headers must be absent, found {author_emails!r}")
+
+    description = metadata.get_payload()
+    if not isinstance(description, str) or not _normalize_description(description):
+        errors.append(f"{artifact_name}: Description payload is empty")
+    elif _normalize_description(description) != record["readme_text"]:
+        errors.append(f"{artifact_name}: Description payload differs from the package README")
+
+    project_urls = _metadata_project_urls(
+        metadata,
+        artifact_name=artifact_name,
+        errors=errors,
+    )
+    if project_urls != record["project_urls"]:
+        errors.append(
+            f"{artifact_name}: Project-URL headers differ from source metadata: "
+            f"found={sorted(project_urls.elements())!r}, "
+            f"expected={sorted(record['project_urls'].elements())!r}"
+        )
+    classifiers = Counter(metadata.get_all("Classifier") or [])
+    if classifiers != record["classifiers"]:
+        errors.append(
+            f"{artifact_name}: Classifier headers differ from source metadata: "
+            f"found={sorted(classifiers.elements())!r}, "
+            f"expected={sorted(record['classifiers'].elements())!r}"
+        )
+    errors.extend(
+        _validate_dependency_metadata(
+            metadata,
+            artifact_name=artifact_name,
+            expected_version=expected_version,
+            record=record,
+            records_by_normalized_name=records_by_normalized_name,
+        )
+    )
+    return errors
+
+
+def _zip_info_is_regular_file(info: zipfile.ZipInfo) -> bool:
+    if info.is_dir():
+        return False
+    unix_mode = info.external_attr >> 16
+    file_type = stat.S_IFMT(unix_mode)
+    if file_type:
+        return file_type == stat.S_IFREG
+    return not info.is_dir() and not stat.S_ISLNK(unix_mode)
+
+
+def _required_zip_member(
+    archive: zipfile.ZipFile,
+    member_name: str,
+    *,
+    artifact_name: str,
+) -> zipfile.ZipInfo:
+    matches = [info for info in archive.infolist() if info.filename == member_name]
+    if len(matches) != 1:
+        raise ReleaseSmokeError(
+            f"{artifact_name}: expected exactly one archive member {member_name!r}, "
+            f"found {len(matches)}"
+        )
+    member = matches[0]
+    if not _zip_info_is_regular_file(member):
+        raise ReleaseSmokeError(
+            f"{artifact_name}: archive member {member_name!r} must be a regular file"
+        )
+    return member
+
+
+def _read_wheel_metadata(wheel_path: Path) -> tuple[email.parser.Message, str]:
+    """Extract a wheel's only METADATA payload and its owning dist-info directory."""
+    with zipfile.ZipFile(wheel_path) as archive:
+        members = archive.infolist()
+        unsafe_members = [
+            info.filename
+            for info in members
+            if info.filename.startswith("/") or ".." in info.filename.split("/")
+        ]
+        if unsafe_members:
+            raise ReleaseSmokeError(
+                f"wheel {wheel_path.name}: unsafe archive member paths: "
+                f"{sorted(unsafe_members)!r}"
+            )
+        metadata_members = [
+            info
+            for info in members
+            if re.fullmatch(r"[^/]+\.dist-info/METADATA", info.filename)
+        ]
+        if len(metadata_members) != 1:
+            raise ReleaseSmokeError(
+                f"wheel {wheel_path.name}: expected exactly one dist-info METADATA file, "
+                f"found {len(metadata_members)}"
+            )
+        metadata_member = metadata_members[0]
+        if not _zip_info_is_regular_file(metadata_member):
+            raise ReleaseSmokeError(f"wheel {wheel_path.name}: METADATA must be a regular file")
+        metadata_text = archive.read(metadata_member).decode("utf-8")
+    parser = email.parser.Parser()
+    return parser.parsestr(metadata_text), metadata_member.filename.rsplit("/", 1)[0]
+
+
+def _required_tar_member(
+    archive: tarfile.TarFile,
+    member_name: str,
+    *,
+    artifact_name: str,
+) -> tarfile.TarInfo:
+    matches = [member for member in archive.getmembers() if member.name == member_name]
+    if len(matches) != 1:
+        raise ReleaseSmokeError(
+            f"{artifact_name}: expected exactly one archive member {member_name!r}, "
+            f"found {len(matches)}"
+        )
+    member = matches[0]
+    if not member.isfile():
+        raise ReleaseSmokeError(
+            f"{artifact_name}: archive member {member_name!r} must be a regular file"
+        )
+    return member
+
+
+def _read_sdist_metadata(sdist_path: Path) -> tuple[email.parser.Message, str]:
+    """Extract the only regular root PKG-INFO payload and its sdist root directory."""
+    with tarfile.open(sdist_path, "r:gz") as archive:
+        members = archive.getmembers()
+        unsafe_members = [
+            member.name
+            for member in members
+            if member.name.startswith("/") or ".." in member.name.split("/")
+        ]
+        if unsafe_members:
+            raise ReleaseSmokeError(
+                f"sdist {sdist_path.name}: unsafe archive member paths: "
+                f"{sorted(unsafe_members)!r}"
+            )
+        roots = {
+            member.name.split("/", 1)[0]
+            for member in members
+            if member.name and not member.name.startswith("/")
+        }
+        if len(roots) != 1:
+            raise ReleaseSmokeError(
+                f"sdist {sdist_path.name}: expected exactly one top-level root, "
+                f"found {sorted(roots)!r}"
+            )
+        metadata_members = [
+            member
+            for member in members
+            if re.fullmatch(r"[^/]+/PKG-INFO", member.name)
+        ]
+        if len(metadata_members) != 1:
+            raise ReleaseSmokeError(
+                f"sdist {sdist_path.name}: expected exactly one root PKG-INFO file, "
+                f"found {len(metadata_members)}"
+            )
+        metadata_member = metadata_members[0]
+        if not metadata_member.isfile():
+            raise ReleaseSmokeError(f"sdist {sdist_path.name}: root PKG-INFO must be a regular file")
+        extracted = archive.extractfile(metadata_member)
+        if extracted is None:
+            raise ReleaseSmokeError(f"sdist {sdist_path.name}: root PKG-INFO could not be read")
+        metadata_text = extracted.read().decode("utf-8")
+    parser = email.parser.Parser()
+    return parser.parsestr(metadata_text), next(iter(roots))
+
+
+def _wheel_license_payload(wheel_path: Path, dist_info_dir: str) -> bytes:
+    """Read the sole PEP 639 wheel license payload and reject the legacy location."""
+    expected_member = f"{dist_info_dir}/licenses/LICENSE"
+    legacy_member = f"{dist_info_dir}/LICENSE"
+    with zipfile.ZipFile(wheel_path) as archive:
+        if any(info.filename == legacy_member for info in archive.infolist()):
+            raise ReleaseSmokeError(
+                f"wheel {wheel_path.name}: legacy license member {legacy_member!r} is not allowed"
+            )
+        license_candidates = [
+            info.filename
+            for info in archive.infolist()
+            if re.fullmatch(r"[^/]+\.dist-info/(?:LICENSE|licenses/[^/]+)", info.filename)
+        ]
+        if license_candidates != [expected_member]:
+            raise ReleaseSmokeError(
+                f"wheel {wheel_path.name}: expected sole PEP 639 license member "
+                f"{expected_member!r}, found {license_candidates!r}"
+            )
+        member = _required_zip_member(
+            archive,
+            expected_member,
+            artifact_name=f"wheel {wheel_path.name}",
+        )
+        return archive.read(member)
+
+
+def _sdist_license_payload(sdist_path: Path, sdist_root: str) -> bytes:
+    """Read the sole regular LICENSE payload at the sdist root."""
+    expected_member = f"{sdist_root}/LICENSE"
+    with tarfile.open(sdist_path, "r:gz") as archive:
+        member = _required_tar_member(
+            archive,
+            expected_member,
+            artifact_name=f"sdist {sdist_path.name}",
+        )
+        extracted = archive.extractfile(member)
+        if extracted is None:
+            raise ReleaseSmokeError(f"sdist {sdist_path.name}: LICENSE could not be read")
+        return extracted.read()
+
+
+def _validate_wheel_import_payload(
+    wheel_path: Path,
+    *,
+    import_name: str,
+) -> None:
+    expected_member = f"{import_name}/__init__.py"
+    with zipfile.ZipFile(wheel_path) as archive:
+        _required_zip_member(
+            archive,
+            expected_member,
+            artifact_name=f"wheel {wheel_path.name}",
+        )
+
+
+def _validate_sdist_import_payload(
+    sdist_path: Path,
+    *,
+    sdist_root: str,
+    import_name: str,
+) -> None:
+    expected_member = f"{sdist_root}/src/{import_name}/__init__.py"
+    with tarfile.open(sdist_path, "r:gz") as archive:
+        _required_tar_member(
+            archive,
+            expected_member,
+            artifact_name=f"sdist {sdist_path.name}",
+        )
+
+
+def _parse_entry_points(
+    text: str,
+    *,
+    artifact_name: str,
+) -> list[tuple[str, str, str]]:
+    parser = configparser.ConfigParser(interpolation=None, strict=True)
+    parser.optionxform = str
+    try:
+        parser.read_string(text)
+    except configparser.Error as exc:
+        raise ReleaseSmokeError(f"{artifact_name}: malformed entry_points.txt: {exc}") from exc
+    return [
+        (section, command, target)
+        for section in parser.sections()
+        for command, target in parser.items(section)
+    ]
+
+
+def _validate_wheel_entry_points(
+    wheel_path: Path,
+    *,
+    record: dict[str, Any],
+    dist_info_dir: str,
+) -> list[str]:
+    """Validate the CLI entry point structurally and reject it from non-CLI wheels."""
+    errors: list[str] = []
+    expected_cli = ("console_scripts", "ariadion", "ariadion_cli:main")
+    with zipfile.ZipFile(wheel_path) as archive:
+        entry_point_members = [
+            info
+            for info in archive.infolist()
+            if re.fullmatch(r"[^/]+\.dist-info/entry_points\.txt", info.filename)
+        ]
+        if record["name"] == "ariadion-cli":
+            expected_member = f"{dist_info_dir}/entry_points.txt"
+            if len(entry_point_members) != 1 or entry_point_members[0].filename != expected_member:
+                errors.append(
+                    f"wheel {wheel_path.name}: expected exactly one entry_points.txt at "
+                    f"{expected_member!r}"
+                )
+                return errors
+            member = entry_point_members[0]
+            if not _zip_info_is_regular_file(member):
+                errors.append(
+                    f"wheel {wheel_path.name}: entry_points.txt must be a regular file"
+                )
+                return errors
+            try:
+                definitions = _parse_entry_points(
+                    archive.read(member).decode("utf-8"),
+                    artifact_name=f"wheel {wheel_path.name}",
+                )
+            except (ReleaseSmokeError, UnicodeDecodeError) as exc:
+                errors.append(str(exc))
+                return errors
+            console_definitions = [
+                (command, target)
+                for section, command, target in definitions
+                if section == "console_scripts"
+            ]
+            cli_definitions = [
+                definition
+                for definition in definitions
+                if definition[1] == "ariadion"
+            ]
+            if console_definitions != [("ariadion", "ariadion_cli:main")]:
+                errors.append(
+                    f"wheel {wheel_path.name}: [console_scripts] must contain exactly "
+                    "'ariadion = ariadion_cli:main'"
+                )
+            if cli_definitions != [expected_cli]:
+                errors.append(
+                    f"wheel {wheel_path.name}: ariadion CLI entry point must appear exactly "
+                    "once in [console_scripts]"
+                )
+            return errors
+
+        for member in entry_point_members:
+            if not _zip_info_is_regular_file(member):
+                errors.append(
+                    f"wheel {wheel_path.name}: entry_points.txt must be a regular file"
+                )
+                continue
+            try:
+                definitions = _parse_entry_points(
+                    archive.read(member).decode("utf-8"),
+                    artifact_name=f"wheel {wheel_path.name}",
+                )
+            except (ReleaseSmokeError, UnicodeDecodeError) as exc:
+                errors.append(str(exc))
+                continue
+            if expected_cli in definitions:
+                errors.append(
+                    f"wheel {wheel_path.name}: non-CLI distribution must not expose "
+                    "'ariadion = ariadion_cli:main'"
+                )
+    return errors
+
+
+def _artifact_filename_component(distribution_name: str) -> str:
+    return re.sub(r"[-.]+", "_", distribution_name)
+
+
+def _validate_wheel_filename(wheel_path: Path, record: dict[str, Any]) -> list[str]:
+    try:
+        distribution_name, version, _, _ = parse_wheel_filename(wheel_path.name)
+    except InvalidWheelFilename as exc:
+        return [f"{wheel_path.name}: invalid wheel filename: {exc}"]
+    errors: list[str] = []
+    if _normalized_distribution_name(str(distribution_name)) != record["normalized_name"]:
+        errors.append(
+            f"{wheel_path.name}: wheel filename distribution does not match "
+            f"{record['name']!r}"
+        )
+    if str(version) != record["version"] or f"-{record['version']}-" not in wheel_path.name:
+        errors.append(
+            f"{wheel_path.name}: wheel filename version must be {record['version']!r}"
+        )
+    return errors
+
+
+def _validate_sdist_filename(sdist_path: Path, record: dict[str, Any]) -> list[str]:
+    filename = sdist_path.name
+    suffix = f"-{record['version']}.tar.gz"
+    if not filename.endswith(suffix):
+        return [
+            f"{filename}: sdist filename version must be {record['version']!r}"
+        ]
+    distribution_name = filename[: -len(suffix)]
+    if not distribution_name or (
+        _normalized_distribution_name(distribution_name) != record["normalized_name"]
+    ):
+        return [
+            f"{filename}: sdist filename distribution does not match {record['name']!r}"
+        ]
+    return []
+
+
+def _validate_sdist_root(sdist_root: str, record: dict[str, Any]) -> list[str]:
+    suffix = f"-{record['version']}"
+    if not sdist_root.endswith(suffix):
+        return [
+            f"sdist root {sdist_root!r} must end with version {record['version']!r}"
+        ]
+    distribution_name = sdist_root[: -len(suffix)]
+    if not distribution_name or (
+        _normalized_distribution_name(distribution_name) != record["normalized_name"]
+    ):
+        return [
+            f"sdist root {sdist_root!r} does not match distribution {record['name']!r}"
+        ]
+    return []
+
+
+def _resolve_artifact_record(
+    metadata: email.parser.Message,
+    *,
+    artifact_name: str,
+    records_by_normalized_name: dict[str, dict[str, Any]],
+    errors: list[str],
+) -> tuple[dict[str, Any] | None, str | None]:
+    metadata_name = _single_metadata_value(
+        metadata,
+        "Name",
+        artifact_name=artifact_name,
+        errors=errors,
+    )
+    if metadata_name is None:
+        return None, None
+    normalized_name = _normalized_distribution_name(metadata_name)
+    record = records_by_normalized_name.get(normalized_name)
+    if record is None:
+        errors.append(
+            f"{artifact_name}: unknown normalized metadata name {normalized_name!r} "
+            f"from Name {metadata_name!r}"
+        )
+    return record, normalized_name
+
+
+def _validate_observed_distribution_names(
+    kind: str,
+    observed_names: list[str],
+    expected_names: set[str],
+) -> list[str]:
+    errors: list[str] = []
+    counts = Counter(observed_names)
+    unknown = sorted(set(counts) - expected_names)
+    if unknown:
+        errors.append(f"{kind} artifacts contain unknown normalized names: {unknown}")
+    duplicates = sorted(name for name, count in counts.items() if count > 1)
+    if duplicates:
+        errors.append(
+            f"{kind} artifacts contain duplicate normalized distribution names: {duplicates}"
+        )
+    missing = sorted(expected_names - set(counts))
+    if missing:
+        errors.append(f"{kind} artifacts are missing normalized distribution names: {missing}")
+    return errors
+
+
+def _is_workspace_artifact_filename(filename: str) -> bool:
+    return "ariadion_workspace" in _normalized_distribution_name(filename)
+
+
+def _validate_wheel_payload(
+    wheel_path: Path,
+    *,
+    record: dict[str, Any],
+    dist_info_dir: str,
+    canonical_license: bytes | None,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        license_payload = _wheel_license_payload(wheel_path, dist_info_dir)
+        if canonical_license is not None and license_payload != canonical_license:
+            errors.append(
+                f"{wheel_path.name}: PEP 639 LICENSE payload differs from the canonical LICENSE"
+            )
+    except (OSError, ReleaseSmokeError, zipfile.BadZipFile, UnicodeDecodeError) as exc:
+        errors.append(str(exc))
+    try:
+        _validate_wheel_import_payload(
+            wheel_path,
+            import_name=record["import_name"],
+        )
+    except (OSError, ReleaseSmokeError, zipfile.BadZipFile) as exc:
+        errors.append(str(exc))
+    try:
+        errors.extend(
+            _validate_wheel_entry_points(
+                wheel_path,
+                record=record,
+                dist_info_dir=dist_info_dir,
+            )
+        )
+    except (OSError, ReleaseSmokeError, zipfile.BadZipFile) as exc:
+        errors.append(str(exc))
+    return errors
+
+
+def _validate_sdist_payload(
+    sdist_path: Path,
+    *,
+    record: dict[str, Any],
+    sdist_root: str,
+    canonical_license: bytes | None,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        license_payload = _sdist_license_payload(sdist_path, sdist_root)
+        if canonical_license is not None and license_payload != canonical_license:
+            errors.append(
+                f"{sdist_path.name}: LICENSE payload differs from the canonical LICENSE"
+            )
+    except (OSError, ReleaseSmokeError, tarfile.TarError, UnicodeDecodeError) as exc:
+        errors.append(str(exc))
+    try:
+        _validate_sdist_import_payload(
+            sdist_path,
+            sdist_root=sdist_root,
+            import_name=record["import_name"],
+        )
+    except (OSError, ReleaseSmokeError, tarfile.TarError) as exc:
+        errors.append(str(exc))
+    return errors
+
+
+def validate_artifact_set(
+    distributions: list[dict[str, Any]],
+    wheels: list[Path],
+    sdists: list[Path],
+    expected_version: str,
+    canonical_license_path: Path | None = None,
+) -> dict[str, Any]:
+    """
+    Validate a complete RC artifact set against authoritative source metadata.
+
+    Every artifact must map exactly once to a publishable source distribution,
+    reproduce its PEP 621 metadata, and contain the prescribed PEP 639 and
+    import payload members.
+    """
+    errors: list[str] = []
+    canonical_license_path = canonical_license_path or ROOT / "LICENSE"
+    canonical_license: bytes | None = None
+    if canonical_license_path.is_file():
+        canonical_license = canonical_license_path.read_bytes()
+    else:
+        errors.append(f"canonical LICENSE file is missing: {canonical_license_path}")
+
+    try:
+        records_by_normalized_name = authoritative_distribution_records(distributions)
+    except ReleaseSmokeError as exc:
+        records_by_normalized_name = {}
+        errors.append(str(exc))
+
+    if len(records_by_normalized_name) != PUBLISHABLE_DISTRIBUTION_COUNT:
+        errors.append(
+            "authoritative release set must contain "
+            f"{PUBLISHABLE_DISTRIBUTION_COUNT} distributions, found "
+            f"{len(records_by_normalized_name)}"
+        )
+    for record in records_by_normalized_name.values():
+        if record["version"] != expected_version:
+            errors.append(
+                f"{record['pyproject_path']}: authoritative source version "
+                f"{record['version']!r} does not equal expected {expected_version!r}"
+            )
+
+    if len(wheels) != PUBLISHABLE_DISTRIBUTION_COUNT:
+        errors.append(
+            f"expected {PUBLISHABLE_DISTRIBUTION_COUNT} wheels, found {len(wheels)}"
+        )
+    if len(sdists) != PUBLISHABLE_DISTRIBUTION_COUNT:
+        errors.append(
+            f"expected {PUBLISHABLE_DISTRIBUTION_COUNT} sdists, found {len(sdists)}"
+        )
+
+    all_artifacts = wheels + sdists
+    for artifact in all_artifacts:
+        if not artifact.is_file():
+            errors.append(f"artifact file does not exist: {artifact}")
+        if _is_workspace_artifact_filename(artifact.name):
+            errors.append(f"ariadion-workspace artifact must not be present: {artifact.name}")
+
+    wheel_names: list[str] = []
+    for wheel_path in wheels:
+        if not wheel_path.is_file():
+            continue
+        try:
+            metadata, dist_info_dir = _read_wheel_metadata(wheel_path)
+        except (OSError, ReleaseSmokeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
+            errors.append(str(exc))
+            continue
+
+        record, normalized_name = _resolve_artifact_record(
+            metadata,
+            artifact_name=wheel_path.name,
+            records_by_normalized_name=records_by_normalized_name,
+            errors=errors,
+        )
+        if normalized_name is not None:
+            wheel_names.append(normalized_name)
+        if record is None:
+            continue
+
+        expected_dist_info_dir = (
+            f"{_artifact_filename_component(record['name'])}-{record['version']}.dist-info"
+        )
+        if dist_info_dir != expected_dist_info_dir:
+            errors.append(
+                f"{wheel_path.name}: dist-info directory is {dist_info_dir!r}, expected "
+                f"{expected_dist_info_dir!r}"
+            )
+        errors.extend(_validate_wheel_filename(wheel_path, record))
+        errors.extend(
+            _validate_core_metadata(
+                metadata,
+                artifact_name=wheel_path.name,
+                expected_version=expected_version,
+                record=record,
+                records_by_normalized_name=records_by_normalized_name,
+            )
+        )
+        errors.extend(
+            _validate_wheel_payload(
+                wheel_path,
+                record=record,
+                dist_info_dir=dist_info_dir,
+                canonical_license=canonical_license,
+            )
+        )
+
+    sdist_names: list[str] = []
+    for sdist_path in sdists:
+        if not sdist_path.is_file():
+            continue
+        try:
+            metadata, sdist_root = _read_sdist_metadata(sdist_path)
+        except (OSError, ReleaseSmokeError, UnicodeDecodeError, tarfile.TarError) as exc:
+            errors.append(str(exc))
+            continue
+
+        record, normalized_name = _resolve_artifact_record(
+            metadata,
+            artifact_name=sdist_path.name,
+            records_by_normalized_name=records_by_normalized_name,
+            errors=errors,
+        )
+        if normalized_name is not None:
+            sdist_names.append(normalized_name)
+        if record is None:
+            continue
+
+        errors.extend(_validate_sdist_root(sdist_root, record))
+        errors.extend(_validate_sdist_filename(sdist_path, record))
+        errors.extend(
+            _validate_core_metadata(
+                metadata,
+                artifact_name=sdist_path.name,
+                expected_version=expected_version,
+                record=record,
+                records_by_normalized_name=records_by_normalized_name,
+            )
+        )
+        errors.extend(
+            _validate_sdist_payload(
+                sdist_path,
+                record=record,
+                sdist_root=sdist_root,
+                canonical_license=canonical_license,
+            )
+        )
+
+    expected_names = set(records_by_normalized_name)
+    errors.extend(
+        _validate_observed_distribution_names("wheel", wheel_names, expected_names)
+    )
+    errors.extend(
+        _validate_observed_distribution_names("sdist", sdist_names, expected_names)
+    )
+
+    try:
+        manifest = generate_sha256_manifest(all_artifacts)
+    except ReleaseSmokeError as exc:
+        manifest = {}
+        errors.append(str(exc))
+    expected_manifest_count = PUBLISHABLE_DISTRIBUTION_COUNT * 2
+    if len(manifest) != expected_manifest_count:
+        errors.append(
+            f"expected {expected_manifest_count} SHA-256 manifest entries, found {len(manifest)}"
+        )
+
+    if errors:
+        raise ReleaseSmokeError(
+            f"artifact validation found {len(errors)} problem(s):\n"
+            + "\n".join(f"  - {e}" for e in errors)
+        )
+
+    return {
+        "wheels": len(wheels),
+        "sdists": len(sdists),
+        "version": expected_version,
+        "manifest": manifest,
+    }
 
 
 def run_release_smoke(
@@ -412,8 +1708,9 @@ def run_release_smoke(
     venv_dir: Path | None = None,
     list_only: bool = False,
     with_numpy: bool = False,
+    requested_numpy_version: str = RELEASE_SMOKE_NUMPY_VERSION,
 ) -> dict[str, Any]:
-    root = root or ROOT
+    root = (root or ROOT).resolve()
     if wheelhouse is None:
         raise ReleaseSmokeError("a wheelhouse path is required")
     wheelhouse = wheelhouse.resolve()
@@ -437,7 +1734,10 @@ def run_release_smoke(
 
     if with_numpy:
         try:
-            _run_command(download_numpy_command(wheelhouse), cwd=root)
+            _run_command(
+                download_numpy_command(wheelhouse, requested_numpy_version),
+                cwd=root,
+            )
         except ReleaseSmokeError as exc:
             raise ReleaseSmokeError(f"NumPy wheel download failed: {exc}") from exc
 
@@ -467,6 +1767,15 @@ def run_release_smoke(
     )
     try:
         _run_command(install_command, cwd=venv_dir)
+        _run_command(
+            install_all_distributions_command(
+                venv_python,
+                wheelhouse,
+                distributions,
+                with_numpy=with_numpy,
+            ),
+            cwd=venv_dir,
+        )
         _run_command([str(venv_python), "-m", "pip", "--isolated", "check"], cwd=venv_dir)
     except ReleaseSmokeError as exc:
         raise ReleaseSmokeError(f"package installation failed: {exc}") from exc
@@ -474,7 +1783,13 @@ def run_release_smoke(
     smoke_dir = Path(tempfile.mkdtemp(prefix="ariadion-installed-smoke-"))
     if _is_within(smoke_dir, root):
         raise ReleaseSmokeError(f"smoke working directory is inside the checkout: {smoke_dir}")
-    numpy_version: str | None = None
+    resolved_numpy_version: str | None = None
+    runtime_version: str | None = None
+    installed_distribution_names = [
+        entry["name"]
+        for entry in distributions
+        if with_numpy or entry["name"] != "ariadion-simulator-numpy"
+    ]
     try:
         try:
             _run_command([str(venv_python), "-c", sdk_smoke_script()], cwd=smoke_dir)
@@ -497,11 +1812,37 @@ def run_release_smoke(
         except ReleaseSmokeError as exc:
             raise ReleaseSmokeError(f"installed report smoke test failed: {exc}") from exc
 
+        try:
+            version_result = _run_command(
+                [str(venv_python), "-c", runtime_version_check_script()], cwd=smoke_dir
+            )
+            runtime_version = version_result.stdout.strip().split(":", 1)[-1]
+        except ReleaseSmokeError as exc:
+            raise ReleaseSmokeError(f"runtime version check failed: {exc}") from exc
+
+        try:
+            _run_command(
+                [
+                    str(venv_python),
+                    "-c",
+                    all_imports_smoke_script(installed_distribution_names),
+                ],
+                cwd=smoke_dir,
+            )
+        except ReleaseSmokeError as exc:
+            raise ReleaseSmokeError(f"all-package import smoke failed: {exc}") from exc
+
         if with_numpy:
             try:
-                numpy_result = _run_command([str(venv_python), "-c", numpy_smoke_script()], cwd=smoke_dir)
-                numpy_version = _extract_numpy_version(numpy_result.stdout)
-                _assert_numpy_version_matches_pin(numpy_version)
+                numpy_result = _run_command(
+                    [str(venv_python), "-c", numpy_smoke_script()],
+                    cwd=smoke_dir,
+                )
+                resolved_numpy_version = _extract_numpy_version(numpy_result.stdout)
+                _assert_numpy_version_matches(
+                    resolved_numpy_version,
+                    requested_numpy_version,
+                )
             except ReleaseSmokeError as exc:
                 raise ReleaseSmokeError(f"optional NumPy smoke test failed: {exc}") from exc
     finally:
@@ -515,36 +1856,179 @@ def run_release_smoke(
         "venv_dir": str(venv_dir),
         "list_only": False,
         "with_numpy": with_numpy,
-        "numpy_version": numpy_version,
+        "numpy_version": resolved_numpy_version,
+        "requested_numpy_version": requested_numpy_version if with_numpy else None,
+        "runtime_version": runtime_version,
+        "import_count": len(installed_distribution_names),
     }
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build Ariadion wheels and smoke-test the installed SDK/CLI")
-    parser.add_argument("--wheelhouse", required=True, help="destination directory for built wheels")
+    parser = argparse.ArgumentParser(
+        description="Build Ariadion wheels and smoke-test the installed SDK/CLI"
+    )
+    parser.add_argument(
+        "--wheelhouse",
+        required=True,
+        help="destination directory for built wheels",
+    )
     parser.add_argument(
         "--venv-dir",
         help="optional empty virtualenv directory outside the repository checkout",
     )
-    parser.add_argument("--list", action="store_true", help="discover and print workspace distributions without building")
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="discover and print workspace distributions without building",
+    )
     parser.add_argument(
         "--with-numpy",
         action="store_true",
         help="download a NumPy wheel and validate the optional NumPy backend",
     )
+    parser.add_argument(
+        "--numpy-version",
+        default=None,
+        help=(
+            "exact NumPy version used with --with-numpy "
+            f"(default: {RELEASE_SMOKE_NUMPY_VERSION})"
+        ),
+    )
+    parser.add_argument(
+        "--validate-artifacts",
+        metavar="SDIST_DIR",
+        help=(
+            "build wheels and sdists into the supplied directories, run strict Twine checks, "
+            "and validate the complete artifact set; requires the 'build' and 'twine' packages"
+        ),
+    )
     return parser
+
+
+def _validate_argument_combinations(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> None:
+    """Reject combinations that would mix installed-smoke and artifact-only modes."""
+    if args.validate_artifacts is not None:
+        incompatible_options = []
+        if args.list:
+            incompatible_options.append("--list")
+        if args.with_numpy:
+            incompatible_options.append("--with-numpy")
+        if args.numpy_version is not None:
+            incompatible_options.append("--numpy-version")
+        if args.venv_dir is not None:
+            incompatible_options.append("--venv-dir")
+        if incompatible_options:
+            parser.error(
+                "--validate-artifacts cannot be combined with "
+                + ", ".join(incompatible_options)
+            )
+    elif args.numpy_version is not None and not args.with_numpy:
+        parser.error("--numpy-version requires --with-numpy")
+
+
+def _run_validate_artifacts(
+    root: Path,
+    wheelhouse: Path,
+    sdist_dir: Path,
+    distributions: list[dict[str, Any]],
+    expected_version: str,
+) -> dict[str, Any]:
+    """Build sdists, run Twine, and validate the full 30-artifact set."""
+    root = root.resolve()
+    wheelhouse = wheelhouse.resolve()
+    sdist_dir = sdist_dir.resolve()
+    _require_empty_directory(sdist_dir, label="sdist directory")
+    for entry in distributions:
+        member_dir = entry["path"]
+        command = build_sdist_command(member_dir, sdist_dir)
+        try:
+            _run_command(command, cwd=root)
+        except ReleaseSmokeError as exc:
+            raise ReleaseSmokeError(f"sdist build failed for {entry['name']}: {exc}") from exc
+
+    wheel_files = sorted(p for p in wheelhouse.glob("*.whl") if p.is_file())
+    sdist_files = sorted(p for p in sdist_dir.glob("*.tar.gz") if p.is_file())
+
+    all_artifacts = sorted(wheel_files + sdist_files)
+    try:
+        _run_command(twine_check_command(all_artifacts), cwd=root)
+    except ReleaseSmokeError as exc:
+        raise ReleaseSmokeError(f"Twine strict check failed: {exc}") from exc
+
+    return validate_artifact_set(
+        distributions,
+        wheel_files,
+        sdist_files,
+        expected_version,
+        canonical_license_path=root / "LICENSE",
+    )
 
 
 def main() -> int:
     parser = build_argument_parser()
     args = parser.parse_args()
+    _validate_argument_combinations(parser, args)
+
+    root = ROOT.resolve()
+    wheelhouse = Path(args.wheelhouse).resolve()
+    validate_sdist_dir = (
+        Path(args.validate_artifacts).resolve() if args.validate_artifacts else None
+    )
+
+    if validate_sdist_dir is not None:
+        # Artifact validation mode: build wheels + sdists, Twine check, validate.
+        distributions = publishable_distributions(root)
+        try:
+            _require_empty_directory(wheelhouse, label="wheelhouse")
+        except ReleaseSmokeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        for entry in distributions:
+            command = build_wheel_command(entry["path"], wheelhouse)
+            try:
+                _run_command(command, cwd=root)
+            except ReleaseSmokeError as exc:
+                print(f"wheel build failed for {entry['name']}: {exc}", file=sys.stderr)
+                return 1
+        project_version = next(
+            (
+                _load_pyproject(entry["pyproject_path"]).get("project", {}).get("version", "")
+                for entry in distributions
+            ),
+            "",
+        )
+        try:
+            validation = _run_validate_artifacts(
+                root=root,
+                wheelhouse=wheelhouse,
+                sdist_dir=validate_sdist_dir,
+                distributions=distributions,
+                expected_version=project_version,
+            )
+        except ReleaseSmokeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(
+            "Artifact validation passed "
+            f"({validation['wheels']} wheels, {validation['sdists']} sdists)"
+        )
+        print(f"Version: {validation['version']}")
+        print("SHA-256 manifest:")
+        for filename, digest in sorted(validation["manifest"].items()):
+            print(f"  {digest}  {filename}")
+        return 0
+
     try:
         result = run_release_smoke(
-            root=ROOT,
-            wheelhouse=Path(args.wheelhouse),
+            root=root,
+            wheelhouse=wheelhouse,
             venv_dir=Path(args.venv_dir) if args.venv_dir else None,
             list_only=args.list,
             with_numpy=args.with_numpy,
+            requested_numpy_version=args.numpy_version or RELEASE_SMOKE_NUMPY_VERSION,
         )
     except ReleaseSmokeError as exc:
         print(str(exc), file=sys.stderr)
@@ -564,10 +2048,12 @@ def main() -> int:
     print("SDK smoke: passed")
     print("CLI smoke: passed")
     print("Installed report smoke: passed")
+    print(f"Runtime version check: passed (ariadion {result['runtime_version']})")
+    print(f"All-package import smoke: passed ({result['import_count']} packages)")
     if result["with_numpy"]:
         print(
             "Optional NumPy backend smoke: passed "
-            f"(numpy {result['numpy_version']}, pinned {RELEASE_SMOKE_NUMPY_VERSION})"
+            f"(numpy {result['numpy_version']}, requested {result['requested_numpy_version']})"
         )
     return 0
 
