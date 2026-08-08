@@ -59,6 +59,13 @@ from .bare_reliability import (
 	BareReliabilityStatus,
 	BoundClassicalAcceptanceCriterion,
 )
+from .protection_requirement import (
+	PROTECTION_REQUIREMENT_SCHEMA_VERSION,
+	ProtectionNeedVerdict,
+	ProtectionRequirementMetrics,
+	ProtectionRequirementReport,
+	build_protection_requirement_report,
+)
 
 __all__ = [
 	"DEFAULT_EPSILON",
@@ -100,13 +107,18 @@ __all__ = [
 	"NoiseImpactReport",
 	"NoiseImpactScheduleSummary",
 	"NoiseImpactScope",
+	"PROTECTION_REQUIREMENT_SCHEMA_VERSION",
 	"PhaseDampingChannelSnapshot",
 	"PhaseFlipChannelSnapshot",
 	"BoundClassicalAcceptanceCriterion",
 	"SeparabilityReport",
 	"StateReport",
 	"StateTransition",
+	"ProtectionNeedVerdict",
+	"ProtectionRequirementMetrics",
+	"ProtectionRequirementReport",
 	"build_noise_impact_report",
+	"build_protection_requirement_report",
 	"inspect_amplitudes",
 	"inspect_density_state",
 	"inspect_reduced_density_matrix",

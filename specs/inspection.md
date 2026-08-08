@@ -132,6 +132,15 @@ not promote exact acceptance failure mass into a hardware guarantee.
 Readout distortion is reported as a classical output effect and is not represented
 as quantum-state damage in the retained density matrix.
 
+Theonoe also provides a derived protection-requirement report built only from an
+existing bare-reliability report. It reuses the bare-reliability status, projects
+it into a protection-need verdict, and carries compact signed/relative failure-space
+metrics plus the supporting bare report. When the existing bare report is
+`NOT_EVALUATED` within its own tolerance, the derived report still maps to
+`NO_PROTECTION_REQUIRED` with zero required reduction and no suppression.
+Non-supported evidence maps to `NOT_ASSESSED` with no metrics. This report does
+not select a protection strategy, estimate resources, or allocate qubits.
+
 Event findings enforce exactly one evidence payload matching each declared
 `NoiseImpactEventKind`; unrelated extra evidence is rejected. Gate and readout
 channel evidence, along with idle-decoherence profile provenance, are retained as
