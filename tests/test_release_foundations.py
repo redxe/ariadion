@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -19,6 +20,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from urllib.request import Request
 
 from tools.release_smoke import (
     EXPECTED_RC2_DEPENDENCY_GRAPH,
@@ -55,6 +57,22 @@ from tools.release_smoke import (
     twine_check_command,
     validate_artifact_set,
 )
+from tools.verify_index_release import (
+    ARTIFACT_COUNT,
+    MAX_ARTIFACT_BYTES,
+    MAX_METADATA_BYTES,
+    MAX_REDIRECTS,
+    PUBLISHABLE_DISTRIBUTIONS,
+    IndexName,
+    IndexReleaseError,
+    _ApprovedRedirectHandler,
+    _UrlPolicy,
+    download_verified_artifacts,
+    fetch_release_metadata,
+    load_manifest,
+    verify_release_files,
+    wait_for_verified_release,
+)
 
 
 class ReleaseFoundationsTests(unittest.TestCase):
@@ -89,6 +107,29 @@ class ReleaseFoundationsTests(unittest.TestCase):
     def _dependency_name(self, dependency: str) -> str:
         token = dependency.split(";", 1)[0].strip()
         return re.split(r"[ <>=!~\[]", token, maxsplit=1)[0]
+
+    def _index_release_fixture(self) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+        manifest: dict[str, str] = {}
+        metadata: dict[str, dict[str, Any]] = {}
+        for index, distribution in enumerate(PUBLISHABLE_DISTRIBUTIONS):
+            component = distribution.replace("-", "_")
+            filenames = (
+                f"{component}-0.1.0rc2-py3-none-any.whl",
+                f"{component}-0.1.0rc2.tar.gz",
+            )
+            urls = []
+            for offset, filename in enumerate(filenames):
+                digest = f"{index * 2 + offset:064x}"
+                manifest[filename] = digest
+                urls.append(
+                    {
+                        "filename": filename,
+                        "url": f"https://files.pythonhosted.org/packages/{filename}",
+                        "digests": {"sha256": digest},
+                    }
+                )
+            metadata[distribution] = {"urls": urls}
+        return manifest, metadata
 
     def _artifact_fixture(self) -> dict[str, Any]:
         """Create a valid, local 15-distribution source and artifact release set."""
@@ -1369,6 +1410,516 @@ class ReleaseFoundationsTests(unittest.TestCase):
         distributions = publishable_distributions(root)
         names = {entry["name"] for entry in distributions}
         self.assertNotIn("ariadion-workspace", names)
+
+    def test_index_release_verifier_requires_exact_approved_remote_artifacts(self) -> None:
+        manifest, metadata = self._index_release_fixture()
+        urls = verify_release_files(manifest, metadata)
+        self.assertEqual(list(urls), sorted(manifest))
+        self.assertEqual(len(urls), ARTIFACT_COUNT)
+
+        for label in ("missing", "extra", "mismatched"):
+            with self.subTest(remote_artifact_mutation=label):
+                manifest, metadata = self._index_release_fixture()
+                if label == "missing":
+                    metadata["ariadion"]["urls"].pop()
+                elif label == "extra":
+                    metadata["ariadion"]["urls"].append(
+                        {
+                            "filename": "unexpected-0.1.0rc2.tar.gz",
+                            "url": (
+                                "https://files.pythonhosted.org/packages/"
+                                "unexpected-0.1.0rc2.tar.gz"
+                            ),
+                            "digests": {"sha256": "f" * 64},
+                        }
+                    )
+                else:
+                    metadata["ariadion"]["urls"][0]["digests"]["sha256"] = "e" * 64
+                with self.assertRaises(IndexReleaseError):
+                    verify_release_files(manifest, metadata)
+
+    def test_index_release_verifier_rejects_cross_project_redistribution(self) -> None:
+        manifest, metadata = self._index_release_fixture()
+        moved = metadata["ariadion-core"]["urls"].pop()
+        metadata["ariadion"]["urls"].append(moved)
+        with self.assertRaisesRegex(IndexReleaseError, "artifact is assigned"):
+            verify_release_files(manifest, metadata)
+
+    def test_index_release_manifest_requires_exact_safe_lowercase_rc2_entries(self) -> None:
+        manifest, _ = self._index_release_fixture()
+        temporary = Path(tempfile.mkdtemp(prefix="ariadion-manifest-fixture-"))
+        self.addCleanup(shutil.rmtree, temporary, ignore_errors=True)
+        manifest_path = temporary / "manifest.json"
+
+        def write_manifest(entries: dict[str, str]) -> None:
+            manifest_path.write_text(json.dumps(entries), encoding="utf-8")
+
+        write_manifest(manifest)
+        self.assertEqual(load_manifest(manifest_path), manifest)
+
+        mutations = {
+            "uppercase digest": lambda entries: entries.__setitem__(
+                next(iter(entries)), "A" * 64
+            ),
+            "malformed digest": lambda entries: entries.__setitem__(
+                next(iter(entries)), "g" * 64
+            ),
+            "wrong version": lambda entries: entries.__setitem__(
+                "ariadion-0.1.0rc1-py3-none-any.whl", entries.pop(next(iter(entries)))
+            ),
+            "unsafe filename": lambda entries: entries.__setitem__(
+                "../ariadion-0.1.0rc2.tar.gz", entries.pop(next(iter(entries)))
+            ),
+            "unknown type": lambda entries: entries.__setitem__(
+                "ariadion-0.1.0rc2.zip", entries.pop(next(iter(entries)))
+            ),
+            "duplicate wheel kind": lambda entries: entries.__setitem__(
+                "ariadion-0.1.0rc2-py3-none-any.whl",
+                entries.pop("ariadion-0.1.0rc2.tar.gz"),
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(manifest_mutation=label):
+                candidate = dict(manifest)
+                mutate(candidate)
+                write_manifest(candidate)
+                with self.assertRaises(IndexReleaseError):
+                    load_manifest(manifest_path)
+
+        encoded = json.dumps(manifest)
+        duplicate_key = next(iter(manifest))
+        manifest_path.write_text(
+            encoded[:-1] + f', {json.dumps(duplicate_key)}: "f"}}',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(IndexReleaseError, "duplicate JSON object key"):
+            load_manifest(manifest_path)
+
+    def test_index_release_verifier_rejects_unapproved_artifact_urls(self) -> None:
+        manifest, metadata = self._index_release_fixture()
+        hazards = (
+            "http://files.pythonhosted.org/packages/a.whl",
+            "https://files.pythonhosted.org:443/packages/a.whl",
+            "https://user@files.pythonhosted.org/packages/a.whl",
+            "https://files.pythonhosted.org/packages/a.whl?token=1",
+            "https://files.pythonhosted.org/packages/a.whl#fragment",
+            "https://files.pythonhosted.org/not-packages/a.whl",
+            "https://evil.example/packages/a.whl",
+        )
+        for url in hazards:
+            with self.subTest(url=url):
+                candidate = json.loads(json.dumps(metadata))
+                candidate["ariadion"]["urls"][0]["url"] = url
+                with self.assertRaises(IndexReleaseError):
+                    verify_release_files(manifest, candidate)
+
+    def test_index_release_metadata_fetch_enforces_url_and_response_bounds(self) -> None:
+        class Response:
+            def __init__(self, content: bytes, length: str | None = None) -> None:
+                self.content = content
+                self.headers = {"Content-Length": length or str(len(content))}
+
+            def __enter__(self) -> Response:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def getcode(self) -> int:
+                return 200
+
+            def read(self, size: int = -1) -> bytes:
+                if size < 0:
+                    return self.content
+                value, self.content = self.content[:size], self.content[size:]
+                return value
+
+            def geturl(self) -> str:
+                return "https://pypi.org/pypi/ariadion/0.1.0rc2/json"
+
+            def close(self) -> None:
+                return None
+
+        valid = json.dumps({"urls": []}).encode("utf-8")
+        with patch("tools.verify_index_release._open_response", return_value=Response(valid)):
+            self.assertEqual(
+                fetch_release_metadata(IndexName.PYPI, "ariadion"), {"urls": []}
+            )
+        for label, response in (
+            ("declared metadata size", Response(valid, str(MAX_METADATA_BYTES + 1))),
+            ("malformed metadata length", Response(valid, "nan")),
+            ("actual metadata size", Response(b"x" * (MAX_METADATA_BYTES + 1))),
+        ):
+            with self.subTest(response_mutation=label):
+                with patch("tools.verify_index_release._open_response", return_value=response):
+                    with self.assertRaises(IndexReleaseError):
+                        fetch_release_metadata(IndexName.PYPI, "ariadion")
+
+    def test_index_release_redirect_handler_rejects_unapproved_and_exhausted_hops(self) -> None:
+        unsafe_handler = _ApprovedRedirectHandler(
+            _UrlPolicy("files.pythonhosted.org", "/packages/")
+        )
+        request = Request("https://files.pythonhosted.org/packages/original.whl")
+        with self.assertRaises(IndexReleaseError):
+            unsafe_handler.redirect_request(
+                request,
+                None,
+                302,
+                "",
+                {},
+                "https://evil.example/file",
+            )
+        handler = _ApprovedRedirectHandler(
+            _UrlPolicy("files.pythonhosted.org", "/packages/")
+        )
+        for _ in range(MAX_REDIRECTS):
+            handler.redirect_request(
+                request,
+                None,
+                302,
+                "",
+                {},
+                "https://files.pythonhosted.org/packages/next.whl",
+            )
+        with self.assertRaisesRegex(IndexReleaseError, "exceeded 3 redirects"):
+            handler.redirect_request(
+                request,
+                None,
+                302,
+                "",
+                {},
+                "https://files.pythonhosted.org/packages/next.whl",
+            )
+
+    def test_index_release_downloads_atomically_and_cleans_failed_files(self) -> None:
+        class Response:
+            def __init__(
+                self,
+                content: bytes,
+                *,
+                failure: bool = False,
+                length: str | None = None,
+            ) -> None:
+                self.content = content
+                self.failure = failure
+                self.headers = {"Content-Length": length or str(len(content))}
+
+            def __enter__(self) -> Response:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def getcode(self) -> int:
+                return 200
+
+            def read(self, size: int = -1) -> bytes:
+                if self.failure:
+                    raise OSError("network interrupted")
+                if size < 0:
+                    return self.content
+                value, self.content = self.content[:size], self.content[size:]
+                return value
+
+            def geturl(self) -> str:
+                return "https://files.pythonhosted.org/packages/ariadion-0.1.0rc2.tar.gz"
+
+            def close(self) -> None:
+                return None
+
+        expected, _ = self._index_release_fixture()
+        payloads = {name: name.encode("utf-8") for name in expected}
+        manifest = {
+            name: hashlib.sha256(payload).hexdigest() for name, payload in payloads.items()
+        }
+        urls = {
+            name: f"https://files.pythonhosted.org/packages/{name}" for name in manifest
+        }
+        root = Path(tempfile.mkdtemp(prefix="ariadion-download-fixture-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        destination = root / "verified"
+
+        def open_response(url: str, _timeout: int) -> Response:
+            return Response(payloads[url.rsplit("/", 1)[-1]])
+
+        with patch(
+            "tools.verify_index_release._open_response",
+            side_effect=lambda url, **_: open_response(url, 0),
+        ):
+            download_verified_artifacts(urls, manifest, destination)
+        filename = "ariadion-0.1.0rc2.tar.gz"
+        self.assertEqual((destination / filename).read_bytes(), payloads[filename])
+        self.assertFalse(list(destination.glob(".*.part")))
+
+        first_filename = sorted(manifest)[0]
+        for label, response, expected_message in (
+            ("digest mismatch", Response(payloads[first_filename]), "digest differs"),
+            (
+                "partial response",
+                Response(payloads[first_filename], failure=True),
+                "download failed",
+            ),
+            (
+                "oversized artifact",
+                Response(payloads[first_filename], length=str(MAX_ARTIFACT_BYTES + 1)),
+                "exceeds",
+            ),
+        ):
+            with self.subTest(download_mutation=label):
+                shutil.rmtree(destination, ignore_errors=True)
+                candidate_manifest = dict(manifest)
+                if label == "digest mismatch":
+                    candidate_manifest[first_filename] = "0" * 64
+                with patch("tools.verify_index_release._open_response", return_value=response):
+                    with self.assertRaisesRegex(IndexReleaseError, expected_message):
+                        download_verified_artifacts(urls, candidate_manifest, destination)
+                self.assertFalse(destination.exists())
+
+        real_link = os.link
+
+        def link_then_fail(source: str | bytes, target: str | bytes) -> None:
+            real_link(source, target)
+            raise OSError("finalization interrupted")
+
+        with patch(
+            "tools.verify_index_release._open_response",
+            side_effect=lambda url, **_: open_response(url, 0),
+        ):
+            with patch("tools.verify_index_release.os.link", side_effect=link_then_fail):
+                with self.assertRaisesRegex(IndexReleaseError, "download failed"):
+                    download_verified_artifacts(urls, manifest, destination)
+        self.assertFalse(destination.exists())
+
+        destination.mkdir()
+        (destination / first_filename).write_bytes(b"already present")
+        with self.assertRaisesRegex(IndexReleaseError, "new and empty"):
+            download_verified_artifacts(urls, manifest, destination)
+
+    def test_index_release_verifier_retries_metadata_propagation_with_a_bound(self) -> None:
+        manifest, metadata = self._index_release_fixture()
+        calls = 0
+        sleeps: list[float] = []
+
+        def fetch(index: IndexName, distribution: str) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            if calls <= len(PUBLISHABLE_DISTRIBUTIONS):
+                partial = {
+                    name: {"urls": list(value["urls"])} for name, value in metadata.items()
+                }
+                partial["ariadion"]["urls"].pop()
+                return partial[distribution]
+            self.assertEqual(index, IndexName.TESTPYPI)
+            return metadata[distribution]
+
+        observed = wait_for_verified_release(
+            fetch,
+            manifest,
+            index=IndexName.TESTPYPI,
+            attempts=2,
+            delay_seconds=0.0,
+            sleep=sleeps.append,
+        )
+        self.assertEqual(list(observed), sorted(manifest))
+        self.assertEqual(sleeps, [0.0])
+        self.assertEqual(calls, len(PUBLISHABLE_DISTRIBUTIONS) * 2)
+
+        with self.assertRaisesRegex(IndexReleaseError, "did not propagate"):
+            wait_for_verified_release(
+                lambda _index, distribution: {"urls": metadata[distribution]["urls"][:-1]},
+                manifest,
+                index=IndexName.TESTPYPI,
+                attempts=1,
+                delay_seconds=0.0,
+                sleep=sleeps.append,
+            )
+
+    def _workflow_job_blocks(self, workflow: str) -> dict[str, str]:
+        jobs = workflow.split("\njobs:\n", 1)[1]
+        matches = list(re.finditer(r"(?m)^  ([a-z][a-z0-9-]+):\n", jobs))
+        return {
+            match.group(1): jobs[
+                match.end() : matches[index + 1].start() if index + 1 < len(matches) else None
+            ]
+            for index, match in enumerate(matches)
+        }
+
+    def _publish_workflow_contract_errors(self, workflow: str) -> list[str]:
+        errors: list[str] = []
+        jobs = self._workflow_job_blocks(workflow)
+        required_jobs = {
+            "build",
+            "publish-testpypi",
+            "verify-testpypi",
+            "publish-pypi",
+            "verify-pypi",
+        }
+        if set(jobs) != required_jobs:
+            errors.append("trusted publishing jobs differ from the approved five-job topology")
+        events = workflow.split("\npermissions:\n", 1)[0]
+        unsupported_events = ("workflow_dispatch", "pull_request", "release:", "schedule:")
+        if 'tags:\n      - "v*"' not in events or any(
+            event in events for event in unsupported_events
+        ):
+            errors.append("workflow trigger is not tag-only")
+        if not re.search(r"(?m)^permissions:\n  contents: read$", workflow):
+            errors.append("root permissions are not least privilege")
+        if "concurrency:" not in workflow or "github.ref" not in workflow:
+            errors.append("same-tag concurrency is absent")
+        if "fetch-depth: 0" not in workflow:
+            errors.append("checkout is not full history")
+        for action in re.findall(r"(?m)^\s*uses:\s*(\S+)", workflow):
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}", action):
+                errors.append(f"action is not a full immutable SHA pin: {action}")
+        gate = jobs.get("build", "")
+        for required in (
+            'test "$GITHUB_REF_TYPE" = "tag"',
+            'test "$GITHUB_REF_NAME" = "v${VERSION}"',
+            'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+            'test "$(git rev-parse "${GITHUB_REF_NAME}^{commit}")" = "$GITHUB_SHA"',
+            'test -z "$(git status --porcelain)"',
+            "len(expected) != 15",
+            "discovered != set(expected)",
+            'root.get("project", {}).get("version") != version',
+            'project.get("name") != name or project.get("version") != version',
+        ):
+            if required not in gate:
+                errors.append(f"build provenance gate omits {required}")
+        if gate.find("Require the approved") > gate.find("Install build validation tools"):
+            errors.append("build tools install before provenance validation")
+        if workflow.index("Require the approved") > workflow.index("- name: Set up Python"):
+            errors.append("Python setup occurs before provenance validation")
+        oidc_jobs = {
+            name for name, block in jobs.items() if "id-token: write" in block
+        }
+        if oidc_jobs != {"publish-testpypi", "publish-pypi"}:
+            errors.append("OIDC is not limited to the two publisher jobs")
+        for name, environment in (
+            ("publish-testpypi", "testpypi"),
+            ("publish-pypi", "pypi"),
+        ):
+            if f"environment: {environment}" not in jobs.get(name, ""):
+                errors.append(f"{name} is missing its approval environment")
+        for name in ("publish-testpypi", "publish-pypi"):
+            block = jobs.get(name, "")
+            if block.count("pypa/gh-action-pypi-publish@") != 1:
+                errors.append(f"{name} does not contain exactly one publisher call")
+            if (
+                "ariadion-rc2-release-bundle" not in block
+                or "path: release" not in block
+            ):
+                errors.append(f"{name} does not consume the approved release bundle")
+            forbidden_publish_tools = (
+                "actions/checkout",
+                "python -m pip",
+                "python -m build",
+            )
+            if any(tool in block for tool in forbidden_publish_tools):
+                errors.append(f"{name} accesses repository code or build dependencies")
+            if "attestations: true" not in block:
+                errors.append(f"{name} does not request a release attestation")
+        test_publish = jobs.get("publish-testpypi", "")
+        production_publish = jobs.get("publish-pypi", "")
+        if (
+            "https://test.pypi.org/legacy/" not in test_publish
+            or "skip-existing: true" not in test_publish
+        ):
+            errors.append("TestPyPI publisher contract is incomplete")
+        if "repository-url:" in production_publish or "skip-existing" in production_publish:
+            errors.append("PyPI publisher contract is mutable or not production-safe")
+        if "--no-index" not in workflow or "--extra-index-url" in workflow:
+            errors.append("isolated install can access an extra index")
+        if "--version" in workflow:
+            errors.append("verifier accepts an arbitrary workflow version")
+        forbidden = ("gh release", "git tag", "password", "api-token", "secrets.")
+        if any(token in workflow.lower() for token in forbidden):
+            errors.append("workflow contains a forbidden release credential or side effect")
+        return errors
+
+    def test_publish_workflow_enforces_trusted_publishing_boundaries_offline(self) -> None:
+        workflow_path = (
+            Path(__file__).resolve().parents[1] / ".github" / "workflows" / "publish.yml"
+        )
+        workflow = workflow_path.read_text(encoding="utf-8")
+        self.assertEqual(self._publish_workflow_contract_errors(workflow), [])
+        production_block_start = workflow.index("  publish-pypi:\n")
+        production_block_end = workflow.index("  verify-pypi:\n")
+        production_block = workflow[production_block_start:production_block_end]
+        altered_production_bundle = production_block.replace(
+            "path: release",
+            "path: altered",
+            1,
+        )
+        artifact_divergence = (
+            workflow[:production_block_start]
+            + altered_production_bundle
+            + workflow[production_block_end:]
+        )
+        mutations = {
+            "branch trigger": workflow.replace('tags:\n      - "v*"', "branches: [main]"),
+            "manual trigger": workflow.replace(
+                "on:\n", "on:\n  workflow_dispatch:\n", 1
+            ),
+            "pull request trigger": workflow.replace(
+                "on:\n", "on:\n  pull_request:\n", 1
+            ),
+            "release trigger": workflow.replace("on:\n", "on:\n  release:\n", 1),
+            "scheduled trigger": workflow.replace("on:\n", "on:\n  schedule:\n", 1),
+            "missing tag gate": workflow.replace('v${VERSION}', "v0.1.0rc1", 1),
+            "missing head gate": workflow.replace(
+                'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"\n', ""
+            ),
+            "missing source-count gate": workflow.replace("len(expected) != 15", "False"),
+            "missing source-version gate": workflow.replace(
+                'project.get("name") != name or project.get("version") != version', "False"
+            ),
+            "root OIDC": workflow.replace(
+                "permissions:\n  contents: read", "permissions:\n  id-token: write"
+            ),
+            "build OIDC": workflow.replace(
+                "  build:\n",
+                "  build:\n    permissions:\n      id-token: write\n",
+            ),
+            "verify OIDC": workflow.replace(
+                "  verify-pypi:\n", "  verify-pypi:\n    permissions:\n      id-token: write\n"
+            ),
+            "wrong production environment": workflow.replace(
+                "environment: pypi",
+                "environment: testpypi",
+            ),
+            "credential": workflow + "\n# password\n",
+            "mutable action": re.sub(r"@[0-9a-f]{40}", "@v4", workflow, count=1),
+            "malformed action": re.sub(r"@[0-9a-f]{40}", "@not-a-sha", workflow, count=1),
+            "publisher checkout": workflow.replace(
+                "  publish-pypi:\n", "  publish-pypi:\n      - uses: actions/checkout@v4\n"
+            ),
+            "publisher build": workflow.replace(
+                "  publish-pypi:\n", "  publish-pypi:\n      - run: python -m build\n"
+            ),
+            "publisher dependency install": workflow.replace(
+                "  publish-pypi:\n",
+                "  publish-pypi:\n      - run: python -m pip install build\n",
+            ),
+            "second publisher": workflow.replace(
+                "  publish-pypi:\n",
+                "  publish-pypi:\n"
+                "      - uses: pypa/gh-action-pypi-publish@v1\n",
+            ),
+            "TestPyPI index divergence": workflow.replace(
+                "https://test.pypi.org/legacy/", "https://upload.pypi.org/legacy/"
+            ),
+            "artifact bundle divergence": artifact_divergence,
+            "production skip existing": workflow.replace(
+                "  publish-pypi:\n", "  publish-pypi:\n    skip-existing: true\n"
+            ),
+            "extra index": workflow.replace(
+                "--no-index",
+                "--no-index --extra-index-url https://x.invalid",
+            ),
+        }
+        for label, candidate in mutations.items():
+            with self.subTest(workflow_mutation=label):
+                self.assertTrue(self._publish_workflow_contract_errors(candidate))
 
 
 if __name__ == "__main__":

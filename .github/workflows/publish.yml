@@ -1,0 +1,264 @@
+name: Publish Ariadion RC2
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ariadion-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the pushed tag with full history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+      - name: Require the approved RC2 tag, clean commit, and all source versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="0.1.0rc2"
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_REF_NAME" = "v${VERSION}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse "${GITHUB_REF_NAME}^{commit}")" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          version = "0.1.0rc2"
+          expected = {
+              Path("apps/cli/pyproject.toml"): "ariadion-cli",
+              Path("packages/core/pyproject.toml"): "ariadion-core",
+              Path("packages/daidalon/pyproject.toml"): "daidalon",
+              Path("packages/frontend-python/pyproject.toml"): "ariadion-frontend-python",
+              Path("packages/ir/pyproject.toml"): "ariadion-ir",
+              Path("packages/language/pyproject.toml"): "ariadion-language",
+              Path("packages/noise/pyproject.toml"): "ariadion-noise",
+              Path("packages/runtime/pyproject.toml"): "ariadion-runtime",
+              Path("packages/sdk/pyproject.toml"): "ariadion",
+              Path("packages/semantics/pyproject.toml"): "ariadion-semantics",
+              Path("packages/simulator/pyproject.toml"): "ariadion-simulator",
+              Path("packages/simulator-numpy/pyproject.toml"): "ariadion-simulator-numpy",
+              Path("packages/syntax/pyproject.toml"): "ariadion-syntax",
+              Path("packages/theonoe/pyproject.toml"): "theonoe",
+              Path("packages/visualization/pyproject.toml"): "ariadion-visualization",
+          }
+          root = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          if root.get("project", {}).get("version") != version:
+              raise SystemExit("workspace version does not match the approved RC2 version")
+          discovered = set(Path("packages").glob("*/pyproject.toml")) | {
+              Path("apps/cli/pyproject.toml")
+          }
+          if discovered != set(expected) or len(expected) != 15:
+              raise SystemExit("publishable source set does not contain exactly the 15 approved projects")
+          for path, name in expected.items():
+              project = tomllib.loads(path.read_text(encoding="utf-8")).get("project", {})
+              if project.get("name") != name or project.get("version") != version:
+                  raise SystemExit(f"{path}: source name or version does not match approved RC2")
+          PY
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      - name: Install build validation tools
+        run: python -m pip install --upgrade build packaging twine
+      - name: Build and validate the immutable distribution set
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release/distributions
+          python tools/release_smoke.py \
+            --wheelhouse build/wheels \
+            --validate-artifacts build/sdists | tee release/validation.txt
+          cp build/wheels/*.whl build/sdists/*.tar.gz release/distributions/
+          test "$(find release/distributions -maxdepth 1 -type f | wc -l)" = "30"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from tools.release_smoke import generate_sha256_manifest
+
+          artifacts = sorted(Path("release/distributions").iterdir())
+          manifest = generate_sha256_manifest(artifacts)
+          if len(manifest) != 30:
+              raise SystemExit(f"expected 30 manifest entries, found {len(manifest)}")
+          Path("release/manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          Path("release/provenance.json").write_text(
+              json.dumps(
+                  {"tag": "v0.1.0rc2", "commit": __import__("os").environ["GITHUB_SHA"]},
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+          sha256sum release/distributions/* release/manifest.json | tee release/hashes.txt
+      - name: Store the approved release bundle
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: ariadion-rc2-release-bundle
+          path: release
+          if-no-files-found: error
+          overwrite: false
+
+  publish-testpypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the approved release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ariadion-rc2-release-bundle
+          path: release
+      - name: Verify approved artifact hashes without repository code
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("release/manifest.json").read_text(encoding="utf-8"))
+          artifacts = sorted(Path("release/distributions").iterdir())
+          if len(manifest) != 30 or len(artifacts) != 30:
+              raise SystemExit("approved release bundle must contain exactly 30 artifacts")
+          for artifact in artifacts:
+              digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+              if manifest.get(artifact.name) != digest:
+                  raise SystemExit(f"manifest mismatch: {artifact.name}")
+          print("approved 30-entry manifest verified")
+          PY
+          sha256sum release/distributions/*
+      - name: Publish the approved bundle to TestPyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2, reviewed 2026-08-08
+        with:
+          packages-dir: release/distributions
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+          attestations: true
+
+  verify-testpypi:
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out validation helpers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      - name: Download the identical approved release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ariadion-rc2-release-bundle
+          path: release
+      - name: Verify TestPyPI metadata and download exact approved artifacts
+        run: |
+          python tools/verify_index_release.py \
+            --index testpypi \
+            --manifest release/manifest.json \
+            --download-dir verified-testpypi \
+            --attempts 10 \
+            --delay-seconds 15
+      - name: Download the isolated production NumPy wheel
+        run: |
+          python -m pip download --only-binary=:all: --dest numpy-wheelhouse numpy==2.4.6
+      - name: Install and smoke-test only verified remote artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/ariadion-verified-venv
+          VENV=/tmp/ariadion-verified-venv
+          "$VENV/bin/python" -m pip install --no-index \
+            --find-links verified-testpypi \
+            --find-links numpy-wheelhouse \
+            ariadion ariadion-cli ariadion-core ariadion-frontend-python \
+            ariadion-ir ariadion-language ariadion-noise ariadion-runtime \
+            ariadion-semantics ariadion-simulator ariadion-simulator-numpy \
+            ariadion-syntax ariadion-visualization daidalon theonoe
+          "$VENV/bin/python" -m pip check
+          python -c "from pathlib import Path; from tools.release_smoke import all_imports_smoke_script, installed_report_smoke_script, numpy_smoke_script, runtime_version_check_script, sdk_smoke_script; Path('/tmp/all-imports.py').write_text(all_imports_smoke_script(['ariadion', 'ariadion-cli', 'ariadion-core', 'ariadion-frontend-python', 'ariadion-ir', 'ariadion-language', 'ariadion-noise', 'ariadion-runtime', 'ariadion-semantics', 'ariadion-simulator', 'ariadion-simulator-numpy', 'ariadion-syntax', 'ariadion-visualization', 'daidalon', 'theonoe'])); Path('/tmp/report-smoke.py').write_text(installed_report_smoke_script()); Path('/tmp/numpy-smoke.py').write_text(numpy_smoke_script()); Path('/tmp/version-smoke.py').write_text(runtime_version_check_script()); Path('/tmp/sdk-smoke.py').write_text(sdk_smoke_script())"
+          "$VENV/bin/python" /tmp/all-imports.py
+          "$VENV/bin/python" /tmp/sdk-smoke.py
+          "$VENV/bin/ariadion" demo bell
+          "$VENV/bin/python" /tmp/report-smoke.py
+          "$VENV/bin/python" /tmp/version-smoke.py
+          "$VENV/bin/python" /tmp/numpy-smoke.py
+
+  publish-pypi:
+    needs: verify-testpypi
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the identical approved release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ariadion-rc2-release-bundle
+          path: release
+      - name: Verify approved artifact hashes without repository code
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("release/manifest.json").read_text(encoding="utf-8"))
+          artifacts = sorted(Path("release/distributions").iterdir())
+          if len(manifest) != 30 or len(artifacts) != 30:
+              raise SystemExit("approved release bundle must contain exactly 30 artifacts")
+          for artifact in artifacts:
+              digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+              if manifest.get(artifact.name) != digest:
+                  raise SystemExit(f"manifest mismatch: {artifact.name}")
+          PY
+          sha256sum release/distributions/*
+      - name: Publish the identical approved bundle to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2, reviewed 2026-08-08
+        with:
+          packages-dir: release/distributions
+          attestations: true
+
+  verify-pypi:
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out validation helpers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      - name: Download the identical approved release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ariadion-rc2-release-bundle
+          path: release
+      - name: Verify every PyPI filename and digest against the approved manifest
+        run: |
+          python tools/verify_index_release.py \
+            --index pypi \
+            --manifest release/manifest.json \
+            --download-dir verified-pypi \
+            --attempts 10 \
+            --delay-seconds 15

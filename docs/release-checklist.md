@@ -64,6 +64,42 @@
 	agree on `0.1.0rc2`.
 - [ ] Confirm package publication remains a separate authorized action from RC2
 	preparation and tagging.
+- [ ] Confirm RC2 remains untagged and unpublished until this checklist and separate
+	publishing authorization are complete.
+- [ ] Configure pending Trusted Publishers for `redxe/ariadion`, workflow `publish.yml`:
+	- [ ] TestPyPI environment: `testpypi`.
+	- [ ] PyPI environment: `pypi` with the required manual production reviewer.
+- [ ] Confirm [`.github/workflows/publish.yml`](../.github/workflows/publish.yml) is the
+	only authorized publication workflow and triggers only from pushed version tags.
+- [ ] Confirm the workflow rejects every tag other than `v0.1.0rc2`, validates the tag
+	trigger, clean `HEAD`, `GITHUB_SHA`, and peeled tag commit before installing build tools;
+	then validate the root project plus exactly the 15 approved publishable projects for their
+	expected names and `0.1.0rc2` versions. Confirm it uses no password, API token, repository
+	secret, or credential placeholder.
+- [ ] Confirm the non-OIDC build job creates exactly 15 wheels and 15 sdists, runs strict
+	Twine checks, and stores the distributions, provenance, validation evidence, and
+	filename-sorted 30-entry manifest with safe RC2 filenames and lowercase SHA-256 digests as
+	one immutable artifact.
+- [ ] Confirm the 15 approved distributions are: `ariadion`, `ariadion-cli`,
+	`ariadion-core`, `ariadion-frontend-python`, `ariadion-ir`, `ariadion-language`,
+	`ariadion-noise`, `ariadion-runtime`, `ariadion-semantics`, `ariadion-simulator`,
+	`ariadion-simulator-numpy`, `ariadion-syntax`, `ariadion-visualization`, `daidalon`,
+	and `theonoe`.
+- [ ] Confirm TestPyPI is published first through the `testpypi` environment with Trusted
+	Publishing/OIDC and attestations, then remotely verified for exact filenames and hashes.
+- [ ] Confirm TestPyPI `skip-existing: true` is always enabled only for its TestPyPI publisher
+	job, never for PyPI. A partial-upload rerun requires a separately reviewed incident decision;
+	missing, extra, redistributed, or mismatched remote files must stop the workflow.
+- [ ] Confirm remote verification downloads the approved files, never uses
+	`--extra-index-url`, accepts only fixed RC2 project/filename identities, lowercase digests,
+	approved HTTPS hosts and paths, bounded redirects and response sizes, and atomic streamed
+	downloads with cleanup on every failure. Confirm it obtains NumPy 2.4.6 from production PyPI
+	separately and passes pip check, all-import, SDK Bell, CLI Bell, reporting-chain,
+	runtime-version, and NumPy backend smokes.
+- [ ] Confirm the manually approved `pypi` environment reuses the identical build artifact,
+	does not use `skip-existing`, publishes with Trusted Publishing/OIDC and attestations,
+	and has a final exact PyPI manifest verification.
+- [ ] Confirm no GitHub Release is created automatically.
 
 ## Release notes
 
