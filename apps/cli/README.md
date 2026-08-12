@@ -5,7 +5,7 @@ quantum programming platform.
 
 ## Status
 
-**0.1.0rc2 — Release Candidate.** Not yet published to PyPI.
+**0.1.0rc3 — Release Candidate.** Not yet published to PyPI.
 
 ## Usage
 

@@ -2,11 +2,35 @@
 
 ## Unreleased
 
-- Reserved for post-`0.1.0rc2` changes.
+- Reserved for post-`0.1.0rc3` changes.
 
-## 0.1.0rc2 - Unreleased
+## 0.1.0rc3 - Unreleased
 
-RC2 packaging repair. Not tagged or published.
+Coordinated replacement for the incomplete RC2 publication.
+
+### Added
+- Central immutable release identity for the RC3 version, tag, bundle name, and exact
+  15-project publishable set.
+- Fail-closed index preflights that require RC3 to be absent from TestPyPI and PyPI
+  before publication.
+- Adversarial verification tests for fully yanked, partially yanked, and malformed
+  yank metadata.
+
+### Changed
+- Version and every direct internal dependency pin advanced from `0.1.0rc2` to
+  `0.1.0rc3` across all 15 distributions.
+- Remote verification now requires every artifact to be explicitly unyanked and reports
+  `yanked_reason` when that contract fails.
+- Installed TestPyPI smoke requirements are explicitly pinned to `==0.1.0rc3`.
+- Neither TestPyPI nor production publication uses `skip-existing`; interrupted uploads
+  stop for reviewed recovery instead of being retried blindly.
+
+## 0.1.0rc2 - 2026-08-12 (yanked)
+
+RC2 packaging repair. The coordinated release was not tagged or completed: only
+`ariadion-syntax`, `ariadion-visualization`, `daidalon`, and `theonoe` reached production
+PyPI, and those partial releases were yanked as superseded by RC3. TestPyPI received no RC2
+files.
 
 ### Added
 - SPDX `Apache-2.0` license expression in every distribution's metadata.

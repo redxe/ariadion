@@ -7,7 +7,7 @@ platform and are replaceable without changing program semantics.
 
 ## Status
 
-**0.1.0rc2 — Release Candidate.** Ariadion is in active development. Public APIs
+**0.1.0rc3 — Release Candidate.** Ariadion is in active development. Public APIs
 may change before the final 1.0 release. Simulation-only; hardware execution is not
 yet available.
 
