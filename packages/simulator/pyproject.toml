@@ -1,6 +1,6 @@
 [project]
 name = "ariadion-simulator"
-version = "0.1.0rc2"
+version = "0.1.0rc3"
 description = "Reference state-vector and exact density-matrix simulators for Ariadion"
 readme = "README.md"
 license = "Apache-2.0"
@@ -8,8 +8,8 @@ license-files = ["LICENSE"]
 authors = [{name = "Vi Connelly"}]
 requires-python = ">=3.11"
 dependencies = [
-  "ariadion-ir==0.1.0rc2",
-  "ariadion-noise==0.1.0rc2",
+  "ariadion-ir==0.1.0rc3",
+  "ariadion-noise==0.1.0rc3",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",

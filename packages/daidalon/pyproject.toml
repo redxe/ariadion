@@ -1,6 +1,6 @@
 [project]
 name = "daidalon"
-version = "0.1.0rc2"
+version = "0.1.0rc3"
 description = "Compiler and synthesis engine for Ariadion"
 readme = "README.md"
 license = "Apache-2.0"
@@ -8,10 +8,10 @@ license-files = ["LICENSE"]
 authors = [{name = "Vi Connelly"}]
 requires-python = ">=3.11"
 dependencies = [
-  "ariadion-core==0.1.0rc2",
-  "ariadion-language==0.1.0rc2",
-  "ariadion-ir==0.1.0rc2",
-  "ariadion-semantics==0.1.0rc2",
+  "ariadion-core==0.1.0rc3",
+  "ariadion-language==0.1.0rc3",
+  "ariadion-ir==0.1.0rc3",
+  "ariadion-semantics==0.1.0rc3",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",

@@ -1,6 +1,6 @@
 [project]
 name = "ariadion-cli"
-version = "0.1.0rc2"
+version = "0.1.0rc3"
 description = "Command line interface for Ariadion"
 readme = "README.md"
 license = "Apache-2.0"
@@ -8,8 +8,8 @@ license-files = ["LICENSE"]
 authors = [{name = "Vi Connelly"}]
 requires-python = ">=3.11"
 dependencies = [
-  "ariadion==0.1.0rc2",
-  "ariadion-visualization==0.1.0rc2",
+  "ariadion==0.1.0rc3",
+  "ariadion-visualization==0.1.0rc3",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",

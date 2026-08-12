@@ -22,25 +22,20 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-RELEASE_VERSION = "0.1.0rc2"
-PUBLISHABLE_DISTRIBUTIONS = (
-    "ariadion",
-    "ariadion-cli",
-    "ariadion-core",
-    "ariadion-frontend-python",
-    "ariadion-ir",
-    "ariadion-language",
-    "ariadion-noise",
-    "ariadion-runtime",
-    "ariadion-semantics",
-    "ariadion-simulator",
-    "ariadion-simulator-numpy",
-    "ariadion-syntax",
-    "ariadion-visualization",
-    "daidalon",
-    "theonoe",
-)
-ARTIFACT_COUNT = len(PUBLISHABLE_DISTRIBUTIONS) * 2
+try:
+    from tools.release_contract import (
+        ARTIFACT_COUNT,
+        PUBLISHABLE_DISTRIBUTIONS,
+        RELEASE_VERSION,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "tools":
+        raise
+    from release_contract import (  # type: ignore[no-redef]
+        ARTIFACT_COUNT,
+        PUBLISHABLE_DISTRIBUTIONS,
+        RELEASE_VERSION,
+    )
 MAX_REDIRECTS = 3
 METADATA_TIMEOUT_SECONDS = 30
 ARTIFACT_TIMEOUT_SECONDS = 60
@@ -65,7 +60,7 @@ _DISTRIBUTION_COMPONENTS = {
 
 
 class IndexName(StrEnum):
-    """The only public indexes accepted by this fixed RC2 verifier."""
+    """The only public indexes accepted by this fixed RC3 verifier."""
 
     PYPI = "pypi"
     TESTPYPI = "testpypi"
@@ -128,7 +123,7 @@ def _has_unsafe_filename_characters(filename: str) -> bool:
 
 
 def parse_artifact_filename(filename: str) -> ArtifactIdentity:
-    """Parse a safe, approved RC2 wheel or source-distribution filename."""
+    """Parse a safe, approved RC3 wheel or source-distribution filename."""
     if (
         not isinstance(filename, str)
         or not filename
@@ -144,10 +139,10 @@ def parse_artifact_filename(filename: str) -> ArtifactIdentity:
         match = _SDIST_RE.fullmatch(filename)
         kind = "sdist"
     if match is None:
-        raise IndexReleaseError(f"invalid RC2 artifact filename: {filename!r}")
+        raise IndexReleaseError(f"invalid RC3 artifact filename: {filename!r}")
     distribution = _DISTRIBUTION_COMPONENTS.get(match.group("component"))
     if distribution is None:
-        raise IndexReleaseError(f"unknown RC2 artifact distribution: {filename!r}")
+        raise IndexReleaseError(f"unknown RC3 artifact distribution: {filename!r}")
     if match.group("version") != RELEASE_VERSION:
         raise IndexReleaseError(
             f"artifact filename version is not {RELEASE_VERSION}: {filename!r}"
@@ -194,7 +189,7 @@ def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any
 
 
 def load_manifest(path: Path) -> dict[str, str]:
-    """Load the fixed 30-entry, lowercase-SHA-256 RC2 manifest exactly."""
+    """Load the fixed 30-entry, lowercase-SHA-256 RC3 manifest exactly."""
     try:
         payload = path.read_bytes()
     except OSError as exc:
@@ -324,7 +319,7 @@ def verify_release_files(
     manifest: Mapping[str, str],
     metadata_by_distribution: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, str]:
-    """Return URLs only if each project exposes precisely its approved RC2 pair."""
+    """Return URLs only if each project exposes precisely its approved RC3 pair."""
     identities = _validate_manifest_entries(manifest)
     expected_names = set(PUBLISHABLE_DISTRIBUTIONS)
     if set(metadata_by_distribution) != expected_names:
@@ -355,12 +350,25 @@ def verify_release_files(
             url = item.get("url")
             digests = item.get("digests")
             digest = digests.get("sha256") if isinstance(digests, Mapping) else None
+            yanked = item.get("yanked")
+            yanked_reason = item.get("yanked_reason")
             if (
                 not isinstance(filename, str)
                 or not isinstance(url, str)
                 or not isinstance(digest, str)
             ):
                 raise IndexReleaseError(f"{distribution}: malformed artifact metadata")
+            if yanked is not False:
+                raise IndexReleaseError(
+                    f"{distribution}: remote artifact is not explicitly unyanked: "
+                    f"filename={filename!r}; yanked={yanked!r}; "
+                    f"yanked_reason={yanked_reason!r}"
+                )
+            if yanked_reason not in (None, ""):
+                raise IndexReleaseError(
+                    f"{distribution}: unyanked artifact has a yank reason: "
+                    f"filename={filename!r}; yanked_reason={yanked_reason!r}"
+                )
             if _SHA256_RE.fullmatch(digest) is None:
                 raise IndexReleaseError(
                     f"{distribution}: invalid lowercase SHA-256 for {filename!r}"
@@ -399,9 +407,9 @@ def fetch_release_metadata(
     *,
     open_response: Callable[[str, int], _Response] | None = None,
 ) -> Mapping[str, Any]:
-    """Fetch one fixed RC2 JSON response from the selected public index."""
+    """Fetch one fixed RC3 JSON response from the selected public index."""
     if distribution not in PUBLISHABLE_DISTRIBUTIONS:
-        raise IndexReleaseError(f"unsupported RC2 distribution: {distribution!r}")
+        raise IndexReleaseError(f"unsupported RC3 distribution: {distribution!r}")
     if version != RELEASE_VERSION:
         raise IndexReleaseError(f"unsupported release version: {version!r}")
     selected_index = _coerce_index(index)
@@ -425,6 +433,39 @@ def fetch_release_metadata(
     return value
 
 
+def require_release_absent(
+    fetch: Callable[[IndexName, str], Mapping[str, Any]],
+    *,
+    index: IndexName | str,
+) -> None:
+    """Fail closed unless the fixed RC3 version is absent for every project."""
+    selected_index = _coerce_index(index)
+    existing: list[str] = []
+    for distribution in PUBLISHABLE_DISTRIBUTIONS:
+        try:
+            metadata = fetch(selected_index, distribution)
+        except IndexReleaseError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, HTTPError) and cause.code == 404:
+                continue
+            raise
+        files = _index_files(metadata)
+        states = [
+            {
+                "filename": item.get("filename"),
+                "yanked": item.get("yanked"),
+                "yanked_reason": item.get("yanked_reason"),
+            }
+            for item in files
+        ]
+        existing.append(f"{distribution}: {states!r}")
+    if existing:
+        raise IndexReleaseError(
+            f"{RELEASE_VERSION} already exists on {selected_index.value}; "
+            "refusing a clean publication: " + "; ".join(existing)
+        )
+
+
 def wait_for_verified_release(
     fetch: Callable[[IndexName, str], Mapping[str, Any]],
     manifest: Mapping[str, str],
@@ -434,7 +475,7 @@ def wait_for_verified_release(
     delay_seconds: float,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, str]:
-    """Retry a fixed number of times until the complete RC2 manifest verifies."""
+    """Retry a fixed number of times until the complete RC3 manifest verifies."""
     if attempts < 1:
         raise ValueError("attempts must be at least one")
     if delay_seconds < 0:
@@ -524,7 +565,7 @@ def download_verified_artifacts(
     *,
     open_response: Callable[[str, int], _Response] | None = None,
 ) -> None:
-    """Atomically write only complete, bounded, digest-verified RC2 artifacts.
+    """Atomically write only complete, bounded, digest-verified RC3 artifacts.
 
     The destination must not exist. On any failure every created artifact and
     temporary file is removed, so a later verification starts from a clean path.
@@ -554,19 +595,35 @@ def download_verified_artifacts(
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Verify the fixed Ariadion RC2 release")
+    parser = argparse.ArgumentParser(description="Verify the fixed Ariadion RC3 release")
     parser.add_argument("--index", choices=[index.value for index in IndexName], required=True)
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--download-dir", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--download-dir", type=Path)
+    parser.add_argument("--require-absent", action="store_true")
     parser.add_argument("--attempts", type=int, default=10)
     parser.add_argument("--delay-seconds", type=float, default=15.0)
     return parser
 
 
 def main() -> int:
-    args = build_argument_parser().parse_args()
-    manifest = load_manifest(args.manifest)
+    parser = build_argument_parser()
+    args = parser.parse_args()
     selected_index = IndexName(args.index)
+    if args.require_absent:
+        if args.manifest is not None or args.download_dir is not None:
+            parser.error("--require-absent cannot be combined with artifact verification")
+        require_release_absent(
+            lambda index, distribution: fetch_release_metadata(index, distribution),
+            index=selected_index,
+        )
+        print(
+            f"verified {RELEASE_VERSION} is absent for all "
+            f"{len(PUBLISHABLE_DISTRIBUTIONS)} projects on {selected_index.value}"
+        )
+        return 0
+    if args.manifest is None or args.download_dir is None:
+        parser.error("--manifest and --download-dir are required for artifact verification")
+    manifest = load_manifest(args.manifest)
     urls = wait_for_verified_release(
         lambda index, distribution: fetch_release_metadata(index, distribution),
         manifest,

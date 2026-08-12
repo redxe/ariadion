@@ -20,10 +20,11 @@ import zipfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.request import Request
 
 from tools.release_smoke import (
-    EXPECTED_RC2_DEPENDENCY_GRAPH,
+    EXPECTED_RC3_DEPENDENCY_GRAPH,
     PUBLISHABLE_DISTRIBUTION_COUNT,
     RELEASE_SMOKE_MINIMUM_NUMPY_VERSION,
     RELEASE_SMOKE_NUMPY_VERSION,
@@ -57,6 +58,12 @@ from tools.release_smoke import (
     twine_check_command,
     validate_artifact_set,
 )
+from tools.release_contract import (
+    PUBLISHABLE_PROJECTS,
+    RELEASE_BUNDLE_NAME,
+    RELEASE_TAG,
+    RELEASE_VERSION,
+)
 from tools.verify_index_release import (
     ARTIFACT_COUNT,
     MAX_ARTIFACT_BYTES,
@@ -70,13 +77,14 @@ from tools.verify_index_release import (
     download_verified_artifacts,
     fetch_release_metadata,
     load_manifest,
+    require_release_absent,
     verify_release_files,
     wait_for_verified_release,
 )
 
 
 class ReleaseFoundationsTests(unittest.TestCase):
-    _EXPECTED_RC_VERSION = "0.1.0rc2"
+    _EXPECTED_RC_VERSION = RELEASE_VERSION
     _EXPECTED_PUBLISHABLE = {
         "ariadion",
         "ariadion-cli",
@@ -114,8 +122,8 @@ class ReleaseFoundationsTests(unittest.TestCase):
         for index, distribution in enumerate(PUBLISHABLE_DISTRIBUTIONS):
             component = distribution.replace("-", "_")
             filenames = (
-                f"{component}-0.1.0rc2-py3-none-any.whl",
-                f"{component}-0.1.0rc2.tar.gz",
+                f"{component}-0.1.0rc3-py3-none-any.whl",
+                f"{component}-0.1.0rc3.tar.gz",
             )
             urls = []
             for offset, filename in enumerate(filenames):
@@ -126,6 +134,8 @@ class ReleaseFoundationsTests(unittest.TestCase):
                         "filename": filename,
                         "url": f"https://files.pythonhosted.org/packages/{filename}",
                         "digests": {"sha256": digest},
+                        "yanked": False,
+                        "yanked_reason": None,
                     }
                 )
             metadata[distribution] = {"urls": urls}
@@ -138,7 +148,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
         canonical_license = b"Synthetic Apache-2.0 license payload\n"
         (root / "LICENSE").write_bytes(canonical_license)
 
-        names = sorted(EXPECTED_RC2_DEPENDENCY_GRAPH)
+        names = sorted(EXPECTED_RC3_DEPENDENCY_GRAPH)
         fixture: dict[str, Any] = {
             "root": root,
             "license": canonical_license,
@@ -151,7 +161,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
         }
         for index, name in enumerate(names):
             import_name = name.replace("-", "_")
-            dependencies = list(EXPECTED_RC2_DEPENDENCY_GRAPH[name])
+            dependencies = list(EXPECTED_RC3_DEPENDENCY_GRAPH[name])
             package_root = root / "sources" / f"package_{index:02d}"
             package_root.mkdir(parents=True)
             readme = f"# {name}\n\nSynthetic artifact fixture for {name}."
@@ -165,7 +175,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
                 [
                     "[project]",
                     f"name = {json.dumps(name)}",
-                    'version = "0.1.0rc2"',
+                    'version = "0.1.0rc3"',
                     f"description = {json.dumps(summary)}",
                     'readme = "README.md"',
                     'requires-python = ">=3.11"',
@@ -214,7 +224,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
         values: dict[str, list[str]] = {
             "Metadata-Version": ["2.4"],
             "Name": [record["name"]],
-            "Version": ["0.1.0rc2"],
+            "Version": ["0.1.0rc3"],
             "Summary": [record["summary"]],
             "Requires-Python": [">=3.11"],
             "Description-Content-Type": ["text/markdown"],
@@ -284,9 +294,9 @@ class ReleaseFoundationsTests(unittest.TestCase):
     ) -> Path:
         record = fixture["records"][name]
         component = re.sub(r"[-.]+", "_", name)
-        dist_info = f"{component}-0.1.0rc2.dist-info"
+        dist_info = f"{component}-0.1.0rc3.dist-info"
         path = fixture["root"] / "wheels" / (
-            filename or f"{component}-0.1.0rc2-py3-none-any.whl"
+            filename or f"{component}-0.1.0rc3-py3-none-any.whl"
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         if malformed:
@@ -352,9 +362,9 @@ class ReleaseFoundationsTests(unittest.TestCase):
     ) -> Path:
         record = fixture["records"][name]
         component = re.sub(r"[-.]+", "_", name)
-        root = root_name or f"{component}-0.1.0rc2"
+        root = root_name or f"{component}-0.1.0rc3"
         path = fixture["root"] / "sdists" / (
-            filename or f"{component}-0.1.0rc2.tar.gz"
+            filename or f"{component}-0.1.0rc3.tar.gz"
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         if malformed:
@@ -400,7 +410,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
                 fixture["distributions"],
                 fixture["wheels"],
                 fixture["sdists"],
-                expected_version="0.1.0rc2",
+                expected_version="0.1.0rc3",
                 canonical_license_path=fixture["root"] / "LICENSE",
             )
 
@@ -419,6 +429,19 @@ class ReleaseFoundationsTests(unittest.TestCase):
         self.assertEqual(len(distributions), 15)
         self.assertSetEqual(names, self._EXPECTED_PUBLISHABLE)
 
+    def test_central_release_contract_matches_the_publishable_source_set(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        declared = {Path(path): name for path, name in PUBLISHABLE_PROJECTS}
+        discovered = set((root / "packages").glob("*/pyproject.toml")) | {
+            root / "apps" / "cli" / "pyproject.toml"
+        }
+        self.assertEqual(
+            {root / path for path in declared},
+            discovered,
+        )
+        self.assertSetEqual(set(declared.values()), self._EXPECTED_PUBLISHABLE)
+        self.assertEqual(RELEASE_TAG, f"v{RELEASE_VERSION}")
+
     def test_actual_source_metadata_forms_the_authoritative_release_set(self) -> None:
         root = Path(__file__).resolve().parents[1]
         records = authoritative_distribution_records(publishable_distributions(root))
@@ -427,20 +450,20 @@ class ReleaseFoundationsTests(unittest.TestCase):
             {record["name"] for record in records.values()},
             self._EXPECTED_PUBLISHABLE,
         )
-        self.assertSetEqual(set(EXPECTED_RC2_DEPENDENCY_GRAPH), self._EXPECTED_PUBLISHABLE)
+        self.assertSetEqual(set(EXPECTED_RC3_DEPENDENCY_GRAPH), self._EXPECTED_PUBLISHABLE)
 
     def test_independent_dependency_graph_rejects_deleted_and_duplicated_source_edges(self) -> None:
         root = Path(__file__).resolve().parents[1]
         distributions = publishable_distributions(root)
         ir_entry = next(entry for entry in distributions if entry["name"] == "ariadion-ir")
         source_text = ir_entry["pyproject_path"].read_text(encoding="utf-8")
-        expected_dependency_line = 'dependencies = ["ariadion-core==0.1.0rc2"]'
+        expected_dependency_line = 'dependencies = ["ariadion-core==0.1.0rc3"]'
         self.assertIn(expected_dependency_line, source_text)
         replacements = {
             "deleted": "dependencies = []",
             "duplicated": (
-                'dependencies = ["ariadion-core==0.1.0rc2", '
-                '"ariadion-core==0.1.0rc2"]'
+                'dependencies = ["ariadion-core==0.1.0rc3", '
+                '"ariadion-core==0.1.0rc3"]'
             ),
         }
         for label, replacement in replacements.items():
@@ -463,7 +486,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
                 ]
                 with self.assertRaisesRegex(
                     ReleaseSmokeError,
-                    "source dependency graph differs from the independent RC2 baseline",
+                    "source dependency graph differs from the independent RC3 baseline",
                 ):
                     authoritative_distribution_records(mutated_distributions)
 
@@ -892,7 +915,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
         self.assertIn("ariadion-cli", result["distributions"])
 
     # ---------------------------------------------------------------------------
-    # RC2 regression tests: metadata completeness
+    # RC3 regression tests: metadata completeness
     # ---------------------------------------------------------------------------
 
     def test_publishable_distributions_have_spdx_license_metadata(self) -> None:
@@ -968,7 +991,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
                 [],
                 msg=f"{relative_path}: relative links are not PyPI-safe",
             )
-            self.assertIn("0.1.0rc2", readme)
+            self.assertIn("0.1.0rc3", readme)
             self.assertIn("not yet published", readme.lower())
 
     def test_cli_entry_point_is_exact(self) -> None:
@@ -1070,8 +1093,8 @@ class ReleaseFoundationsTests(unittest.TestCase):
 
     def test_generate_sha256_manifest_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            p1 = Path(tmp) / "a-0.1.0rc2-py3-none-any.whl"
-            p2 = Path(tmp) / "b-0.1.0rc2-py3-none-any.whl"
+            p1 = Path(tmp) / "a-0.1.0rc3-py3-none-any.whl"
+            p2 = Path(tmp) / "b-0.1.0rc3-py3-none-any.whl"
             p1.write_bytes(b"abc")
             p2.write_bytes(b"content-b")
             manifest1 = generate_sha256_manifest([p2, p1])
@@ -1095,7 +1118,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
             fixture["distributions"],
             fixture["wheels"],
             fixture["sdists"],
-            expected_version="0.1.0rc2",
+            expected_version="0.1.0rc3",
             canonical_license_path=fixture["root"] / "LICENSE",
         )
         self.assertEqual(result["wheels"], PUBLISHABLE_DISTRIBUTION_COUNT)
@@ -1115,7 +1138,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
     def test_validate_artifact_set_rejects_workspace_artifact_case_and_separator_variant(self) -> None:
         fixture = self._artifact_fixture()
         original = fixture["wheel_paths"]["ariadion"]
-        workspace_artifact = original.with_name("Ariadion.Workspace-0.1.0rc2-py3-none-any.whl")
+        workspace_artifact = original.with_name("Ariadion.Workspace-0.1.0rc3-py3-none-any.whl")
         original.rename(workspace_artifact)
         self._replace_fixture_path(
             fixture,
@@ -1129,12 +1152,12 @@ class ReleaseFoundationsTests(unittest.TestCase):
         cases = {
             "missing": [],
             "extra": [
-                "ariadion-core==0.1.0rc2",
-                "ariadion-frontend-python==0.1.0rc2",
+                "ariadion-core==0.1.0rc3",
+                "ariadion-frontend-python==0.1.0rc3",
             ],
             "wrong-pin": ["ariadion-frontend-python==0.1.0rc1"],
             "conditional": [
-                "ariadion-frontend-python==0.1.0rc2 ; python_version >= '3.11'"
+                "ariadion-frontend-python==0.1.0rc3 ; python_version >= '3.11'"
             ],
         }
         for label, requirements in cases.items():
@@ -1157,8 +1180,8 @@ class ReleaseFoundationsTests(unittest.TestCase):
             "ariadion",
             metadata_overrides={
                 "Requires-Dist": [
-                    "ariadion-frontend-python==0.1.0rc2",
-                    "ariadion-frontend-python==0.1.0rc2",
+                    "ariadion-frontend-python==0.1.0rc3",
+                    "ariadion-frontend-python==0.1.0rc3",
                 ]
             },
         )
@@ -1262,7 +1285,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
                 "unexpected-pep639-license",
                 {
                     "extra_license_members": [
-                        "unexpected-0.1.0rc2.dist-info/licenses/LICENSE"
+                        "unexpected-0.1.0rc3.dist-info/licenses/LICENSE"
                     ]
                 },
                 "sole PEP 639 license member",
@@ -1343,7 +1366,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
 
             def fake_validate_artifacts(**kwargs: Any) -> dict[str, Any]:
                 observed.update(kwargs)
-                return {"wheels": 15, "sdists": 15, "version": "0.1.0rc2", "manifest": {}}
+                return {"wheels": 15, "sdists": 15, "version": "0.1.0rc3", "manifest": {}}
 
             with contextlib.chdir(outside):
                 with patch("tools.release_smoke.publishable_distributions", return_value=[]), patch(
@@ -1425,10 +1448,10 @@ class ReleaseFoundationsTests(unittest.TestCase):
                 elif label == "extra":
                     metadata["ariadion"]["urls"].append(
                         {
-                            "filename": "unexpected-0.1.0rc2.tar.gz",
+                            "filename": "unexpected-0.1.0rc3.tar.gz",
                             "url": (
                                 "https://files.pythonhosted.org/packages/"
-                                "unexpected-0.1.0rc2.tar.gz"
+                                "unexpected-0.1.0rc3.tar.gz"
                             ),
                             "digests": {"sha256": "f" * 64},
                         }
@@ -1445,7 +1468,75 @@ class ReleaseFoundationsTests(unittest.TestCase):
         with self.assertRaisesRegex(IndexReleaseError, "artifact is assigned"):
             verify_release_files(manifest, metadata)
 
-    def test_index_release_manifest_requires_exact_safe_lowercase_rc2_entries(self) -> None:
+    def test_index_release_verifier_rejects_fully_and_partially_yanked_releases(self) -> None:
+        for label, target_count in (("partial", 1), ("full", ARTIFACT_COUNT)):
+            with self.subTest(yank_state=label):
+                manifest, metadata = self._index_release_fixture()
+                files = [
+                    item
+                    for distribution in PUBLISHABLE_DISTRIBUTIONS
+                    for item in metadata[distribution]["urls"]
+                ]
+                for item in files[:target_count]:
+                    item["yanked"] = True
+                    item["yanked_reason"] = "superseded release"
+                with self.assertRaisesRegex(
+                    IndexReleaseError,
+                    "yanked=True.*yanked_reason='superseded release'",
+                ):
+                    verify_release_files(manifest, metadata)
+
+    def test_index_release_verifier_requires_explicit_unyanked_metadata(self) -> None:
+        manifest, metadata = self._index_release_fixture()
+        artifact = metadata["ariadion"]["urls"][0]
+        artifact.pop("yanked")
+        with self.assertRaisesRegex(IndexReleaseError, "yanked=None"):
+            verify_release_files(manifest, metadata)
+
+        manifest, metadata = self._index_release_fixture()
+        artifact = metadata["ariadion"]["urls"][0]
+        artifact["yanked_reason"] = "inconsistent reason"
+        with self.assertRaisesRegex(IndexReleaseError, "inconsistent reason"):
+            verify_release_files(manifest, metadata)
+
+    def test_clean_publication_preflight_requires_every_project_version_absent(self) -> None:
+        _, metadata = self._index_release_fixture()
+
+        def missing(distribution: str, *, status: int = 404) -> IndexReleaseError:
+            error = HTTPError(
+                f"https://pypi.org/pypi/{distribution}/{RELEASE_VERSION}/json",
+                status,
+                "missing",
+                None,
+                None,
+            )
+            failure = IndexReleaseError(f"{distribution}: unavailable")
+            failure.__cause__ = error
+            return failure
+
+        def all_missing(_index: IndexName, distribution: str) -> dict[str, Any]:
+            raise missing(distribution)
+
+        require_release_absent(all_missing, index=IndexName.PYPI)
+
+        def one_existing(_index: IndexName, distribution: str) -> dict[str, Any]:
+            if distribution == "ariadion":
+                return metadata[distribution]
+            raise missing(distribution)
+
+        with self.assertRaisesRegex(
+            IndexReleaseError,
+            f"{re.escape(RELEASE_VERSION)} already exists.*ariadion",
+        ):
+            require_release_absent(one_existing, index=IndexName.PYPI)
+
+        def registry_failure(_index: IndexName, distribution: str) -> dict[str, Any]:
+            raise missing(distribution, status=503)
+
+        with self.assertRaisesRegex(IndexReleaseError, "unavailable"):
+            require_release_absent(registry_failure, index=IndexName.PYPI)
+
+    def test_index_release_manifest_requires_exact_safe_lowercase_rc3_entries(self) -> None:
         manifest, _ = self._index_release_fixture()
         temporary = Path(tempfile.mkdtemp(prefix="ariadion-manifest-fixture-"))
         self.addCleanup(shutil.rmtree, temporary, ignore_errors=True)
@@ -1468,14 +1559,14 @@ class ReleaseFoundationsTests(unittest.TestCase):
                 "ariadion-0.1.0rc1-py3-none-any.whl", entries.pop(next(iter(entries)))
             ),
             "unsafe filename": lambda entries: entries.__setitem__(
-                "../ariadion-0.1.0rc2.tar.gz", entries.pop(next(iter(entries)))
+                "../ariadion-0.1.0rc3.tar.gz", entries.pop(next(iter(entries)))
             ),
             "unknown type": lambda entries: entries.__setitem__(
-                "ariadion-0.1.0rc2.zip", entries.pop(next(iter(entries)))
+                "ariadion-0.1.0rc3.zip", entries.pop(next(iter(entries)))
             ),
             "duplicate wheel kind": lambda entries: entries.__setitem__(
-                "ariadion-0.1.0rc2-py3-none-any.whl",
-                entries.pop("ariadion-0.1.0rc2.tar.gz"),
+                "ariadion-0.1.0rc3-py3-none-any.whl",
+                entries.pop("ariadion-0.1.0rc3.tar.gz"),
             ),
         }
         for label, mutate in mutations.items():
@@ -1535,7 +1626,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
                 return value
 
             def geturl(self) -> str:
-                return "https://pypi.org/pypi/ariadion/0.1.0rc2/json"
+                return "https://pypi.org/pypi/ariadion/0.1.0rc3/json"
 
             def close(self) -> None:
                 return None
@@ -1622,7 +1713,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
                 return value
 
             def geturl(self) -> str:
-                return "https://files.pythonhosted.org/packages/ariadion-0.1.0rc2.tar.gz"
+                return "https://files.pythonhosted.org/packages/ariadion-0.1.0rc3.tar.gz"
 
             def close(self) -> None:
                 return None
@@ -1647,7 +1738,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
             side_effect=lambda url, **_: open_response(url, 0),
         ):
             download_verified_artifacts(urls, manifest, destination)
-        filename = "ariadion-0.1.0rc2.tar.gz"
+        filename = "ariadion-0.1.0rc3.tar.gz"
         self.assertEqual((destination / filename).read_bytes(), payloads[filename])
         self.assertFalse(list(destination.glob(".*.part")))
 
@@ -1748,14 +1839,16 @@ class ReleaseFoundationsTests(unittest.TestCase):
         errors: list[str] = []
         jobs = self._workflow_job_blocks(workflow)
         required_jobs = {
+            "preflight-indexes",
             "build",
             "publish-testpypi",
             "verify-testpypi",
+            "preflight-pypi",
             "publish-pypi",
             "verify-pypi",
         }
         if set(jobs) != required_jobs:
-            errors.append("trusted publishing jobs differ from the approved five-job topology")
+            errors.append("trusted publishing jobs differ from the approved seven-job topology")
         events = workflow.split("\npermissions:\n", 1)[0]
         unsupported_events = ("workflow_dispatch", "pull_request", "release:", "schedule:")
         if 'tags:\n      - "v*"' not in events or any(
@@ -1764,17 +1857,30 @@ class ReleaseFoundationsTests(unittest.TestCase):
             errors.append("workflow trigger is not tag-only")
         if not re.search(r"(?m)^permissions:\n  contents: read$", workflow):
             errors.append("root permissions are not least privilege")
+        for variable, value in (
+            ("RELEASE_VERSION", RELEASE_VERSION),
+            ("RELEASE_TAG", RELEASE_TAG),
+            ("RELEASE_BUNDLE_NAME", RELEASE_BUNDLE_NAME),
+        ):
+            if f"  {variable}: {value}" not in workflow:
+                errors.append(f"workflow {variable} differs from the release contract")
         if "concurrency:" not in workflow or "github.ref" not in workflow:
             errors.append("same-tag concurrency is absent")
         if "fetch-depth: 0" not in workflow:
             errors.append("checkout is not full history")
+        if "needs: preflight-indexes" not in jobs.get("build", ""):
+            errors.append("build does not require the clean two-index preflight")
+        if "needs: preflight-pypi" not in jobs.get("publish-pypi", ""):
+            errors.append("production publication does not require its final clean preflight")
+        if workflow.count("--require-absent") != 3:
+            errors.append("clean publication preflights are incomplete")
         for action in re.findall(r"(?m)^\s*uses:\s*(\S+)", workflow):
             if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}", action):
                 errors.append(f"action is not a full immutable SHA pin: {action}")
         gate = jobs.get("build", "")
         for required in (
             'test "$GITHUB_REF_TYPE" = "tag"',
-            'test "$GITHUB_REF_NAME" = "v${VERSION}"',
+            'test "$GITHUB_REF_NAME" = "$RELEASE_TAG"',
             'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
             'test "$(git rev-parse "${GITHUB_REF_NAME}^{commit}")" = "$GITHUB_SHA"',
             'test -z "$(git status --porcelain)"',
@@ -1782,6 +1888,8 @@ class ReleaseFoundationsTests(unittest.TestCase):
             "discovered != set(expected)",
             'root.get("project", {}).get("version") != version',
             'project.get("name") != name or project.get("version") != version',
+            'os.environ["RELEASE_VERSION"] != RELEASE_VERSION',
+            'os.environ["RELEASE_TAG"] != RELEASE_TAG',
         ):
             if required not in gate:
                 errors.append(f"build provenance gate omits {required}")
@@ -1805,7 +1913,7 @@ class ReleaseFoundationsTests(unittest.TestCase):
             if block.count("pypa/gh-action-pypi-publish@") != 1:
                 errors.append(f"{name} does not contain exactly one publisher call")
             if (
-                "ariadion-rc2-release-bundle" not in block
+                "name: ${{ env.RELEASE_BUNDLE_NAME }}" not in block
                 or "path: release" not in block
             ):
                 errors.append(f"{name} does not consume the approved release bundle")
@@ -1822,13 +1930,19 @@ class ReleaseFoundationsTests(unittest.TestCase):
         production_publish = jobs.get("publish-pypi", "")
         if (
             "https://test.pypi.org/legacy/" not in test_publish
-            or "skip-existing: true" not in test_publish
+            or "skip-existing" in test_publish
         ):
             errors.append("TestPyPI publisher contract is incomplete")
         if "repository-url:" in production_publish or "skip-existing" in production_publish:
             errors.append("PyPI publisher contract is mutable or not production-safe")
         if "--no-index" not in workflow or "--extra-index-url" in workflow:
             errors.append("isolated install can access an extra index")
+        expected_pins = {
+            f'"{distribution}==${{RELEASE_VERSION}}"'
+            for _, distribution in PUBLISHABLE_PROJECTS
+        }
+        if not expected_pins.issubset(set(workflow.split())):
+            errors.append("installed TestPyPI smoke does not pin all RC3 distributions")
         if "--version" in workflow:
             errors.append("verifier accepts an arbitrary workflow version")
         forbidden = ("gh release", "git tag", "password", "api-token", "secrets.")
@@ -1865,9 +1979,20 @@ class ReleaseFoundationsTests(unittest.TestCase):
             ),
             "release trigger": workflow.replace("on:\n", "on:\n  release:\n", 1),
             "scheduled trigger": workflow.replace("on:\n", "on:\n  schedule:\n", 1),
-            "missing tag gate": workflow.replace('v${VERSION}', "v0.1.0rc1", 1),
+            "missing tag gate": workflow.replace('$RELEASE_TAG', "v0.1.0rc1", 1),
+            "release contract divergence": workflow.replace(
+                f"RELEASE_VERSION: {RELEASE_VERSION}",
+                "RELEASE_VERSION: 0.1.0rc4",
+                1,
+            ),
             "missing head gate": workflow.replace(
                 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"\n', ""
+            ),
+            "missing initial preflight dependency": workflow.replace(
+                "    needs: preflight-indexes\n", "", 1
+            ),
+            "missing production preflight dependency": workflow.replace(
+                "    needs: preflight-pypi\n", "", 1
             ),
             "missing source-count gate": workflow.replace("len(expected) != 15", "False"),
             "missing source-version gate": workflow.replace(
@@ -1907,6 +2032,11 @@ class ReleaseFoundationsTests(unittest.TestCase):
             ),
             "TestPyPI index divergence": workflow.replace(
                 "https://test.pypi.org/legacy/", "https://upload.pypi.org/legacy/"
+            ),
+            "TestPyPI skip existing": workflow.replace(
+                "          repository-url: https://test.pypi.org/legacy/\n",
+                "          repository-url: https://test.pypi.org/legacy/\n"
+                "          skip-existing: true\n",
             ),
             "artifact bundle divergence": artifact_divergence,
             "production skip existing": workflow.replace(

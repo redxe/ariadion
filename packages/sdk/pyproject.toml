@@ -1,6 +1,6 @@
 [project]
 name = "ariadion"
-version = "0.1.0rc2"
+version = "0.1.0rc3"
 description = "Python SDK for visible, basis-aware quantum programming"
 readme = "README.md"
 license = "Apache-2.0"
@@ -8,11 +8,11 @@ license-files = ["LICENSE"]
 authors = [{name = "Vi Connelly"}]
 requires-python = ">=3.11"
 dependencies = [
-  "ariadion-frontend-python==0.1.0rc2",
-  "ariadion-language==0.1.0rc2",
-  "ariadion-noise==0.1.0rc2",
-  "ariadion-runtime==0.1.0rc2",
-  "ariadion-semantics==0.1.0rc2",
+  "ariadion-frontend-python==0.1.0rc3",
+  "ariadion-language==0.1.0rc3",
+  "ariadion-noise==0.1.0rc3",
+  "ariadion-runtime==0.1.0rc3",
+  "ariadion-semantics==0.1.0rc3",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",

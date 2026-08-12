@@ -22,6 +22,12 @@ from typing import Any
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
+try:
+    from tools.release_contract import RELEASE_VERSION
+except ModuleNotFoundError as exc:
+    if exc.name != "tools":
+        raise
+    from release_contract import RELEASE_VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLISHABLE_DISTRIBUTION_COUNT = 15
@@ -29,69 +35,69 @@ RELEASE_SMOKE_MINIMUM_NUMPY_VERSION = "1.26.0"
 RELEASE_SMOKE_NUMPY_VERSION = "2.4.6"
 PEP_639_METADATA_VERSION = Version("2.4")
 
-# This reviewed RC2 contract is intentionally authored separately from package
+# This reviewed RC3 contract is intentionally authored separately from package
 # pyproject.toml files. Source/artifact parity alone cannot detect an edge
 # deleted, duplicated, conditionalized, redirected, or incorrectly pinned in both.
-EXPECTED_RC2_DEPENDENCY_GRAPH: dict[str, tuple[str, ...]] = {
+EXPECTED_RC3_DEPENDENCY_GRAPH: dict[str, tuple[str, ...]] = {
     "ariadion": (
-        "ariadion-frontend-python==0.1.0rc2",
-        "ariadion-language==0.1.0rc2",
-        "ariadion-noise==0.1.0rc2",
-        "ariadion-runtime==0.1.0rc2",
-        "ariadion-semantics==0.1.0rc2",
+        f"ariadion-frontend-python=={RELEASE_VERSION}",
+        f"ariadion-language=={RELEASE_VERSION}",
+        f"ariadion-noise=={RELEASE_VERSION}",
+        f"ariadion-runtime=={RELEASE_VERSION}",
+        f"ariadion-semantics=={RELEASE_VERSION}",
     ),
     "ariadion-cli": (
-        "ariadion==0.1.0rc2",
-        "ariadion-visualization==0.1.0rc2",
+        f"ariadion=={RELEASE_VERSION}",
+        f"ariadion-visualization=={RELEASE_VERSION}",
     ),
     "ariadion-core": (),
     "ariadion-frontend-python": (
-        "ariadion-core==0.1.0rc2",
-        "ariadion-language==0.1.0rc2",
-        "ariadion-semantics==0.1.0rc2",
+        f"ariadion-core=={RELEASE_VERSION}",
+        f"ariadion-language=={RELEASE_VERSION}",
+        f"ariadion-semantics=={RELEASE_VERSION}",
     ),
-    "ariadion-ir": ("ariadion-core==0.1.0rc2",),
-    "ariadion-language": ("ariadion-core==0.1.0rc2",),
-    "ariadion-noise": ("ariadion-core==0.1.0rc2",),
+    "ariadion-ir": (f"ariadion-core=={RELEASE_VERSION}",),
+    "ariadion-language": (f"ariadion-core=={RELEASE_VERSION}",),
+    "ariadion-noise": (f"ariadion-core=={RELEASE_VERSION}",),
     "ariadion-runtime": (
-        "ariadion-core==0.1.0rc2",
-        "ariadion-ir==0.1.0rc2",
-        "ariadion-language==0.1.0rc2",
-        "ariadion-noise==0.1.0rc2",
-        "ariadion-semantics==0.1.0rc2",
-        "daidalon==0.1.0rc2",
-        "ariadion-simulator==0.1.0rc2",
-        "theonoe==0.1.0rc2",
-        "ariadion-visualization==0.1.0rc2",
+        f"ariadion-core=={RELEASE_VERSION}",
+        f"ariadion-ir=={RELEASE_VERSION}",
+        f"ariadion-language=={RELEASE_VERSION}",
+        f"ariadion-noise=={RELEASE_VERSION}",
+        f"ariadion-semantics=={RELEASE_VERSION}",
+        f"daidalon=={RELEASE_VERSION}",
+        f"ariadion-simulator=={RELEASE_VERSION}",
+        f"theonoe=={RELEASE_VERSION}",
+        f"ariadion-visualization=={RELEASE_VERSION}",
     ),
     "ariadion-semantics": (
-        "ariadion-core==0.1.0rc2",
-        "ariadion-language==0.1.0rc2",
-        "ariadion-noise==0.1.0rc2",
+        f"ariadion-core=={RELEASE_VERSION}",
+        f"ariadion-language=={RELEASE_VERSION}",
+        f"ariadion-noise=={RELEASE_VERSION}",
     ),
     "ariadion-simulator": (
-        "ariadion-ir==0.1.0rc2",
-        "ariadion-noise==0.1.0rc2",
+        f"ariadion-ir=={RELEASE_VERSION}",
+        f"ariadion-noise=={RELEASE_VERSION}",
     ),
     "ariadion-simulator-numpy": (
-        "ariadion-ir==0.1.0rc2",
-        "ariadion-noise==0.1.0rc2",
-        "ariadion-simulator==0.1.0rc2",
+        f"ariadion-ir=={RELEASE_VERSION}",
+        f"ariadion-noise=={RELEASE_VERSION}",
+        f"ariadion-simulator=={RELEASE_VERSION}",
         "numpy>=1.26",
     ),
-    "ariadion-syntax": ("ariadion-core==0.1.0rc2",),
-    "ariadion-visualization": ("ariadion-ir==0.1.0rc2",),
+    "ariadion-syntax": (f"ariadion-core=={RELEASE_VERSION}",),
+    "ariadion-visualization": (f"ariadion-ir=={RELEASE_VERSION}",),
     "daidalon": (
-        "ariadion-core==0.1.0rc2",
-        "ariadion-language==0.1.0rc2",
-        "ariadion-ir==0.1.0rc2",
-        "ariadion-semantics==0.1.0rc2",
+        f"ariadion-core=={RELEASE_VERSION}",
+        f"ariadion-language=={RELEASE_VERSION}",
+        f"ariadion-ir=={RELEASE_VERSION}",
+        f"ariadion-semantics=={RELEASE_VERSION}",
     ),
     "theonoe": (
-        "ariadion-core==0.1.0rc2",
-        "ariadion-noise==0.1.0rc2",
-        "ariadion-semantics==0.1.0rc2",
-        "ariadion-simulator==0.1.0rc2",
+        f"ariadion-core=={RELEASE_VERSION}",
+        f"ariadion-noise=={RELEASE_VERSION}",
+        f"ariadion-semantics=={RELEASE_VERSION}",
+        f"ariadion-simulator=={RELEASE_VERSION}",
     ),
 }
 
@@ -679,23 +685,23 @@ def _format_dependency_difference(
             + repr(sorted(_format_requirement_key(requirement) for requirement in unexpected.elements()))
         )
     return (
-        f"{source_label}: source dependency graph differs from the independent RC2 "
+        f"{source_label}: source dependency graph differs from the independent RC3 "
         "baseline: "
         + "; ".join(details)
     )
 
 
-def _expected_rc2_dependency_multisets() -> dict[str, Counter[RequirementKey]]:
-    """Return semantic requirement multisets from the fixed reviewed RC2 graph."""
+def _expected_rc3_dependency_multisets() -> dict[str, Counter[RequirementKey]]:
+    """Return semantic requirement multisets from the fixed reviewed RC3 graph."""
     return {
         _normalized_distribution_name(distribution_name): Counter(
             _requirement_key(requirement)
             for requirement in _parse_requirements(
                 requirements,
-                context=f"independent RC2 dependency baseline for {distribution_name}",
+                context=f"independent RC3 dependency baseline for {distribution_name}",
             )
         )
-        for distribution_name, requirements in EXPECTED_RC2_DEPENDENCY_GRAPH.items()
+        for distribution_name, requirements in EXPECTED_RC3_DEPENDENCY_GRAPH.items()
     }
 
 
@@ -748,7 +754,7 @@ def authoritative_distribution_records(
 ) -> dict[str, dict[str, Any]]:
     """Build the authoritative normalized-name mapping from source pyproject metadata."""
     records: dict[str, dict[str, Any]] = {}
-    expected_dependency_multisets = _expected_rc2_dependency_multisets()
+    expected_dependency_multisets = _expected_rc3_dependency_multisets()
     for entry in distributions:
         pyproject_path = Path(entry["pyproject_path"])
         source_label = str(pyproject_path)
@@ -772,7 +778,7 @@ def authoritative_distribution_records(
             )
         if normalized_name not in expected_dependency_multisets:
             raise ReleaseSmokeError(
-                f"{source_label}: distribution {name!r} is absent from the independent RC2 dependency baseline"
+                f"{source_label}: distribution {name!r} is absent from the independent RC3 dependency baseline"
             )
 
         version = _require_project_string(project, "version", source_label=source_label)
@@ -847,7 +853,7 @@ def authoritative_distribution_records(
     missing_baseline_distributions = sorted(set(expected_dependency_multisets) - set(records))
     if missing_baseline_distributions:
         raise ReleaseSmokeError(
-            "publishable source distributions missing from the independent RC2 dependency baseline: "
+            "publishable source distributions missing from the independent RC3 dependency baseline: "
             + ", ".join(missing_baseline_distributions)
         )
     return records

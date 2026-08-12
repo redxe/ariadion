@@ -3,13 +3,13 @@
 ## Pre-release
 
 - [ ] Run the canonical test suite on Python 3.11 and 3.12 with `python tools/test.py`.
-- [ ] Confirm the root workspace and all publishable distributions use `0.1.0rc2`.
+- [ ] Confirm the root workspace and all publishable distributions use `0.1.0rc3`.
 - [ ] Confirm every direct internal Ariadion dependency in publishable metadata uses
-	the exact RC pin `==0.1.0rc2`.
+	the exact RC pin `==0.1.0rc3`.
 - [ ] Confirm every publishable build system requires `setuptools>=77.0.3` for
 	PEP 639 support.
-- [ ] Confirm `ariadion.__version__` equals `"0.1.0rc2"`.
-- [ ] Confirm `importlib.metadata.version("ariadion")` equals `"0.1.0rc2"` in an
+- [ ] Confirm `ariadion.__version__` equals `"0.1.0rc3"`.
+- [ ] Confirm `importlib.metadata.version("ariadion")` equals `"0.1.0rc3"` in an
 	installed environment (verified by release smoke runtime version check).
 - [ ] Run `python tools/release_smoke.py --wheelhouse <new-empty-wheelhouse>`.
 - [ ] Confirm every workspace distribution produced a wheel in that wheelhouse.
@@ -24,8 +24,8 @@
 - [ ] Run `python tools/release_smoke.py --wheelhouse <new-empty-wheelhouse> --validate-artifacts <sdist-dir>`:
 	- [ ] Exactly 15 wheels and 15 sdists produced.
 	- [ ] No ariadion-workspace artifact present.
-	- [ ] All 30 artifacts use version `0.1.0rc2`.
-	- [ ] All internal dependency pins equal `==0.1.0rc2`.
+	- [ ] All 30 artifacts use version `0.1.0rc3`.
+	- [ ] All internal dependency pins equal `==0.1.0rc3`.
 	- [ ] Every artifact has Description and Description-Content-Type metadata.
 	- [ ] Every wheel and sdist contains the Apache-2.0 LICENSE payload.
 	- [ ] Every wheel and sdist contains the expected import package.
@@ -46,39 +46,37 @@
 
 ## Before tagging
 
-- [ ] Record the exact reviewer-approved RC2 commit SHA.
+- [ ] Record the exact reviewer-approved RC3 commit SHA.
 - [ ] Confirm the artifact-build checkout has a clean tree at that approved SHA.
 - [ ] Retain accepted artifact-build, strict-Twine, installation-smoke, and SHA-256
 	manifest evidence for that approved SHA.
 
-## During separately authorized tagging
+## During authorized tagging
 
-- [ ] Create `v0.1.0rc2` at the exact approved SHA only after separate reviewer
-	authorization.
-- [ ] Do not move `v0.1.0rc2` or substitute a later commit.
+- [ ] Create `v0.1.0rc3` at the exact approved SHA only after all release checks pass.
+- [ ] Confirm that pushing the tag authorizes the immutable build and TestPyPI publication.
+- [ ] Do not move `v0.1.0rc3` or substitute a later commit.
 
 ## Before publication
 
-- [ ] Confirm `v0.1.0rc2` peels to the approved SHA.
+- [ ] Confirm `v0.1.0rc3` peels to the approved SHA.
 - [ ] Confirm the tag, all 30 artifact versions, and the recorded SHA-256 manifest
-	agree on `0.1.0rc2`.
-- [ ] Confirm package publication remains a separate authorized action from RC2
-	preparation and tagging.
-- [ ] Confirm RC2 remains untagged and unpublished until this checklist and separate
-	publishing authorization are complete.
-- [ ] Configure pending Trusted Publishers for `redxe/ariadion`, workflow `publish.yml`:
-	- [ ] TestPyPI environment: `testpypi`.
-	- [ ] PyPI environment: `pypi` with the required manual production reviewer.
+	agree on `0.1.0rc3`.
+- [ ] Confirm RC3 remains untagged and unpublished until this checklist is complete.
+- [x] Confirm all 30 Trusted Publishers are registered for `redxe/ariadion`, workflow
+	`publish.yml`: 15 with TestPyPI environment `testpypi`, and 15 with PyPI environment
+	`pypi` (recorded user-confirmed on 2026-08-12).
+- [ ] Confirm the `pypi` GitHub environment requires the intended manual production reviewer.
 - [ ] Confirm [`.github/workflows/publish.yml`](../.github/workflows/publish.yml) is the
 	only authorized publication workflow and triggers only from pushed version tags.
-- [ ] Confirm the workflow rejects every tag other than `v0.1.0rc2`, validates the tag
+- [ ] Confirm the workflow rejects every tag other than `v0.1.0rc3`, validates the tag
 	trigger, clean `HEAD`, `GITHUB_SHA`, and peeled tag commit before installing build tools;
 	then validate the root project plus exactly the 15 approved publishable projects for their
-	expected names and `0.1.0rc2` versions. Confirm it uses no password, API token, repository
+	expected names and `0.1.0rc3` versions. Confirm it uses no password, API token, repository
 	secret, or credential placeholder.
 - [ ] Confirm the non-OIDC build job creates exactly 15 wheels and 15 sdists, runs strict
 	Twine checks, and stores the distributions, provenance, validation evidence, and
-	filename-sorted 30-entry manifest with safe RC2 filenames and lowercase SHA-256 digests as
+	filename-sorted 30-entry manifest with safe RC3 filenames and lowercase SHA-256 digests as
 	one immutable artifact.
 - [ ] Confirm the 15 approved distributions are: `ariadion`, `ariadion-cli`,
 	`ariadion-core`, `ariadion-frontend-python`, `ariadion-ir`, `ariadion-language`,
@@ -87,14 +85,17 @@
 	and `theonoe`.
 - [ ] Confirm TestPyPI is published first through the `testpypi` environment with Trusted
 	Publishing/OIDC and attestations, then remotely verified for exact filenames and hashes.
-- [ ] Confirm TestPyPI `skip-existing: true` is always enabled only for its TestPyPI publisher
-	job, never for PyPI. A partial-upload rerun requires a separately reviewed incident decision;
-	missing, extra, redistributed, or mismatched remote files must stop the workflow.
+- [ ] Confirm non-OIDC preflights require RC3 to be absent from all 15 projects on both
+	indexes before TestPyPI publication and again from PyPI after TestPyPI verification.
+- [ ] Confirm neither publisher uses `skip-existing`. A partial upload requires a separately
+	reviewed incident decision; missing, extra, redistributed, mismatched, or yanked files must
+	stop the workflow.
 - [ ] Confirm remote verification downloads the approved files, never uses
-	`--extra-index-url`, accepts only fixed RC2 project/filename identities, lowercase digests,
-	approved HTTPS hosts and paths, bounded redirects and response sizes, and atomic streamed
-	downloads with cleanup on every failure. Confirm it obtains NumPy 2.4.6 from production PyPI
-	separately and passes pip check, all-import, SDK Bell, CLI Bell, reporting-chain,
+	`--extra-index-url`, accepts only fixed RC3 project/filename identities, lowercase digests,
+	explicitly unyanked artifacts, approved HTTPS hosts and paths, bounded redirects and response
+	sizes, and atomic streamed downloads with cleanup on every failure. Confirm all 15 installed
+	distributions are pinned to `==0.1.0rc3`, NumPy 2.4.6 is obtained separately from production
+	PyPI, and pip check, all-import, SDK Bell, CLI Bell, reporting-chain,
 	runtime-version, and NumPy backend smokes.
 - [ ] Confirm the manually approved `pypi` environment reuses the identical build artifact,
 	does not use `skip-existing`, publishes with Trusted Publishing/OIDC and attestations,
